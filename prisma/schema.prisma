@@ -1,0 +1,418 @@
+// devsecops-platform/prisma/schema.prisma
+
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+// ============================================================
+// ENUMS
+// ============================================================
+
+enum Role {
+  ADMIN
+  DEVELOPER
+}
+
+enum GitProvider {
+  GITHUB
+  GITLAB
+}
+
+enum Technology {
+  NODEJS
+  PHP
+  PYTHON
+  UNKNOWN
+}
+
+enum PipelineStatus {
+  QUEUED
+  RUNNING
+  SUCCESS
+  FAILED
+  SECURITY_BLOCKED
+  CANCELLED
+}
+
+enum StepStatus {
+  QUEUED
+  RUNNING
+  SUCCESS
+  FAILED
+  SECURITY_BLOCKED
+  CANCELLED
+}
+
+enum Severity {
+  CRITICAL
+  HIGH
+  MEDIUM
+  LOW
+  INFO
+}
+
+enum ScanType {
+  SECRET
+  SAST
+  SCA
+  IMAGE
+  DAST
+}
+
+enum SecurityGateStatus {
+  PASSED
+  FAILED
+  BLOCKED
+}
+
+enum DeploymentStatus {
+  QUEUED
+  RUNNING
+  SUCCESS
+  FAILED
+  CANCELLED
+}
+
+enum ServerAuthType {
+  SSH_KEY
+  PASSWORD
+}
+
+// ============================================================
+// USER & AUTH
+// ============================================================
+
+model User {
+  id           String   @id @default(cuid())
+  email        String   @unique
+  passwordHash String
+  name         String
+  role         Role     @default(DEVELOPER)
+  isActive     Boolean  @default(true)
+  createdAt    DateTime @default(now())
+  updatedAt    DateTime @updatedAt
+
+  projects         Project[]
+  githubConnection GitHubConnection?
+  servers          DeploymentServer[]
+  auditLogs        AuditLog[]
+
+  @@index([email])
+  @@index([role])
+}
+
+model GitHubConnection {
+  id                   String   @id @default(cuid())
+  userId               String   @unique
+  githubUserId         String
+  login                String
+  accessTokenEncrypted String
+  scopes               String?
+  createdAt            DateTime @default(now())
+  updatedAt            DateTime @updatedAt
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([githubUserId])
+}
+
+// ============================================================
+// PROJECTS & REPOSITORIES
+// ============================================================
+
+model Project {
+  id                String      @id @default(cuid())
+  ownerId           String
+  name              String
+  description       String?
+  provider          GitProvider @default(GITHUB)
+  repoFullName      String
+  repoId            String
+  defaultBranch     String      @default("main")
+  technology        Technology  @default(UNKNOWN)
+  deploymentEnabled Boolean     @default(false)
+  serverId          String?
+  createdAt         DateTime    @default(now())
+  updatedAt         DateTime    @updatedAt
+
+  owner       User                  @relation(fields: [ownerId], references: [id], onDelete: Cascade)
+  server      DeploymentServer?     @relation(fields: [serverId], references: [id], onDelete: SetNull)
+  config      ProjectConfiguration?
+  pipelines   Pipeline[]
+  scans       SecurityScan[]
+  deployments Deployment[]
+  reports     SecurityReport[]
+
+  @@unique([ownerId, repoFullName])
+  @@index([ownerId])
+  @@index([repoFullName])
+}
+
+model ProjectConfiguration {
+  id                   String   @id @default(cuid())
+  projectId            String   @unique
+  triggerBranches      String[]
+  gitleaksEnabled      Boolean  @default(true)
+  semgrepEnabled       Boolean  @default(true)
+  scaEnabled           Boolean  @default(true)
+  trivyEnabled         Boolean  @default(true)
+  zapEnabled           Boolean  @default(true)
+  securityGateCritical Int      @default(0)
+  securityGateHigh     Int      @default(2)
+  securityGateMedium   Int      @default(10)
+  securityGateLow      Int      @default(-1)
+  createdAt            DateTime @default(now())
+  updatedAt            DateTime @updatedAt
+
+  project Project @relation(fields: [projectId], references: [id], onDelete: Cascade)
+}
+
+// ============================================================
+// PIPELINES
+// ============================================================
+
+model Pipeline {
+  id         String         @id @default(cuid())
+  projectId  String
+  commitSha  String
+  branch     String
+  author     String
+  trigger    String         @default("push")
+  status     PipelineStatus @default(QUEUED)
+  startedAt  DateTime?
+  finishedAt DateTime?
+  durationMs Int?
+  createdAt  DateTime       @default(now())
+  updatedAt  DateTime       @updatedAt
+
+  project     Project              @relation(fields: [projectId], references: [id], onDelete: Cascade)
+  steps       PipelineStep[]
+  logs        PipelineLog[]
+  scans       SecurityScan[]
+  gateResult  SecurityGateResult?
+  deployment  Deployment?
+  report      SecurityReport?
+  dockerImage DockerImage?
+
+  @@index([projectId])
+  @@index([status])
+  @@index([commitSha])
+  @@index([createdAt])
+}
+
+model PipelineStep {
+  id         String     @id @default(cuid())
+  pipelineId String
+  name       String
+  type       String
+  order      Int
+  status     StepStatus @default(QUEUED)
+  startedAt  DateTime?
+  finishedAt DateTime?
+  durationMs Int?
+  exitCode   Int?
+  resultJson Json?
+  error      String?
+  createdAt  DateTime   @default(now())
+  updatedAt  DateTime   @updatedAt
+
+  pipeline Pipeline      @relation(fields: [pipelineId], references: [id], onDelete: Cascade)
+  logs     PipelineLog[]
+
+  @@index([pipelineId])
+  @@index([status])
+  @@unique([pipelineId, order])
+}
+
+model PipelineLog {
+  id         String   @id @default(cuid())
+  pipelineId String
+  stepId     String?
+  level      String   @default("info")
+  message    String
+  sequence   Int      @default(0)
+  createdAt  DateTime @default(now())
+
+  pipeline Pipeline      @relation(fields: [pipelineId], references: [id], onDelete: Cascade)
+  step     PipelineStep? @relation(fields: [stepId], references: [id], onDelete: Cascade)
+
+  @@index([pipelineId])
+  @@index([stepId])
+  @@index([createdAt])
+}
+
+// ============================================================
+// SECURITY
+// ============================================================
+
+model SecurityScan {
+  id            String     @id @default(cuid())
+  pipelineId    String
+  projectId     String
+  scanner       String
+  type          ScanType
+  status        StepStatus @default(QUEUED)
+  criticalCount Int        @default(0)
+  highCount     Int        @default(0)
+  mediumCount   Int        @default(0)
+  lowCount      Int        @default(0)
+  infoCount     Int        @default(0)
+  rawResultJson Json?
+  startedAt     DateTime?
+  finishedAt    DateTime?
+  durationMs    Int?
+  exitCode      Int?
+  createdAt     DateTime   @default(now())
+
+  pipeline        Pipeline        @relation(fields: [pipelineId], references: [id], onDelete: Cascade)
+  project         Project         @relation(fields: [projectId], references: [id], onDelete: Cascade)
+  vulnerabilities Vulnerability[]
+
+  @@index([pipelineId])
+  @@index([projectId])
+  @@index([scanner])
+}
+
+model Vulnerability {
+  id           String   @id @default(cuid())
+  scanId       String
+  tool         String
+  technology   String?
+  severity     Severity
+  packageName  String?
+  filePath     String?
+  version      String?
+  fixedVersion String?
+  description  String?
+  reference    String?
+  detectedAt   DateTime @default(now())
+
+  scan SecurityScan @relation(fields: [scanId], references: [id], onDelete: Cascade)
+
+  @@index([scanId])
+  @@index([severity])
+  @@index([tool])
+}
+
+model SecurityGateResult {
+  id         String             @id @default(cuid())
+  pipelineId String             @unique
+  status     SecurityGateStatus
+  rulesJson  Json
+  critical   Int                @default(0)
+  high       Int                @default(0)
+  medium     Int                @default(0)
+  low        Int                @default(0)
+  blocked    Boolean            @default(false)
+  reason     String?
+  createdAt  DateTime           @default(now())
+
+  pipeline Pipeline @relation(fields: [pipelineId], references: [id], onDelete: Cascade)
+
+  @@index([status])
+}
+
+model DockerImage {
+  id         String   @id @default(cuid())
+  pipelineId String   @unique
+  imageTag   String
+  imageId    String?
+  sizeBytes  BigInt?
+  registry   String?
+  createdAt  DateTime @default(now())
+
+  pipeline Pipeline @relation(fields: [pipelineId], references: [id], onDelete: Cascade)
+}
+
+// ============================================================
+// DEPLOYMENT
+// ============================================================
+
+model DeploymentServer {
+  id                  String         @id @default(cuid())
+  ownerId             String
+  name                String
+  host                String
+  sshPort             Int            @default(22)
+  username            String         @default("deploy")
+  authType            ServerAuthType @default(SSH_KEY)
+  encryptedPrivateKey String?
+  encryptedPassphrase String?
+  status              String         @default("unknown")
+  lastCheckedAt       DateTime?
+  createdAt           DateTime       @default(now())
+  updatedAt           DateTime       @updatedAt
+
+  owner       User         @relation(fields: [ownerId], references: [id], onDelete: Cascade)
+  projects    Project[]
+  deployments Deployment[]
+
+  @@unique([ownerId, name])
+  @@index([ownerId])
+}
+
+model Deployment {
+  id             String           @id @default(cuid())
+  pipelineId     String           @unique
+  projectId      String
+  serverId       String
+  status         DeploymentStatus @default(QUEUED)
+  imageTag       String?
+  releaseVersion String?
+  url            String?
+  startedAt      DateTime?
+  finishedAt     DateTime?
+  durationMs     Int?
+  error          String?
+  createdAt      DateTime         @default(now())
+
+  pipeline Pipeline         @relation(fields: [pipelineId], references: [id], onDelete: Cascade)
+  project  Project          @relation(fields: [projectId], references: [id], onDelete: Cascade)
+  server   DeploymentServer @relation(fields: [serverId], references: [id], onDelete: Restrict)
+
+  @@index([projectId])
+  @@index([serverId])
+  @@index([status])
+}
+
+// ============================================================
+// REPORTS & AUDIT
+// ============================================================
+
+model SecurityReport {
+  id          String   @id @default(cuid())
+  pipelineId  String   @unique
+  projectId   String
+  summaryJson Json
+  htmlPath    String?
+  pdfPath     String?
+  createdAt   DateTime @default(now())
+
+  pipeline Pipeline @relation(fields: [pipelineId], references: [id], onDelete: Cascade)
+  project  Project  @relation(fields: [projectId], references: [id], onDelete: Cascade)
+
+  @@index([projectId])
+}
+
+model AuditLog {
+  id           String   @id @default(cuid())
+  userId       String?
+  action       String
+  targetType   String?
+  targetId     String?
+  metadataJson Json?
+  ip           String?
+  userAgent    String?
+  createdAt    DateTime @default(now())
+
+  user User? @relation(fields: [userId], references: [id], onDelete: SetNull)
+
+  @@index([userId])
+  @@index([action])
+  @@index([createdAt])
+}

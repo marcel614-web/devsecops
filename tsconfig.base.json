@@ -1,0 +1,28 @@
+{
+  "compilerOptions": {
+    "target": "ES2022",
+    "module": "preserve",
+    "moduleResolution": "bundler",
+    "lib": ["ES2022"],
+    "strict": true,
+    "esModuleInterop": true,
+    "skipLibCheck": true,
+    "forceConsistentCasingInFileNames": true,
+    "resolveJsonModule": true,
+    "declaration": false,
+    "sourceMap": true,
+    "noUnusedLocals": false,
+    "noUnusedParameters": false,
+    "noFallthroughCasesInSwitch": true,
+    "paths": {
+      "@devsecops/shared": ["./packages/shared/src"],
+      "@devsecops/pipeline-core": ["./packages/pipeline-core/src"],
+      "@devsecops/technology": ["./packages/technology/src"],
+      "@devsecops/scanners": ["./packages/scanners/src"],
+      "@devsecops/git-providers": ["./packages/git-providers/src"],
+      "@devsecops/secrets": ["./packages/secrets/src"],
+      "@devsecops/logger": ["./packages/logger/src"]
+    }
+  },
+  "exclude": ["node_modules", "dist"]
+}

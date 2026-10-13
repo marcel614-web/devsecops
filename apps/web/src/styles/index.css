@@ -1,0 +1,51 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+@layer base {
+  :root {
+    /* Light mode */
+    --color-bg: 248 250 252;
+    --color-surface: 255 255 255;
+    --color-panel: 241 245 249;
+    --color-border: 226 232 240;
+    --color-muted: 100 116 139;
+  }
+  .dark {
+    /* Dark mode */
+    --color-bg: 15 23 42;
+    --color-surface: 30 41 59;
+    --color-panel: 30 41 59;
+    --color-border: 51 65 85;
+    --color-muted: 148 163 184;
+  }
+
+  html,
+  body,
+  #root {
+    height: 100%;
+  }
+
+  body {
+    @apply bg-bg text-slate-800 dark:text-slate-200;
+    font-family: Inter, system-ui, sans-serif;
+    margin: 0;
+  }
+}
+
+/* Scrollbars fines */
+.scrollbar-thin::-webkit-scrollbar { width: 8px; height: 8px; }
+.scrollbar-thin::-webkit-scrollbar-track { background: transparent; }
+.scrollbar-thin::-webkit-scrollbar-thumb {
+  background: rgb(100 116 139 / 0.4);
+  border-radius: 4px;
+}
+.scrollbar-thin::-webkit-scrollbar-thumb:hover {
+  background: rgb(100 116 139 / 0.7);
+}
+
+/* Focus ring uniforme */
+:focus-visible {
+  outline: 2px solid rgb(59 130 246 / 0.5);
+  outline-offset: 2px;
+}
