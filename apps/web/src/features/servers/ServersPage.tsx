@@ -1,120 +1,187 @@
+// apps/web/src/features/servers/ServersPage.tsx
 import { useState } from "react";
-import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import { Plus, Trash2 } from "lucide-react";
-import { serversApi } from "@/services/servers.api";
-import { Card } from "@/components/ui/Card";
+import { Server, Plus, Trash2, ShieldCheck, ShieldAlert } from "lucide-react";
+import { PageHeader } from "@/components/layout/PageHeader";
 import { Button } from "@/components/ui/Button";
-import { Input } from "@/components/ui/Input";
-import { Select } from "@/components/ui/Select";
+import { Card, CardContent } from "@/components/ui/Card";
+import { SearchInput } from "@/components/ui/SearchInput";
+import { EmptyState } from "@/components/feedback/EmptyState";
+import { ErrorState } from "@/components/feedback/ErrorState";
+import { Skeleton } from "@/components/ui/Skeleton";
+import { ConfirmDialog } from "@/components/ui/ConfirmDialog";
+import { useToast } from "@/components/feedback/Toast";
+import { useDeleteServer, useServers } from "@/hooks/useServers";
+import { CreateServerModal } from "./CreateServerModal";
+import { timeAgo } from "@/lib/utils";
 import { getErrorMessage } from "@/services/api";
-import { timeAgo } from "@/utils/format";
 
 export function ServersPage() {
-  const qc = useQueryClient();
-  const [open, setOpen] = useState(false);
-  const [form, setForm] = useState({
-    name: "", host: "", sshPort: 22, username: "deploy",
-    authType: "SSH_KEY", privateKey: "",
-  });
-  const [error, setError] = useState<string | null>(null);
+  const [search, setSearch] = useState("");
+  const [createOpen, setCreateOpen] = useState(false);
+  const [deleteTarget, setDeleteTarget] = useState<{ id: string; name: string } | null>(null);
+  const toast = useToast();
 
-  const { data, isLoading } = useQuery({
-    queryKey: ["servers"],
-    queryFn: () => serversApi.list({ pageSize: 50 }),
+  const { data, isLoading, isError, error, refetch } = useServers({
+    search: search || undefined,
+    pageSize: 50,
   });
 
-  const createMutation = useMutation({
-    mutationFn: () => serversApi.create({
-      name: form.name,
-      host: form.host,
-      sshPort: Number(form.sshPort),
-      username: form.username,
-      authType: form.authType,
-      privateKey: form.privateKey || undefined,
-    }),
-    onSuccess: () => {
-      qc.invalidateQueries({ queryKey: ["servers"] });
-      setOpen(false);
-      setForm({ name: "", host: "", sshPort: 22, username: "deploy", authType: "SSH_KEY", privateKey: "" });
-      setError(null);
-    },
-    onError: (err) => setError(getErrorMessage(err)),
-  });
+  const deleteMutation = useDeleteServer();
 
-  const deleteMutation = useMutation({
-    mutationFn: (id: string) => serversApi.remove(id),
-    onSuccess: () => qc.invalidateQueries({ queryKey: ["servers"] }),
-    onError: (err) => alert(getErrorMessage(err)),
-  });
+  const handleDelete = async () => {
+    if (!deleteTarget) return;
+    try {
+      await deleteMutation.mutateAsync(deleteTarget.id);
+      toast.show("success", `Serveur "${deleteTarget.name}" supprimé`);
+      setDeleteTarget(null);
+    } catch (err) {
+      toast.show("error", getErrorMessage(err));
+    }
+  };
 
   return (
-    <div className="space-y-6">
-      <div className="flex items-center justify-between">
-        <h1 className="text-2xl font-bold">Serveurs de déploiement</h1>
-        <Button onClick={() => setOpen(true)}><Plus className="w-4 h-4" /> Nouveau serveur</Button>
+    <div>
+      <PageHeader
+        title="Serveurs de déploiement"
+        description="Serveurs SSH cibles pour vos applications"
+        actions={
+          <Button onClick={() => setCreateOpen(true)}>
+            <Plus className="w-4 h-4" /> Nouveau serveur
+          </Button>
+        }
+      />
+
+      <div className="mb-4 max-w-md">
+        <SearchInput
+          value={search}
+          onChange={setSearch}
+          placeholder="Rechercher un serveur…"
+        />
       </div>
 
-      {isLoading && <p>Chargement…</p>}
-
-      <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
-        {data?.items.map((s) => (
-          <Card key={s.id}>
-            <div className="flex items-start justify-between">
-              <div>
-                <h3 className="font-semibold">{s.name}</h3>
-                <p className="text-sm text-slate-400 font-mono mt-1">{s.host}:{s.sshPort}</p>
-                <p className="text-xs text-slate-500 mt-1">user: {s.username} · auth: {s.authType}</p>
-              </div>
-              <button
-                onClick={() => confirm(`Supprimer ${s.name} ?`) && deleteMutation.mutate(s.id)}
-                className="text-slate-500 hover:text-red-400"
-              >
-                <Trash2 className="w-4 h-4" />
-              </button>
-            </div>
-            <div className="mt-3 flex items-center gap-2 text-xs">
-              <span className="px-2 py-0.5 rounded bg-slate-700">{s.status}</span>
-              <span className="text-slate-500">créé {timeAgo(s.createdAt)}</span>
-            </div>
-          </Card>
-        ))}
-      </div>
-
-      {data?.items.length === 0 && (
-        <Card><p className="text-slate-400 text-center py-8">Aucun serveur enregistré.</p></Card>
-      )}
-
-      {open && (
-        <div className="fixed inset-0 bg-black/60 flex items-center justify-center z-50 p-4" onClick={() => setOpen(false)}>
-          <div className="bg-panel border border-border rounded-lg p-6 w-full max-w-lg" onClick={(e) => e.stopPropagation()}>
-            <h2 className="text-xl font-bold mb-4">Nouveau serveur</h2>
-            <form onSubmit={(e) => { e.preventDefault(); createMutation.mutate(); }} className="space-y-3">
-              <Input placeholder="Nom" value={form.name} onChange={(e) => setForm({ ...form, name: e.target.value })} required />
-              <Input placeholder="Hôte (IP ou hostname)" value={form.host} onChange={(e) => setForm({ ...form, host: e.target.value })} required />
-              <div className="grid grid-cols-2 gap-3">
-                <Input type="number" placeholder="Port SSH" value={form.sshPort} onChange={(e) => setForm({ ...form, sshPort: Number(e.target.value) })} />
-                <Input placeholder="Utilisateur" value={form.username} onChange={(e) => setForm({ ...form, username: e.target.value })} />
-              </div>
-              <Select value={form.authType} onChange={(e) => setForm({ ...form, authType: e.target.value })}>
-                <option value="SSH_KEY">Clé SSH</option>
-              </Select>
-              <textarea
-                placeholder="Clé privée (PEM)"
-                value={form.privateKey}
-                onChange={(e) => setForm({ ...form, privateKey: e.target.value })}
-                className="w-full px-3 py-2 rounded-md bg-slate-900 border border-border text-slate-100 focus:outline-none focus:ring-2 focus:ring-blue-500 font-mono text-xs"
-                rows={6}
-                required
-              />
-              {error && <div className="text-red-400 text-sm bg-red-950/50 border border-red-800 rounded p-2">{error}</div>}
-              <div className="flex justify-end gap-2 pt-2">
-                <Button type="button" variant="secondary" onClick={() => setOpen(false)}>Annuler</Button>
-                <Button type="submit" disabled={createMutation.isPending}>Créer</Button>
-              </div>
-            </form>
-          </div>
+      {isLoading && (
+        <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
+          {Array.from({ length: 3 }).map((_, i) => (
+            <Skeleton key={i} className="h-40" />
+          ))}
         </div>
       )}
+
+      {isError && (
+        <ErrorState
+          title="Impossible de charger les serveurs"
+          description={error instanceof Error ? error.message : undefined}
+          onRetry={() => refetch()}
+        />
+      )}
+
+      {data && data.items.length === 0 && !search && (
+        <EmptyState
+          icon={Server}
+          title="Aucun serveur"
+          description="Ajoute ton premier serveur de déploiement."
+          action={
+            <Button onClick={() => setCreateOpen(true)}>
+              <Plus className="w-4 h-4" /> Ajouter un serveur
+            </Button>
+          }
+        />
+      )}
+
+      {data && data.items.length === 0 && search && (
+        <EmptyState title="Aucun résultat" description={`Aucun serveur ne correspond à "${search}".`} />
+      )}
+
+      {data && data.items.length > 0 && (
+        <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
+          {data.items.map((s) => (
+            <Card key={s.id} className="p-5">
+              <div className="flex items-start justify-between gap-2 mb-3">
+                <div className="min-w-0 flex-1">
+                  <h3 className="font-semibold text-base truncate">{s.name}</h3>
+                  <p className="text-sm text-muted font-mono mt-0.5 truncate">
+                    {s.host}:{s.sshPort}
+                  </p>
+                </div>
+                <button
+                  onClick={() => setDeleteTarget({ id: s.id, name: s.name })}
+                  className="text-muted hover:text-red-500 shrink-0 p-1"
+                  title="Supprimer"
+                >
+                  <Trash2 className="w-3.5 h-3.5" />
+                </button>
+              </div>
+
+              <dl className="space-y-1.5 text-xs mb-3">
+                <div className="flex justify-between">
+                  <dt className="text-muted">Utilisateur</dt>
+                  <dd className="font-mono">{s.username}</dd>
+                </div>
+                <div className="flex justify-between">
+                  <dt className="text-muted">Auth</dt>
+                  <dd>
+                    {s.authType === "SSH_KEY" ? "Clé SSH" : "Mot de passe"}
+                    {s.hasPrivateKey && (
+                      <ShieldCheck className="w-3 h-3 inline ml-1 text-emerald-500" />
+                    )}
+                  </dd>
+                </div>
+                {s._count && (
+                  <div className="flex justify-between">
+                    <dt className="text-muted">Projets</dt>
+                    <dd>{s._count.projects}</dd>
+                  </div>
+                )}
+              </dl>
+
+              <div className="flex items-center justify-between text-xs">
+                <span
+                  className={`px-2 py-0.5 rounded ${
+                    s.status === "ok"
+                      ? "bg-emerald-500/15 text-emerald-600 dark:text-emerald-500"
+                      : s.status === "failed"
+                        ? "bg-red-500/15 text-red-600 dark:text-red-500"
+                        : "bg-slate-500/15 text-muted"
+                  }`}
+                >
+                  {s.status === "ok"
+                    ? "Connexion OK"
+                    : s.status === "failed"
+                      ? "Connexion échouée"
+                      : "Non testé"}
+                </span>
+                <span className="text-muted">
+                  Créé {timeAgo(s.createdAt)}
+                </span>
+              </div>
+            </Card>
+          ))}
+        </div>
+      )}
+
+      <CreateServerModal
+        open={createOpen}
+        onClose={() => setCreateOpen(false)}
+        onCreated={(name) => {
+          setCreateOpen(false);
+          toast.show("success", `Serveur "${name}" créé`);
+        }}
+      />
+
+      <ConfirmDialog
+        open={!!deleteTarget}
+        title="Supprimer ce serveur ?"
+        description={
+          deleteTarget
+            ? `Le serveur "${deleteTarget.name}" sera définitivement supprimé. Impossible si des projets y sont associés.`
+            : ""
+        }
+        confirmLabel="Supprimer"
+        danger
+        loading={deleteMutation.isPending}
+        onConfirm={handleDelete}
+        onCancel={() => setDeleteTarget(null)}
+      />
     </div>
   );
 }
