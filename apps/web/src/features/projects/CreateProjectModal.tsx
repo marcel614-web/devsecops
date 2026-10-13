@@ -1,73 +1,126 @@
+// apps/web/src/features/projects/CreateProjectModal.tsx
 import { useState } from "react";
-import { projectsApi } from "@/services/projects.api";
-import { getErrorMessage } from "@/services/api";
+import { useForm } from "react-hook-form";
+import { zodResolver } from "@hookform/resolvers/zod";
+import { z } from "zod";
+import { X } from "lucide-react";
 import { Button } from "@/components/ui/Button";
 import { Input } from "@/components/ui/Input";
 import { Select } from "@/components/ui/Select";
+import { useCreateProject } from "@/hooks/useProjects";
+import { getErrorMessage } from "@/services/api";
 
-interface Props { open: boolean; onClose: () => void; onCreated: () => void; }
+const schema = z.object({
+  name: z.string().trim().min(1, "Nom requis").max(120),
+  description: z.string().trim().max(500).optional().or(z.literal("")),
+  repoFullName: z
+    .string()
+    .trim()
+    .min(3)
+    .regex(
+      /^([A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+|local:.+)$/,
+      "Format attendu : owner/repo ou local:chemin",
+    ),
+  repoId: z.string().trim().min(1, "Requis"),
+  defaultBranch: z.string().trim().min(1).max(120),
+  technology: z.enum(["NODEJS", "PHP", "PYTHON", "UNKNOWN"]),
+});
+
+type FormValues = z.infer<typeof schema>;
+
+interface Props {
+  open: boolean;
+  onClose: () => void;
+  onCreated: (name: string) => void;
+}
 
 export function CreateProjectModal({ open, onClose, onCreated }: Props) {
-  const [form, setForm] = useState({
-    name: "", description: "", repoFullName: "", repoId: "",
-    defaultBranch: "main", technology: "NODEJS",
+  const [serverError, setServerError] = useState<string | null>(null);
+  const createMutation = useCreateProject();
+
+  const {
+    register,
+    handleSubmit,
+    reset,
+    formState: { errors, isSubmitting },
+  } = useForm<FormValues>({
+    resolver: zodResolver(schema),
+    defaultValues: {
+      defaultBranch: "main",
+      technology: "NODEJS",
+    },
   });
-  const [error, setError] = useState<string | null>(null);
-  const [loading, setLoading] = useState(false);
 
   if (!open) return null;
 
-  const handleSubmit = async (e: React.FormEvent) => {
-    e.preventDefault();
-    setError(null);
-    setLoading(true);
+  const onSubmit = async (values: FormValues) => {
+    setServerError(null);
     try {
-      await projectsApi.create({
-        name: form.name,
-        description: form.description || null,
-        repoFullName: form.repoFullName,
-        repoId: form.repoId,
-        defaultBranch: form.defaultBranch,
-        technology: form.technology as "NODEJS" | "PHP" | "PYTHON" | "UNKNOWN",
+      await createMutation.mutateAsync({
+        name: values.name,
+        description: values.description || null,
+        repoFullName: values.repoFullName,
+        repoId: values.repoId,
+        defaultBranch: values.defaultBranch,
+        technology: values.technology,
       });
-      onCreated();
-      setForm({ name: "", description: "", repoFullName: "", repoId: "", defaultBranch: "main", technology: "NODEJS" });
+      onCreated(values.name);
+      reset();
     } catch (err) {
-      setError(getErrorMessage(err));
-    } finally {
-      setLoading(false);
+      setServerError(getErrorMessage(err));
     }
   };
 
   return (
-    <div className="fixed inset-0 bg-black/60 flex items-center justify-center z-50 p-4" onClick={onClose}>
-      <div className="bg-panel border border-border rounded-lg p-6 w-full max-w-lg" onClick={(e) => e.stopPropagation()}>
-        <h2 className="text-xl font-bold mb-4">Nouveau projet</h2>
-        <form onSubmit={handleSubmit} className="space-y-3">
+    <div
+      className="fixed inset-0 z-50 bg-black/60 flex items-center justify-center p-4"
+      onClick={onClose}
+    >
+      <div
+        className="bg-surface border border-border rounded-lg w-full max-w-lg max-h-[90vh] overflow-y-auto scrollbar-thin"
+        onClick={(e) => e.stopPropagation()}
+      >
+        <div className="flex items-center justify-between px-6 py-4 border-b border-border">
+          <h2 className="font-semibold text-lg">Nouveau projet</h2>
+          <button onClick={onClose} className="text-muted hover:text-slate-700 dark:hover:text-slate-200">
+            <X className="w-5 h-5" />
+          </button>
+        </div>
+
+        <form onSubmit={handleSubmit(onSubmit)} className="p-6 space-y-4" noValidate>
           <div>
-            <label className="block text-sm mb-1">Nom</label>
-            <Input value={form.name} onChange={(e) => setForm({ ...form, name: e.target.value })} required />
+            <label className="block text-sm mb-1">Nom du projet *</label>
+            <Input autoFocus {...register("name")} />
+            {errors.name && <p className="text-xs text-red-500 mt-1">{errors.name.message}</p>}
           </div>
+
           <div>
             <label className="block text-sm mb-1">Description</label>
-            <Input value={form.description} onChange={(e) => setForm({ ...form, description: e.target.value })} />
+            <Input {...register("description")} />
           </div>
+
           <div>
-            <label className="block text-sm mb-1">Repo (owner/repo ou local:chemin)</label>
-            <Input value={form.repoFullName} onChange={(e) => setForm({ ...form, repoFullName: e.target.value })} placeholder="user/repo" required />
+            <label className="block text-sm mb-1">Repository *</label>
+            <Input placeholder="owner/repo ou local:chemin" {...register("repoFullName")} />
+            {errors.repoFullName && (
+              <p className="text-xs text-red-500 mt-1">{errors.repoFullName.message}</p>
+            )}
           </div>
+
           <div>
-            <label className="block text-sm mb-1">Repo ID</label>
-            <Input value={form.repoId} onChange={(e) => setForm({ ...form, repoId: e.target.value })} required />
+            <label className="block text-sm mb-1">Repo ID *</label>
+            <Input {...register("repoId")} />
+            {errors.repoId && <p className="text-xs text-red-500 mt-1">{errors.repoId.message}</p>}
           </div>
+
           <div className="grid grid-cols-2 gap-3">
             <div>
               <label className="block text-sm mb-1">Branche par défaut</label>
-              <Input value={form.defaultBranch} onChange={(e) => setForm({ ...form, defaultBranch: e.target.value })} />
+              <Input {...register("defaultBranch")} />
             </div>
             <div>
               <label className="block text-sm mb-1">Technologie</label>
-              <Select value={form.technology} onChange={(e) => setForm({ ...form, technology: e.target.value })}>
+              <Select {...register("technology")}>
                 <option value="NODEJS">Node.js</option>
                 <option value="PHP">PHP</option>
                 <option value="PYTHON">Python</option>
@@ -76,11 +129,19 @@ export function CreateProjectModal({ open, onClose, onCreated }: Props) {
             </div>
           </div>
 
-          {error && <div className="text-red-400 text-sm bg-red-950/50 border border-red-800 rounded p-2">{error}</div>}
+          {serverError && (
+            <div className="text-sm text-red-500 bg-red-500/10 border border-red-500/30 rounded p-2">
+              {serverError}
+            </div>
+          )}
 
           <div className="flex justify-end gap-2 pt-2">
-            <Button type="button" variant="secondary" onClick={onClose}>Annuler</Button>
-            <Button type="submit" disabled={loading}>{loading ? "Création…" : "Créer"}</Button>
+            <Button type="button" variant="secondary" onClick={onClose}>
+              Annuler
+            </Button>
+            <Button type="submit" loading={isSubmitting}>
+              Créer
+            </Button>
           </div>
         </form>
       </div>

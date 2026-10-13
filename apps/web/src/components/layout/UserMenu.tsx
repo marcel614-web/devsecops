@@ -1,7 +1,9 @@
+// apps/web/src/components/layout/UserMenu.tsx
 import { useEffect, useRef, useState } from "react";
 import { useNavigate } from "react-router-dom";
 import { User, LogOut, Settings, ChevronDown } from "lucide-react";
 import { useAuthStore } from "@/stores/authStore";
+import { authService } from "@/services/auth.service";
 
 export function UserMenu() {
   const [open, setOpen] = useState(false);
@@ -16,6 +18,17 @@ export function UserMenu() {
     document.addEventListener("mousedown", onClick);
     return () => document.removeEventListener("mousedown", onClick);
   }, []);
+
+  const handleLogout = async () => {
+    setOpen(false);
+    try {
+      await authService.logout();
+    } catch {
+      // On déconnecte quand même localement
+    }
+    logout();
+    navigate("/login", { replace: true });
+  };
 
   const initials = (user?.name ?? "?")
     .split(" ")
@@ -45,6 +58,7 @@ export function UserMenu() {
               {user?.role ?? "-"}
             </span>
           </div>
+
           <button
             onClick={() => { setOpen(false); navigate("/settings"); }}
             className="w-full flex items-center gap-2 px-4 py-2 text-sm hover:bg-slate-100 dark:hover:bg-slate-700/40"
@@ -58,7 +72,7 @@ export function UserMenu() {
             <User className="w-4 h-4" /> Profil
           </button>
           <button
-            onClick={() => { logout(); navigate("/login"); }}
+            onClick={handleLogout}
             className="w-full flex items-center gap-2 px-4 py-2 text-sm text-red-500 hover:bg-red-500/10"
           >
             <LogOut className="w-4 h-4" /> Déconnexion

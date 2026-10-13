@@ -1,5 +1,8 @@
+// apps/web/src/app/router.tsx
 import { Navigate, Route, Routes } from "react-router-dom";
 import { AppLayout } from "@/components/layout/AppLayout";
+import { GuestRoute, ProtectedRoute, RoleGuard } from "./guards";
+
 import { LoginPage } from "@/features/auth/LoginPage";
 import { RegisterPage } from "@/features/auth/RegisterPage";
 import { DashboardPage } from "@/features/dashboard/DashboardPage";
@@ -21,17 +24,40 @@ import { NotFoundPage } from "@/features/errors/NotFoundPage";
 export function AppRouter() {
   return (
     <Routes>
-      {/* Public */}
-      <Route path="/login" element={<LoginPage />} />
-      <Route path="/register" element={<RegisterPage />} />
+      <Route
+        path="/login"
+        element={
+          <GuestRoute>
+            <LoginPage />
+          </GuestRoute>
+        }
+      />
+      <Route
+        path="/register"
+        element={
+          <GuestRoute>
+            <RegisterPage />
+          </GuestRoute>
+        }
+      />
 
-      {/* App layout */}
-      <Route path="/" element={<AppLayout />}>
+      <Route
+        path="/"
+        element={
+          <ProtectedRoute>
+            <AppLayout />
+          </ProtectedRoute>
+        }
+      >
         <Route index element={<Navigate to="/dashboard" replace />} />
         <Route path="dashboard" element={<DashboardPage />} />
 
         <Route path="projects" element={<ProjectsPage />} />
         <Route path="projects/:projectId" element={<ProjectDetailPage />} />
+        <Route
+          path="projects/:projectId/pipelines/:pipelineId"
+          element={<PipelineDetailPage />}
+        />
 
         <Route path="repositories" element={<RepositoriesPage />} />
 
@@ -43,8 +69,24 @@ export function AppRouter() {
         <Route path="servers" element={<ServersPage />} />
         <Route path="deployments" element={<DeploymentsPage />} />
         <Route path="reports" element={<ReportsPage />} />
-        <Route path="users" element={<UsersPage />} />
-        <Route path="audit-logs" element={<AuditPage />} />
+
+        <Route
+          path="users"
+          element={
+            <RoleGuard roles={["ADMIN"]}>
+              <UsersPage />
+            </RoleGuard>
+          }
+        />
+        <Route
+          path="audit-logs"
+          element={
+            <RoleGuard roles={["ADMIN"]}>
+              <AuditPage />
+            </RoleGuard>
+          }
+        />
+
         <Route path="settings" element={<SettingsPage />} />
 
         <Route path="*" element={<NotFoundPage />} />

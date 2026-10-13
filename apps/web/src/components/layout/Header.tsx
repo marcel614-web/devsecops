@@ -1,14 +1,14 @@
 import { LogOut, User as UserIcon } from "lucide-react";
 import { useNavigate } from "react-router-dom";
 import { useAuthStore } from "@/stores/authStore";
-import { authApi } from "@/services/auth.api";
+import { authService  } from "@/services/auth.service";
 
 export function Header() {
   const { user, logout } = useAuthStore();
   const navigate = useNavigate();
 
   const handleLogout = async () => {
-    try { await authApi.logout(); } catch { /* ignore */ }
+    try { await authService .logout(); } catch { /* ignore */ }
     logout();
     navigate("/login");
   };
