@@ -13,9 +13,11 @@ import {
 
 export const projectsRouter = Router();
 
-// Toutes les routes exigent un utilisateur authentifié.
 projectsRouter.use(requireAuth);
 
+// ------------------------------------------------------------
+// CRUD projets
+// ------------------------------------------------------------
 projectsRouter.get(
   "/",
   validate({ query: projectListQuerySchema }),
@@ -46,6 +48,9 @@ projectsRouter.delete(
   projectsController.deleteProject,
 );
 
+// ------------------------------------------------------------
+// Configuration
+// ------------------------------------------------------------
 projectsRouter.get(
   "/:id/config",
   validate({ params: projectIdParamSchema }),
@@ -56,4 +61,19 @@ projectsRouter.patch(
   "/:id/config",
   validate({ params: projectIdParamSchema, body: updateProjectConfigSchema }),
   projectsController.updateProjectConfig,
+);
+
+// ------------------------------------------------------------
+// Association repository GitHub
+// ------------------------------------------------------------
+projectsRouter.post(
+  "/:id/repository",
+  validate({ params: projectIdParamSchema }),
+  projectsController.associateRepository,
+);
+
+projectsRouter.delete(
+  "/:id/repository",
+  validate({ params: projectIdParamSchema }),
+  projectsController.detachRepository,
 );

@@ -7,6 +7,7 @@ import {
   NotFoundError,
 } from "../../utils/errors";
 import { pipelineQueue } from "../../queues/pipeline.queue";
+import { redisConnection } from "../../queues/connection";
 import type {
   PipelineListQuery,
   PipelineLogsQuery,
@@ -14,6 +15,11 @@ import type {
   RunPipelineInput,
   VulnerabilityListQuery,
 } from "./pipelines.schema";
+
+// Clé Redis partagée avec le worker. Doit correspondre à
+// PIPELINE_CANCEL_PREFIX dans apps/worker/src/utils/cancellation.ts
+const PIPELINE_CANCEL_PREFIX = "pipeline:cancel:";
+const PIPELINE_CANCEL_TTL_SEC = 3600; // 1 h
 
 export interface ActorContext {
   id: string;
@@ -59,8 +65,6 @@ function buildDefaultSteps(config: {
     { name: "Checkout",             type: "CHECKOUT",     order: 1, critical: true  },
     { name: "Technology Detection", type: "DETECTION",    order: 2, critical: true  },
     { name: "Install Dependencies", type: "INSTALL_DEPS", order: 3, critical: true  },
-    // Tests non critique : on veut quand même lancer les scanners de sécurité,
-    // même si les tests échouent. Le Security Gate décidera du blocage final.
     { name: "Tests",                type: "TESTS",        order: 4, critical: false },
   ];
 
@@ -234,6 +238,9 @@ export async function runPipeline(
     return created;
   });
 
+  // Nettoyage préventif d'un éventuel flag d'annulation obsolète
+  await redisConnection.del(`${PIPELINE_CANCEL_PREFIX}${pipeline.id}`);
+
   await pipelineQueue.add(
     "run",
     { pipelineId: pipeline.id },
@@ -267,17 +274,72 @@ export async function cancelPipeline(
     throw new ConflictError("Ce pipeline ne peut plus être annulé");
   }
 
+  // ----------------------------------------------------------
+  // 1. Signal Redis : le worker lira ce flag entre chaque étape
+  //    et s'arrêtera dès qu'il sera posé.
+  // ----------------------------------------------------------
+  await redisConnection.set(
+    `${PIPELINE_CANCEL_PREFIX}${pipelineId}`,
+    "1",
+    "EX",
+    PIPELINE_CANCEL_TTL_SEC,
+  );
+
+  // ----------------------------------------------------------
+  // 2. Marque le pipeline comme CANCELLED immédiatement.
+  //    Le worker ne réécrira pas ce statut (voir pipeline.engine).
+  // ----------------------------------------------------------
+  const now = new Date();
+  const durationMs = pipeline.status === PipelineStatus.RUNNING
+    ? undefined
+    : 0;
+
   await prisma.pipeline.update({
     where: { id: pipelineId },
     data: {
       status: PipelineStatus.CANCELLED,
-      finishedAt: new Date(),
+      finishedAt: now,
+      ...(durationMs !== undefined ? { durationMs } : {}),
     },
   });
 
-  const job = await pipelineQueue.getJob(pipelineId);
-  if (job) {
-    await job.remove().catch(() => undefined);
+  // ----------------------------------------------------------
+  // 3. Marque toutes les étapes encore QUEUED comme CANCELLED.
+  //    Les étapes RUNNING termineront naturellement (le worker
+  //    ne peut pas interrompre un sous-processus en cours).
+  // ----------------------------------------------------------
+  await prisma.pipelineStep.updateMany({
+    where: {
+      pipelineId,
+      status: StepStatus.QUEUED,
+    },
+    data: {
+      status: StepStatus.CANCELLED,
+      finishedAt: now,
+      error: "Annulé par l'utilisateur",
+    },
+  });
+
+  // ----------------------------------------------------------
+  // 4. Retire le job BullMQ s'il est encore en attente.
+  //    Si le job est déjà "active" (worker en cours), on ne
+  //    peut pas le retirer : c'est le flag Redis qui fera foi.
+  // ----------------------------------------------------------
+  try {
+    const job = await pipelineQueue.getJob(pipelineId);
+    if (job) {
+      const state = await job.getState();
+if (
+  state === "waiting" ||
+  state === "delayed" ||
+  state === "prioritized" ||
+  state === "waiting-children"
+) {
+  await job.remove();
+}
+    }
+  } catch {
+    // On ignore : le flag Redis suffit.
   }
 
   await prisma.auditLog.create({
@@ -286,6 +348,9 @@ export async function cancelPipeline(
       action: "PIPELINE_CANCELLED",
       targetType: "Pipeline",
       targetId: pipelineId,
+      metadataJson: {
+        previousStatus: pipeline.status,
+      },
     },
   });
 }

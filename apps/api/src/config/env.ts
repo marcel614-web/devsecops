@@ -1,81 +1,98 @@
 // apps/api/src/config/env.ts
-import "dotenv/config";
+import path from "node:path";
+import fs from "node:fs";
+import dotenv from "dotenv";
 import { z } from "zod";
 
-/**
- * Schema de validation des variables d'environnement.
- * Toute variable absente ou invalide fait planter le démarrage.
- * On ne met JAMAIS de valeur par défaut sur un secret.
- */
+function loadEnvFile(): void {
+  const candidates: string[] = [];
+  if (process.env.DEVSECOPS_ENV_FILE) {
+    candidates.push(process.env.DEVSECOPS_ENV_FILE);
+  }
+  candidates.push(path.resolve(process.cwd(), "../../.env"));
+  candidates.push(path.resolve(process.cwd(), ".env"));
+  candidates.push(path.resolve(__dirname, "../../../../.env"));
+
+  for (const candidate of candidates) {
+    if (fs.existsSync(candidate)) {
+      dotenv.config({ path: candidate, override: false });
+      return;
+    }
+  }
+  console.warn("[api] Aucun fichier .env trouvé. Utilisation de process.env.");
+}
+
+loadEnvFile();
+
 const EnvSchema = z.object({
-  // Runtime
-  NODE_ENV: z
-    .enum(["development", "test", "production"])
-    .default("development"),
+  NODE_ENV: z.enum(["development", "test", "production"]).default("development"),
   LOG_LEVEL: z
     .enum(["fatal", "error", "warn", "info", "debug", "trace"])
     .default("info"),
   API_PORT: z.coerce.number().int().positive().default(4000),
   API_URL: z.string().url().default("http://localhost:4000"),
+  FRONTEND_URL: z.string().url().default("http://localhost:5173"),
+  BACKEND_URL: z.string().url().default("http://localhost:4000"),
 
-  // Base de données
-  DATABASE_URL: z.string().min(1, "DATABASE_URL est requis"),
-
-  // Redis
+  DATABASE_URL: z.string().min(1),
   REDIS_HOST: z.string().min(1).default("localhost"),
   REDIS_PORT: z.coerce.number().int().positive().default(6379),
   REDIS_PASSWORD: z.string().optional().default(""),
 
-  // JWT
-  JWT_ACCESS_SECRET: z.string().min(32, "JWT_ACCESS_SECRET doit faire au moins 32 caractères"),
-  JWT_REFRESH_SECRET: z.string().min(32, "JWT_REFRESH_SECRET doit faire au moins 32 caractères"),
+  JWT_ACCESS_SECRET: z.string().min(32),
+  JWT_REFRESH_SECRET: z.string().min(32),
   JWT_ACCESS_TTL: z.string().default("15m"),
   JWT_REFRESH_TTL: z.string().default("7d"),
 
-  // Argon2id
   ARGON2_MEMORY_COST: z.coerce.number().int().positive().default(19456),
   ARGON2_TIME_COST: z.coerce.number().int().positive().default(2),
   ARGON2_PARALLELISM: z.coerce.number().int().positive().default(1),
 
-  // Chiffrement des secrets (clé maître base64, 32 octets)
-  MASTER_ENCRYPTION_KEY: z
-    .string()
-    .min(1, "MASTER_ENCRYPTION_KEY est requis"),
+  MASTER_ENCRYPTION_KEY: z.string().min(1),
 
-  // GitHub
-  GITHUB_CLIENT_ID: z.string().min(1, "GITHUB_CLIENT_ID est requis"),
-  GITHUB_CLIENT_SECRET: z.string().min(1, "GITHUB_CLIENT_SECRET est requis"),
-  GITHUB_WEBHOOK_SECRET: z.string().min(1, "GITHUB_WEBHOOK_SECRET est requis"),
-  GITHUB_CALLBACK_URL: z.string().url().default("http://localhost:4000/api/github/callback"),
+  // ----- GitHub App -----
+  GITHUB_APP_ID: z.string().min(1, "GITHUB_APP_ID requis"),
+  GITHUB_APP_SLUG: z.string().min(1, "GITHUB_APP_SLUG requis"),
+  GITHUB_APP_PRIVATE_KEY_PATH: z.string().optional(),
+  GITHUB_APP_PRIVATE_KEY: z.string().optional(),
+  GITHUB_APP_WEBHOOK_SECRET: z.string().min(1, "GITHUB_APP_WEBHOOK_SECRET requis"),
+  GITHUB_APP_CLIENT_ID: z.string().optional(),
+  GITHUB_APP_CLIENT_SECRET: z.string().optional(),
 });
 
 export type Env = z.infer<typeof EnvSchema>;
 
-/**
- * Validation immédiate au chargement du module.
- * Si une variable est manquante, on affiche clairement laquelle et on quitte.
- */
 function loadEnv(): Env {
   const parsed = EnvSchema.safeParse(process.env);
-
   if (!parsed.success) {
     const issues = parsed.error.issues
       .map((i) => `  - ${i.path.join(".")}: ${i.message}`)
       .join("\n");
-
-    // Pas de Pino ici : il n'est pas encore chargé, on utilise console.
     console.error("Configuration invalide :\n" + issues);
     process.exit(1);
+  }
+
+  // Vérifie qu'on a bien une clé privée, sous une forme ou une autre
+  if (!parsed.data.GITHUB_APP_PRIVATE_KEY_PATH && !parsed.data.GITHUB_APP_PRIVATE_KEY) {
+    console.error(
+      "Configuration invalide :\n  - Fournis soit GITHUB_APP_PRIVATE_KEY_PATH soit GITHUB_APP_PRIVATE_KEY",
+    );
+    process.exit(1);
+  }
+
+  // Si un chemin est fourni, vérifie qu'il existe
+  if (parsed.data.GITHUB_APP_PRIVATE_KEY_PATH) {
+    const p = path.resolve(parsed.data.GITHUB_APP_PRIVATE_KEY_PATH);
+    if (!fs.existsSync(p)) {
+      console.error(`Clé privée GitHub App introuvable : ${p}`);
+      process.exit(1);
+    }
   }
 
   return parsed.data;
 }
 
 export const env: Env = loadEnv();
-
-/**
- * Drapeaux dérivés pratiques.
- */
 export const isProd = env.NODE_ENV === "production";
 export const isDev = env.NODE_ENV === "development";
 export const isTest = env.NODE_ENV === "test";

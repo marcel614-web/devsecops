@@ -7,6 +7,7 @@ import helmet from "helmet";
 import { HEADER_REQUEST_ID } from "../config/constants";
 import { globalLimiter } from "../middleware/rateLimiter";
 import { errorHandler } from "../middleware/errorHandler";
+import { rawBodyMiddleware } from "../middleware/rawBody";
 import { authRouter } from "../modules/auth/auth.routes";
 import { usersRouter } from "../modules/users/users.routes";
 import { projectsRouter } from "../modules/projects/projects.routes";
@@ -14,6 +15,8 @@ import { pipelinesRouter } from "../modules/pipelines/pipelines.routes";
 import { vulnerabilitiesRouter } from "../modules/vulnerabilities/vulnerabilities.routes";
 import { dashboardRouter } from "../modules/dashboard/dashboard.routes";
 import { serversRouter } from "../modules/servers/servers.routes";
+import { githubRouter } from "../modules/github/github.routes";
+import { githubWebhook } from "../modules/webhooks/webhooks.controller";
 
 export function createApp() {
   const app = express();
@@ -22,6 +25,18 @@ export function createApp() {
   app.use(helmet());
   app.use(cors({ origin: true, credentials: true }));
 
+  // ----------------------------------------------------------
+  // WEBHOOK : corps BRUT requis AVANT express.json()
+  // ----------------------------------------------------------
+  app.post(
+    "/api/webhooks/github",
+    rawBodyMiddleware,
+    githubWebhook,
+  );
+
+  // ----------------------------------------------------------
+  // Parsing JSON
+  // ----------------------------------------------------------
   app.use(express.json({ limit: "1mb" }));
   app.use(express.urlencoded({ extended: true }));
   app.use(cookieParser());
@@ -45,9 +60,9 @@ export function createApp() {
   app.use("/api/users", usersRouter);
   app.use("/api/dashboard", dashboardRouter);
   app.use("/api/servers", serversRouter);
+  app.use("/api/github", githubRouter);
 
-  // ⚠️ Ordre important : les sous-routes avec param doivent être montées
-  // AVANT la route parente qui matche n'importe quel :id.
+  // ⚠️ Ordre important : sous-routes avant la route parente
   app.use("/api/projects/:projectId/pipelines", pipelinesRouter);
   app.use("/api/projects/:projectId/vulnerabilities", vulnerabilitiesRouter);
   app.use("/api/projects", projectsRouter);

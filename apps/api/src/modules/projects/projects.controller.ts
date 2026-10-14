@@ -1,7 +1,8 @@
 // apps/api/src/modules/projects/projects.controller.ts
 import type { NextFunction, Request, Response } from "express";
-import { UnauthorizedError } from "../../utils/errors";
+import { BadRequestError, UnauthorizedError } from "../../utils/errors";
 import * as projectsService from "./projects.service";
+import * as repoService from "../github/repositories.service";
 import type {
   CreateProjectInput,
   ProjectListQuery,
@@ -121,6 +122,55 @@ export async function updateProjectConfig(
       req.body as UpdateProjectConfigInput,
     );
     res.json({ config });
+  } catch (err) {
+    next(err);
+  }
+}
+
+// ------------------------------------------------------------
+// POST /api/projects/:id/repository
+// ------------------------------------------------------------
+export async function associateRepository(
+  req: Request,
+  res: Response,
+  next: NextFunction,
+): Promise<void> {
+  try {
+    const actor = actorFrom(req);
+    const { repositoryId, branch } = req.body as {
+      repositoryId?: string;
+      branch?: string;
+    };
+
+    if (!repositoryId || !branch) {
+      throw new BadRequestError("repositoryId et branch sont requis");
+    }
+
+    const project = await repoService.associateRepositoryToProject(
+      actor.id,
+      req.params.id,
+      repositoryId,
+      branch,
+    );
+
+    res.json({ project });
+  } catch (err) {
+    next(err);
+  }
+}
+
+// ------------------------------------------------------------
+// DELETE /api/projects/:id/repository
+// ------------------------------------------------------------
+export async function detachRepository(
+  req: Request,
+  res: Response,
+  next: NextFunction,
+): Promise<void> {
+  try {
+    const actor = actorFrom(req);
+    await repoService.detachRepositoryFromProject(actor.id, req.params.id);
+    res.status(204).end();
   } catch (err) {
     next(err);
   }
