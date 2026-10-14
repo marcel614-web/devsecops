@@ -50,12 +50,17 @@ const EnvSchema = z.object({
 
   MASTER_ENCRYPTION_KEY: z.string().min(1),
 
-  // ----- GitHub App -----
-  GITHUB_APP_ID: z.string().min(1, "GITHUB_APP_ID requis"),
-  GITHUB_APP_SLUG: z.string().min(1, "GITHUB_APP_SLUG requis"),
+  // ------------------------------------------------------------
+  // GitHub App — TOUTES OPTIONNELLES
+  // Elles seront lues depuis la base au premier usage.
+  // On garde la possibilité de les définir en env pour des scripts
+  // de bootstrap ou de CI.
+  // ------------------------------------------------------------
+  GITHUB_APP_ID: z.string().optional(),
+  GITHUB_APP_SLUG: z.string().optional(),
   GITHUB_APP_PRIVATE_KEY_PATH: z.string().optional(),
   GITHUB_APP_PRIVATE_KEY: z.string().optional(),
-  GITHUB_APP_WEBHOOK_SECRET: z.string().min(1, "GITHUB_APP_WEBHOOK_SECRET requis"),
+  GITHUB_APP_WEBHOOK_SECRET: z.string().optional(),
   GITHUB_APP_CLIENT_ID: z.string().optional(),
   GITHUB_APP_CLIENT_SECRET: z.string().optional(),
 });
@@ -71,24 +76,6 @@ function loadEnv(): Env {
     console.error("Configuration invalide :\n" + issues);
     process.exit(1);
   }
-
-  // Vérifie qu'on a bien une clé privée, sous une forme ou une autre
-  if (!parsed.data.GITHUB_APP_PRIVATE_KEY_PATH && !parsed.data.GITHUB_APP_PRIVATE_KEY) {
-    console.error(
-      "Configuration invalide :\n  - Fournis soit GITHUB_APP_PRIVATE_KEY_PATH soit GITHUB_APP_PRIVATE_KEY",
-    );
-    process.exit(1);
-  }
-
-  // Si un chemin est fourni, vérifie qu'il existe
-  if (parsed.data.GITHUB_APP_PRIVATE_KEY_PATH) {
-    const p = path.resolve(parsed.data.GITHUB_APP_PRIVATE_KEY_PATH);
-    if (!fs.existsSync(p)) {
-      console.error(`Clé privée GitHub App introuvable : ${p}`);
-      process.exit(1);
-    }
-  }
-
   return parsed.data;
 }
 

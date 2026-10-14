@@ -29,7 +29,9 @@ export interface CreateProjectInput {
 
 export const projectService = {
   list: (params?: ListProjectsParams) =>
-    api.get<Paginated<Project>>("/api/projects", { params }).then((r) => r.data),
+    api
+      .get<Paginated<Project>>("/api/projects", { params })
+      .then((r) => r.data),
 
   get: (id: string) =>
     api
@@ -37,10 +39,14 @@ export const projectService = {
       .then((r) => r.data.project),
 
   create: (data: CreateProjectInput) =>
-    api.post<{ project: Project }>("/api/projects", data).then((r) => r.data.project),
+    api
+      .post<{ project: Project }>("/api/projects", data)
+      .then((r) => r.data.project),
 
   update: (id: string, data: Partial<Project>) =>
-    api.patch<{ project: Project }>(`/api/projects/${id}`, data).then((r) => r.data.project),
+    api
+      .patch<{ project: Project }>(`/api/projects/${id}`, data)
+      .then((r) => r.data.project),
 
   remove: (id: string) => api.delete(`/api/projects/${id}`),
 
@@ -51,6 +57,23 @@ export const projectService = {
 
   updateConfig: (id: string, data: Partial<ProjectConfiguration>) =>
     api
-      .patch<{ config: ProjectConfiguration }>(`/api/projects/${id}/config`, data)
+      .patch<{ config: ProjectConfiguration }>(
+        `/api/projects/${id}/config`,
+        data,
+      )
       .then((r) => r.data.config),
+
+  // ------------------------------------------------------------
+  // Association repository GitHub
+  // ------------------------------------------------------------
+  associateRepository: (projectId: string, repositoryId: string, branch: string) =>
+    api
+      .post<{ project: unknown }>(`/api/projects/${projectId}/repository`, {
+        repositoryId,
+        branch,
+      })
+      .then((r) => r.data.project),
+
+  detachRepository: (projectId: string) =>
+    api.delete(`/api/projects/${projectId}/repository`),
 };

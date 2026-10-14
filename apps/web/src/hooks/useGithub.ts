@@ -2,35 +2,55 @@
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { githubService } from "@/services/github.service";
 
-export function useGithubStatus() {
+export function useGithubInstallations() {
   return useQuery({
-    queryKey: ["github", "status"],
-    queryFn: githubService.status,
+    queryKey: ["github", "installations"],
+    queryFn: githubService.listInstallations,
     refetchInterval: 30_000,
   });
 }
 
-export function useGithubRepos(enabled: boolean) {
+export function useGithubRepositories(
+  params: {
+    installationId?: string;
+    search?: string;
+    private?: boolean;
+    page?: number;
+  } = {},
+  enabled: boolean = true,
+) {
   return useQuery({
-    queryKey: ["github", "repos"],
-    queryFn: () => githubService.listRepos({ perPage: 100, sort: "updated" }),
+    queryKey: ["github", "repositories", params],
+    queryFn: () => githubService.listRepositories({ ...params, pageSize: 30 }),
     enabled,
-    staleTime: 60_000,
+    staleTime: 30_000,
   });
 }
 
-export function useGithubBranches(owner: string | null, repo: string | null) {
+export function useGithubBranches(repositoryId: string | null) {
   return useQuery({
-    queryKey: ["github", "branches", owner, repo],
-    queryFn: () => githubService.listBranches(owner!, repo!),
-    enabled: !!owner && !!repo,
+    queryKey: ["github", "branches", repositoryId],
+    queryFn: () => githubService.listBranches(repositoryId!),
+    enabled: !!repositoryId,
   });
 }
 
-export function useDisconnectGithub() {
+export function useRevokeInstallation() {
   const qc = useQueryClient();
   return useMutation({
-    mutationFn: githubService.disconnect,
+    mutationFn: (installationId: string) =>
+      githubService.revokeInstallation(installationId),
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: ["github"] });
+    },
+  });
+}
+
+export function useSyncInstallation() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: (installationId: string) =>
+      githubService.syncInstallation(installationId),
     onSuccess: () => {
       qc.invalidateQueries({ queryKey: ["github"] });
     },

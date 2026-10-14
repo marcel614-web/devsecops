@@ -2,44 +2,60 @@
 import type { Request, Response } from "express";
 import crypto from "node:crypto";
 import { PipelineStatus, StepStatus } from "@prisma/client";
-import { env } from "../../config/env";
 import { logger } from "../../utils/logger";
 import { prisma } from "../../utils/prisma";
 import { pipelineQueue } from "../../queues/pipeline.queue";
 import * as installService from "../github/installations.service";
+import { getGithubConfigInternal } from "../system-config/system-config.service";
 
-const WEBHOOK_SECRET = env.GITHUB_APP_WEBHOOK_SECRET;
-
-// ------------------------------------------------------------
+// ============================================================
 // VÉRIFICATION SIGNATURE
-// ------------------------------------------------------------
-function verifySignature(rawBody: string, signature: string | undefined): boolean {
+// ============================================================
+
+async function verifySignature(
+  rawBody: string,
+  signature: string | undefined,
+): Promise<boolean> {
   if (!signature || !signature.startsWith("sha256=")) return false;
 
+  const config = await getGithubConfigInternal();
+  if (!config) {
+    logger.warn("Webhook reçu mais GitHub App non configurée");
+    return false;
+  }
+
   const expected = `sha256=${crypto
-    .createHmac("sha256", WEBHOOK_SECRET)
+    .createHmac("sha256", config.webhookSecret)
     .update(rawBody)
     .digest("hex")}`;
 
   try {
-    return crypto.timingSafeEqual(Buffer.from(signature), Buffer.from(expected));
+    return crypto.timingSafeEqual(
+      Buffer.from(signature),
+      Buffer.from(expected),
+    );
   } catch {
     return false;
   }
 }
 
-// ------------------------------------------------------------
+// ============================================================
 // HANDLER PRINCIPAL
-// ------------------------------------------------------------
-export async function githubWebhook(req: Request, res: Response): Promise<void> {
+// ============================================================
+
+export async function githubWebhook(
+  req: Request,
+  res: Response,
+): Promise<void> {
   const event = req.headers["x-github-event"] as string;
   const delivery = req.headers["x-github-delivery"] as string;
   const signature = req.headers["x-hub-signature-256"] as string | undefined;
 
-  // 1. Vérification signature
+  // 1. Vérification signature (asynchrone car secret lu en base)
   const rawBody = (req as Request & { rawBody?: string }).rawBody ?? "";
 
-  if (!verifySignature(rawBody, signature)) {
+  const valid = await verifySignature(rawBody, signature);
+  if (!valid) {
     logger.warn({ delivery }, "Webhook GitHub : signature invalide");
     res.status(401).json({ error: "Invalid signature" });
     return;
@@ -50,7 +66,6 @@ export async function githubWebhook(req: Request, res: Response): Promise<void> 
 
   // 3. Traitement asynchrone
   try {
-    // Idempotence : ignore les livraisons déjà traitées
     const already = await prisma.webhookEvent.findUnique({
       where: { deliveryId: delivery },
       select: { id: true, processedAt: true },
@@ -60,7 +75,6 @@ export async function githubWebhook(req: Request, res: Response): Promise<void> 
       return;
     }
 
-    // Enregistre l'événement
     const payload = JSON.parse(rawBody);
     const webhookRecord = await prisma.webhookEvent.upsert({
       where: { deliveryId: delivery },
@@ -94,14 +108,8 @@ export async function githubWebhook(req: Request, res: Response): Promise<void> 
         logger.info({ delivery }, "Ping GitHub reçu (setup OK)");
         break;
 
-      case "pull_request":
-      case "create":
-      case "delete":
-        logger.debug({ event }, "Événement GitHub ignoré (non traité)");
-        break;
-
       default:
-        logger.debug({ event }, "Événement GitHub inconnu");
+        logger.debug({ event }, "Événement GitHub ignoré");
     }
 
     await prisma.webhookEvent.update({
@@ -125,9 +133,10 @@ export async function githubWebhook(req: Request, res: Response): Promise<void> 
   }
 }
 
-// ------------------------------------------------------------
+// ============================================================
 // PUSH HANDLER
-// ------------------------------------------------------------
+// ============================================================
+
 interface PushEvent {
   ref: string;
   before: string;
@@ -158,7 +167,7 @@ async function handlePush(payload: PushEvent, webhookRecordId: string) {
     "Push GitHub reçu",
   );
 
-  // Trouve le repository en base (via GitHubRepository.repositoryId)
+  // Trouve le repository en base
   const repo = await prisma.gitHubRepository.findFirst({
     where: { repositoryId: repoId },
     select: {
@@ -173,7 +182,10 @@ async function handlePush(payload: PushEvent, webhookRecordId: string) {
     return;
   }
   if (repo.installation.revokedAt || repo.installation.suspendedAt) {
-    logger.warn({ repoId }, "Installation révoquée ou suspendue — push ignoré");
+    logger.warn(
+      { repoId },
+      "Installation révoquée ou suspendue — push ignoré",
+    );
     return;
   }
 
@@ -217,22 +229,89 @@ async function handlePush(payload: PushEvent, webhookRecordId: string) {
       });
 
       const config = project.config;
-      const steps: Array<{ name: string; type: string; order: number; critical: boolean }> = [
+      const steps: Array<{
+        name: string;
+        type: string;
+        order: number;
+        critical: boolean;
+      }> = [
         { name: "Checkout", type: "CHECKOUT", order: 1, critical: true },
-        { name: "Technology Detection", type: "DETECTION", order: 2, critical: true },
-        { name: "Install Dependencies", type: "INSTALL_DEPS", order: 3, critical: true },
+        {
+          name: "Technology Detection",
+          type: "DETECTION",
+          order: 2,
+          critical: true,
+        },
+        {
+          name: "Install Dependencies",
+          type: "INSTALL_DEPS",
+          order: 3,
+          critical: true,
+        },
         { name: "Tests", type: "TESTS", order: 4, critical: false },
       ];
       let order = 5;
-      if (config?.gitleaksEnabled) steps.push({ name: "Gitleaks", type: "SECRET_SCAN", order: order++, critical: false });
-      if (config?.semgrepEnabled) steps.push({ name: "Semgrep", type: "SAST", order: order++, critical: false });
-      if (config?.scaEnabled) steps.push({ name: "SCA", type: "SCA", order: order++, critical: false });
-      steps.push({ name: "Docker Build", type: "DOCKER_BUILD", order: order++, critical: true });
-      steps.push({ name: "Trivy", type: "IMAGE_SCAN", order: order++, critical: false });
-      steps.push({ name: "Security Gate", type: "SECURITY_GATE", order: order++, critical: true });
-      steps.push({ name: "Deployment", type: "DEPLOYMENT", order: order++, critical: false });
-      if (config?.zapEnabled) steps.push({ name: "OWASP ZAP", type: "DAST", order: order++, critical: false });
-      steps.push({ name: "Final Report", type: "REPORT", order: order++, critical: false });
+
+      if (config?.gitleaksEnabled) {
+        steps.push({
+          name: "Gitleaks",
+          type: "SECRET_SCAN",
+          order: order++,
+          critical: false,
+        });
+      }
+      if (config?.semgrepEnabled) {
+        steps.push({
+          name: "Semgrep",
+          type: "SAST",
+          order: order++,
+          critical: false,
+        });
+      }
+      if (config?.scaEnabled) {
+        steps.push({ name: "SCA", type: "SCA", order: order++, critical: false });
+      }
+
+      steps.push({
+        name: "Docker Build",
+        type: "DOCKER_BUILD",
+        order: order++,
+        critical: true,
+      });
+      steps.push({
+        name: "Trivy",
+        type: "IMAGE_SCAN",
+        order: order++,
+        critical: false,
+      });
+      steps.push({
+        name: "Security Gate",
+        type: "SECURITY_GATE",
+        order: order++,
+        critical: true,
+      });
+      steps.push({
+        name: "Deployment",
+        type: "DEPLOYMENT",
+        order: order++,
+        critical: false,
+      });
+
+      if (config?.zapEnabled) {
+        steps.push({
+          name: "OWASP ZAP",
+          type: "DAST",
+          order: order++,
+          critical: false,
+        });
+      }
+
+      steps.push({
+        name: "Final Report",
+        type: "REPORT",
+        order: order++,
+        critical: false,
+      });
 
       await tx.pipelineStep.createMany({
         data: steps.map((s) => ({
@@ -263,14 +342,12 @@ async function handlePush(payload: PushEvent, webhookRecordId: string) {
       return created;
     });
 
-    // Enqueue
     await pipelineQueue.add(
       "run",
       { pipelineId: pipeline.id },
       { jobId: pipeline.id },
     );
 
-    // Associe le pipeline à l'événement webhook
     await prisma.webhookEvent.update({
       where: { id: webhookRecordId },
       data: { projectId: project.id, pipelineId: pipeline.id },
@@ -283,9 +360,10 @@ async function handlePush(payload: PushEvent, webhookRecordId: string) {
   }
 }
 
-// ------------------------------------------------------------
+// ============================================================
 // INSTALLATION_REPOSITORIES HANDLER
-// ------------------------------------------------------------
+// ============================================================
+
 async function handleInstallationRepositories(payload: {
   action: string;
   installation: { id: number };
@@ -303,7 +381,6 @@ async function handleInstallationRepositories(payload: {
     return;
   }
 
-  // Resync complet (le plus simple et le plus fiable)
   await installService.syncRepositories(installationId);
 
   logger.info(

@@ -23,7 +23,7 @@ export async function startInstall(
 ): Promise<void> {
   try {
     const actor = actorFrom(req);
-    const url = appService.buildInstallUrl(actor.id);
+    const url = await appService.buildInstallUrl(actor.id);
     res.json({ url });
   } catch (err) {
     next(err);
@@ -55,7 +55,7 @@ export async function setupCallback(
 
     let userId: string;
     try {
-      const decoded = appService.verifyInstallState(state);
+      const decoded = await appService.verifyInstallState(state);
       userId = decoded.userId;
     } catch {
       return res.redirect(

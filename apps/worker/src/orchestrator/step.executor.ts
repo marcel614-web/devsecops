@@ -8,10 +8,11 @@ import { testsStep } from "../steps/tests/tests.step";
 import { gitleaksStep } from "../steps/security-scans/gitleaks.step";
 import { semgrepStep } from "../steps/security-scans/semgrep.step";
 import { scaStep } from "../steps/security-scans/sca.step";
-import { securityGateStep } from "../steps/security-gate/security-gate.step";
-import { finalReportStep } from "../steps/report/final-report.step";
 import { dockerBuildStep } from "../steps/docker-build/docker-build.step";
 import { trivyStep } from "../steps/image-scan/trivy.step";
+import { securityGateStep } from "../steps/security-gate/security-gate.step";
+import { deploymentStep } from "../steps/deployment/deployment.step";
+import { finalReportStep } from "../steps/report/final-report.step";
 
 export const execFileAsync = promisify(execFile);
 
@@ -27,6 +28,12 @@ export interface StepContext {
     level: "info" | "warn" | "error" | "debug",
     message: string,
   ) => Promise<void>;
+  /**
+   * Vérifie si une demande d'annulation est active pour ce pipeline.
+   * Les étapes longues (build, install) peuvent l'appeler périodiquement
+   * et abandonner si le retour est `true`.
+   */
+  isCancelled: () => Promise<boolean>;
 }
 
 export interface StepResult {
@@ -52,6 +59,7 @@ const HANDLERS: Record<string, StepHandler> = {
   DOCKER_BUILD: dockerBuildStep,
   IMAGE_SCAN: trivyStep,
   SECURITY_GATE: securityGateStep,
+  DEPLOYMENT: deploymentStep,
   REPORT: finalReportStep,
 };
 

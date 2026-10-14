@@ -10,8 +10,8 @@ import { Select } from "@/components/ui/Select";
 import { useCreateProject } from "@/hooks/useProjects";
 import {
   useGithubBranches,
-  useGithubRepos,
-  useGithubStatus,
+  useGithubInstallations,
+  useGithubRepositories,
 } from "@/hooks/useGithub";
 import { getErrorMessage } from "@/services/api";
 import { cn } from "@/lib/utils";
@@ -37,21 +37,22 @@ export function CreateProjectModal({ open, onClose, onCreated }: Props) {
   const [serverError, setServerError] = useState<string | null>(null);
   const [useGithubPicker, setUseGithubPicker] = useState(false);
   const [selectedRepo, setSelectedRepo] = useState<string | null>(null);
+  const [selectedRepoId, setSelectedRepoId] = useState<string | null>(null);
   const [repoDropdownOpen, setRepoDropdownOpen] = useState(false);
 
   const createMutation = useCreateProject();
-  const { data: ghStatus } = useGithubStatus();
-  const { data: ghRepos, isLoading: reposLoading } = useGithubRepos(
-    open && useGithubPicker && !!ghStatus?.connected,
+  const { data: installations } = useGithubInstallations();
+  const githubInstallations = installations ?? [];
+  const hasGithub = githubInstallations.length > 0;
+  const connectedInstall = githubInstallations[0] ?? null;
+
+  const { data: ghRepos, isLoading: reposLoading } = useGithubRepositories(
+    {},
+    open && useGithubPicker && hasGithub,
   );
 
-  const [owner, repo] = selectedRepo
-    ? selectedRepo.split("/")
-    : [null, null];
-
   const { data: branches, isLoading: branchesLoading } = useGithubBranches(
-    owner,
-    repo,
+    selectedRepoId,
   );
 
   const {
@@ -75,6 +76,7 @@ export function CreateProjectModal({ open, onClose, onCreated }: Props) {
   useEffect(() => {
     if (!open) {
       setSelectedRepo(null);
+      setSelectedRepoId(null);
       setServerError(null);
       setUseGithubPicker(false);
       setRepoDropdownOpen(false);
@@ -83,10 +85,11 @@ export function CreateProjectModal({ open, onClose, onCreated }: Props) {
 
   if (!open) return null;
 
-  const handleSelectRepo = (fullName: string, repoId: number, defaultBranch: string) => {
+  const handleSelectRepo = (fullName: string, repoId: string, defaultBranch: string) => {
     setSelectedRepo(fullName);
+    setSelectedRepoId(repoId);
     setValue("repoFullName", fullName, { shouldValidate: true });
-    setValue("repoId", String(repoId), { shouldValidate: true });
+    setValue("repoId", repoId, { shouldValidate: true });
     setValue("defaultBranch", defaultBranch, { shouldValidate: true });
     setRepoDropdownOpen(false);
   };
@@ -150,7 +153,7 @@ export function CreateProjectModal({ open, onClose, onCreated }: Props) {
           {/* --------------------------------------------------
               Sélecteur GitHub
           -------------------------------------------------- */}
-          {ghStatus?.connected && (
+          {hasGithub && (
             <div className="flex items-center gap-2">
               <button
                 type="button"
@@ -168,12 +171,12 @@ export function CreateProjectModal({ open, onClose, onCreated }: Props) {
                   : "Sélectionner depuis GitHub"}
               </button>
               <span className="text-xs text-muted">
-                (connecté : {ghStatus.login})
+                (connecté : {connectedInstall?.accountLogin})
               </span>
             </div>
           )}
 
-          {useGithubPicker && ghStatus?.connected ? (
+          {useGithubPicker && hasGithub ? (
             <div className="space-y-3">
               {/* Sélecteur de repo */}
               <div>
@@ -197,30 +200,30 @@ export function CreateProjectModal({ open, onClose, onCreated }: Props) {
                       {reposLoading && (
                         <p className="p-3 text-xs text-muted">Chargement…</p>
                       )}
-                      {ghRepos?.repositories.map((r) => (
+                      {ghRepos?.items.map((r) => (
                         <button
                           key={r.id}
                           type="button"
                           onClick={() =>
                             handleSelectRepo(
-                              r.full_name,
+                              r.fullName,
                               r.id,
-                              r.default_branch,
+                              r.defaultBranch,
                             )
                           }
                           className="w-full flex items-center gap-2 px-3 py-2 text-left text-sm hover:bg-slate-100 dark:hover:bg-slate-700"
                         >
-                          {r.full_name === selectedRepo && (
+                          {r.fullName === selectedRepo && (
                             <Check className="w-3.5 h-3.5 text-primary-500 shrink-0" />
                           )}
-                          <span className="flex-1 truncate">{r.full_name}</span>
+                          <span className="flex-1 truncate">{r.fullName}</span>
                           <span className="text-[10px] text-muted">
                             {r.private ? "🔒" : "🌐"}
                           </span>
                         </button>
                       ))}
                       {!reposLoading &&
-                        ghRepos?.repositories.length === 0 && (
+                        ghRepos?.items.length === 0 && (
                           <p className="p-3 text-xs text-muted">
                             Aucun repository
                           </p>

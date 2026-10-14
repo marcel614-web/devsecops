@@ -16,6 +16,7 @@ import { vulnerabilitiesRouter } from "../modules/vulnerabilities/vulnerabilitie
 import { dashboardRouter } from "../modules/dashboard/dashboard.routes";
 import { serversRouter } from "../modules/servers/servers.routes";
 import { githubRouter } from "../modules/github/github.routes";
+import { systemConfigRouter } from "../modules/system-config/system-config.routes";
 import { githubWebhook } from "../modules/webhooks/webhooks.controller";
 
 export function createApp() {
@@ -41,38 +42,59 @@ export function createApp() {
   app.use(express.urlencoded({ extended: true }));
   app.use(cookieParser());
 
+  // ----------------------------------------------------------
+  // Request ID
+  // ----------------------------------------------------------
   app.use((req, res, next) => {
     const headerId = req.headers[HEADER_REQUEST_ID];
     const id =
-      (Array.isArray(headerId) ? headerId[0] : headerId) ?? crypto.randomUUID();
+      (Array.isArray(headerId) ? headerId[0] : headerId) ??
+      crypto.randomUUID();
     res.locals.requestId = id;
     res.setHeader(HEADER_REQUEST_ID, id);
     next();
   });
 
+  // ----------------------------------------------------------
+  // Santé
+  // ----------------------------------------------------------
   app.get("/health", (_req, res) => {
     res.json({ status: "ok" });
   });
 
+  // ----------------------------------------------------------
+  // Rate limiting global
+  // ----------------------------------------------------------
   app.use(globalLimiter);
 
+  // ----------------------------------------------------------
+  // Routes
+  // ----------------------------------------------------------
   app.use("/api/auth", authRouter);
   app.use("/api/users", usersRouter);
   app.use("/api/dashboard", dashboardRouter);
   app.use("/api/servers", serversRouter);
   app.use("/api/github", githubRouter);
+  app.use("/api/system-config", systemConfigRouter);
 
-  // ⚠️ Ordre important : sous-routes avant la route parente
+  // ⚠️ Ordre important : sous-routes AVANT la route parente
   app.use("/api/projects/:projectId/pipelines", pipelinesRouter);
   app.use("/api/projects/:projectId/vulnerabilities", vulnerabilitiesRouter);
   app.use("/api/projects", projectsRouter);
 
+  // ----------------------------------------------------------
+  // 404
+  // ----------------------------------------------------------
   app.use((_req, res) => {
     res.status(404).json({
       error: { code: "NOT_FOUND", message: "Route introuvable" },
     });
   });
 
+  // ----------------------------------------------------------
+  // Gestion d'erreurs (en dernier)
+  // ----------------------------------------------------------
   app.use(errorHandler);
+
   return app;
 }

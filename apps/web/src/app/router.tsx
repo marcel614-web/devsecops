@@ -19,11 +19,15 @@ import { ReportsPage } from "@/features/reports/ReportsPage";
 import { UsersPage } from "@/features/users/UsersPage";
 import { AuditPage } from "@/features/audit/AuditPage";
 import { SettingsPage } from "@/features/settings/SettingsPage";
+import { GithubSettingsPage } from "@/features/settings/GithubSettingsPage";
 import { NotFoundPage } from "@/features/errors/NotFoundPage";
 
 export function AppRouter() {
   return (
     <Routes>
+      {/* ------------------------------------------------------
+          Routes publiques (non authentifié uniquement)
+      ------------------------------------------------------ */}
       <Route
         path="/login"
         element={
@@ -41,6 +45,9 @@ export function AppRouter() {
         }
       />
 
+      {/* ------------------------------------------------------
+          Routes protégées
+      ------------------------------------------------------ */}
       <Route
         path="/"
         element={
@@ -50,8 +57,11 @@ export function AppRouter() {
         }
       >
         <Route index element={<Navigate to="/dashboard" replace />} />
+
+        {/* Dashboard */}
         <Route path="dashboard" element={<DashboardPage />} />
 
+        {/* Projets */}
         <Route path="projects" element={<ProjectsPage />} />
         <Route path="projects/:projectId" element={<ProjectDetailPage />} />
         <Route
@@ -59,17 +69,25 @@ export function AppRouter() {
           element={<PipelineDetailPage />}
         />
 
+        {/* Repositories GitHub */}
         <Route path="repositories" element={<RepositoriesPage />} />
 
+        {/* Pipelines */}
         <Route path="pipelines" element={<PipelinesPage />} />
         <Route path="pipelines/:pipelineId" element={<PipelineDetailPage />} />
 
+        {/* Sécurité */}
         <Route path="security" element={<SecurityPage />} />
         <Route path="vulnerabilities" element={<VulnerabilitiesPage />} />
+
+        {/* Déploiement */}
         <Route path="servers" element={<ServersPage />} />
         <Route path="deployments" element={<DeploymentsPage />} />
+
+        {/* Rapports */}
         <Route path="reports" element={<ReportsPage />} />
 
+        {/* Admin uniquement */}
         <Route
           path="users"
           element={
@@ -87,8 +105,18 @@ export function AppRouter() {
           }
         />
 
+        {/* Paramètres */}
         <Route path="settings" element={<SettingsPage />} />
+        <Route
+          path="settings/github"
+          element={
+            <RoleGuard roles={["ADMIN"]}>
+              <GithubSettingsPage />
+            </RoleGuard>
+          }
+        />
 
+        {/* 404 catch-all dans le layout */}
         <Route path="*" element={<NotFoundPage />} />
       </Route>
     </Routes>

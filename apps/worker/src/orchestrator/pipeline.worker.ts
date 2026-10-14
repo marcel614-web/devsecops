@@ -18,11 +18,9 @@ export function startPipelineWorker(): Worker<PipelineJobData> {
     {
       connection: redisConnection,
       concurrency: 1,
-      // Le job peut durer jusqu'à 30 min (Docker build).
-      // On augmente le lock pour éviter la perte de job.
-      lockDuration: 30 * 60_000, // 30 min
-      lockRenewTime: 5 * 60_000, // renouvelle toutes les 5 min
-      stalledInterval: 60_000, // vérifie les jobs stalled toutes les 60s
+      lockDuration: 30 * 60_000,
+      lockRenewTime: 5 * 60_000,
+      stalledInterval: 60_000,
       maxStalledCount: 2,
     },
   );
@@ -36,6 +34,11 @@ export function startPipelineWorker(): Worker<PipelineJobData> {
   });
 
   worker.on("error", (err) => {
+    // Ignore les erreurs de lock (job retiré manuellement).
+    if (err.message.includes("Missing lock") || err.message.includes("could not renew lock")) {
+      logger.debug({ err: err.message }, "Job retiré — lock perdu (attendu)");
+      return;
+    }
     logger.error({ err: err.message }, "Worker erreur");
   });
 

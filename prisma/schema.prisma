@@ -97,32 +97,71 @@ model User {
   createdAt    DateTime @default(now())
   updatedAt    DateTime @updatedAt
 
-  projects         Project[]
-  githubConnection GitHubConnection?
-  servers          DeploymentServer[]
-  auditLogs        AuditLog[]
+  projects            Project[]
+  githubInstallations GitHubInstallation[]
+  servers             DeploymentServer[]
+  auditLogs           AuditLog[]
 
   @@index([email])
   @@index([role])
 }
 
-model GitHubConnection {
-  id                   String   @id @default(cuid())
-  userId               String   @unique
-  githubUserId         String
-  login                String
-  accessTokenEncrypted String
-  scopes               String?
-  createdAt            DateTime @default(now())
-  updatedAt            DateTime @updatedAt
+// ============================================================
+// GITHUB APP
+// ============================================================
 
-  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+/// Une installation GitHub App (peut être un compte perso ou une organisation).
+/// Un utilisateur peut avoir plusieurs installations (perso + orgs).
+model GitHubInstallation {
+  id             String    @id @default(cuid())
+  installationId String    @unique // ID numérique GitHub (stocké en string)
+  accountLogin   String // "marcel614-web" ou "mon-org"
+  accountType    String // "User" | "Organization"
+  accountId      String // ID GitHub du compte
+  targetType     String // "User" | "Organization"
+  userId         String // propriétaire côté plateforme
+  suspendedAt    DateTime?
+  revokedAt      DateTime?
+  createdAt      DateTime  @default(now())
+  updatedAt      DateTime  @updatedAt
 
-  @@index([githubUserId])
+  owner        User               @relation(fields: [userId], references: [id], onDelete: Cascade)
+  repositories GitHubRepository[]
+
+  @@index([userId])
+  @@index([accountLogin])
+  @@index([revokedAt])
+}
+
+/// Un repository accessible via une installation GitHub App.
+/// Synchronisé depuis l'API GitHub à la demande.
+model GitHubRepository {
+  id             String   @id @default(cuid())
+  repositoryId   String // ID numérique GitHub (stocké en string)
+  fullName       String // "owner/repo"
+  owner          String
+  name           String
+  private        Boolean  @default(false)
+  defaultBranch  String   @default("main")
+  language       String?
+  description    String?
+  htmlUrl        String
+  installationId String // FK vers GitHubInstallation.id (pas l'ID GitHub)
+  lastSyncedAt   DateTime @default(now())
+  createdAt      DateTime @default(now())
+  updatedAt      DateTime @updatedAt
+
+  installation GitHubInstallation @relation(fields: [installationId], references: [id], onDelete: Cascade)
+  projects     Project[]
+
+  @@unique([installationId, repositoryId])
+  @@index([installationId])
+  @@index([fullName])
+  @@index([repositoryId])
 }
 
 // ============================================================
-// PROJECTS & REPOSITORIES
+// PROJECTS
 // ============================================================
 
 model Project {
@@ -131,26 +170,30 @@ model Project {
   name              String
   description       String?
   provider          GitProvider @default(GITHUB)
-  repoFullName      String
-  repoId            String
+  repoFullName      String // gardé pour compat + affichage rapide
+  repoId            String // ID GitHub du repository (garde pour compat)
   defaultBranch     String      @default("main")
   technology        Technology  @default(UNKNOWN)
   deploymentEnabled Boolean     @default(false)
   serverId          String?
+  githubRepositoryId String? // FK vers GitHubRepository
+  monitoredBranch   String? // branche surveillée par les webhooks
   createdAt         DateTime    @default(now())
   updatedAt         DateTime    @updatedAt
 
-  owner       User                  @relation(fields: [ownerId], references: [id], onDelete: Cascade)
-  server      DeploymentServer?     @relation(fields: [serverId], references: [id], onDelete: SetNull)
-  config      ProjectConfiguration?
-  pipelines   Pipeline[]
-  scans       SecurityScan[]
-  deployments Deployment[]
-  reports     SecurityReport[]
+  owner            User                @relation(fields: [ownerId], references: [id], onDelete: Cascade)
+  server           DeploymentServer?   @relation(fields: [serverId], references: [id], onDelete: SetNull)
+  githubRepository GitHubRepository?   @relation(fields: [githubRepositoryId], references: [id], onDelete: SetNull)
+  config           ProjectConfiguration?
+  pipelines        Pipeline[]
+  scans            SecurityScan[]
+  deployments      Deployment[]
+  reports          SecurityReport[]
 
   @@unique([ownerId, repoFullName])
   @@index([ownerId])
   @@index([repoFullName])
+  @@index([githubRepositoryId])
 }
 
 model ProjectConfiguration {
@@ -415,4 +458,62 @@ model AuditLog {
   @@index([userId])
   @@index([action])
   @@index([createdAt])
+}
+
+// ============================================================
+// WEBHOOKS
+// ============================================================
+
+model WebhookEvent {
+  id             String    @id @default(cuid())
+  provider       String // GITHUB, GITLAB
+  eventType      String // push, installation, installation_repositories, ping
+  deliveryId     String    @unique
+  payloadJson    Json
+  signatureValid Boolean   @default(true)
+  status         String    @default("received") // received, processed, ignored, failed
+  receivedAt     DateTime  @default(now())
+  processedAt    DateTime?
+  projectId      String?
+  pipelineId     String?
+  errorMessage   String?
+
+  @@index([deliveryId])
+  @@index([eventType])
+  @@index([receivedAt])
+  @@index([projectId])
+}
+
+// ============================================================
+// SYSTEM CONFIGURATION
+// ============================================================
+
+/// Configuration globale de la plateforme (singleton).
+/// Idéalement un seul enregistrement avec id="singleton".
+model SystemConfig {
+  id      String   @id @default(cuid())
+  /// Clé logique pour identifier le singleton : toujours "default"
+  key     String   @unique
+  /// true si l'intégration GitHub App est complètement configurée
+  githubConfigured Boolean @default(false)
+
+  /// App ID GitHub (visible sur la page settings/apps)
+  githubAppId     String?
+  /// Slug de l'App (utilisé dans les URLs d'installation)
+  githubAppSlug   String?
+  /// Clé privée PEM chiffrée (AES-256-GCM)
+  githubPrivateKeyEncrypted String?
+  /// Webhook secret chiffré
+  githubWebhookSecretEncrypted String?
+  /// Client ID (optionnel, pour flux user-to-server)
+  githubClientId     String?
+  /// Client Secret chiffré (optionnel)
+  githubClientSecretEncrypted String?
+
+  /// Métadonnées
+  updatedBy String?
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@index([key])
 }

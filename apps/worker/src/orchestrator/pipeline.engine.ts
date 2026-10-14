@@ -12,6 +12,10 @@ import {
   markStepRunning,
 } from "./pipeline.status";
 import { executeStep, type StepContext } from "./step.executor";
+import {
+  isPipelineCancelled,
+  clearPipelineCancellation,
+} from "../utils/cancellation";
 
 const WORKSPACES_ROOT = path.join(os.tmpdir(), "devsecops-workspaces");
 
@@ -40,6 +44,7 @@ export async function runPipeline(pipelineId: string): Promise<void> {
 
   if (pipeline.status === PipelineStatus.CANCELLED) {
     logger.warn({ pipelineId }, "Pipeline déjà annulé, rien à faire");
+    await clearPipelineCancellation(pipelineId);
     return;
   }
 
@@ -55,20 +60,30 @@ export async function runPipeline(pipelineId: string): Promise<void> {
   const workspaceDir = path.join(WORKSPACES_ROOT, pipelineId);
 
   // --- Flags de contrôle ---
-  //
-  // aborted              → échec critique : on saute TOUT.
-  // securityBlocked      → Security Gate a bloqué : on saute Deployment et ZAP,
-  //                        mais on laisse passer Final Report.
-  // deploymentSkipped    → alias utilisé dans la boucle pour sauter les étapes
-  //                        post-gate hors Report.
-  //
-  let aborted = false;
+  let aborted = false;         // arrêt dû à un échec critique OU à une annulation
+  let cancelled = false;       // annulation demandée par l'utilisateur
+  let securityBlocked = false; // Security Gate bloqué
   let abortReason: string | null = null;
-  let securityBlocked = false;
-  let deploymentSkipped = false;
 
   for (const step of pipeline.steps) {
-    // 1. Échec critique → on saute TOUT sans distinction.
+    // ------------------------------------------------------------
+    // 0. Vérifie une demande d'annulation AVANT de démarrer l'étape
+    // ------------------------------------------------------------
+    if (!cancelled && (await isPipelineCancelled(pipelineId))) {
+      cancelled = true;
+      aborted = true;
+      abortReason = "Annulation demandée par l'utilisateur";
+      await logStep(
+        pipelineId,
+        null,
+        "warn",
+        "Annulation détectée — arrêt du pipeline",
+      );
+    }
+
+    // ------------------------------------------------------------
+    // 1. Échec critique ou annulation → on saute TOUT
+    // ------------------------------------------------------------
     if (aborted && !securityBlocked) {
       await markStepFinished(step.id, StepStatus.CANCELLED, {
         error: abortReason ?? "Pipeline interrompu",
@@ -77,12 +92,15 @@ export async function runPipeline(pipelineId: string): Promise<void> {
         pipelineId,
         step.id,
         "warn",
-        `Étape sautée : ${step.name} (pipeline interrompu)`,
+        `Étape sautée : ${step.name} (${cancelled ? "annulé" : "pipeline interrompu"})`,
       );
       continue;
     }
 
-    // 2. Security Gate a bloqué → on saute Deployment/ZAP mais PAS Report.
+    // ------------------------------------------------------------
+    // 2. Security Gate a bloqué → on saute Deployment/ZAP mais
+    //    PAS Final Report.
+    // ------------------------------------------------------------
     if (securityBlocked && step.type !== "REPORT") {
       await markStepFinished(step.id, StepStatus.CANCELLED, {
         error: "Déploiement bloqué par le Security Gate",
@@ -111,6 +129,7 @@ export async function runPipeline(pipelineId: string): Promise<void> {
       commitSha: pipeline.commitSha,
       branch: pipeline.branch,
       log: (level, message) => logStep(pipelineId, step.id, level, message),
+      isCancelled: () => isPipelineCancelled(pipelineId),
     };
 
     let result;
@@ -122,7 +141,25 @@ export async function runPipeline(pipelineId: string): Promise<void> {
       result = { success: false, exitCode: 1, error: msg };
     }
 
-    // --- Cas spécial : Security Gate a bloqué le déploiement ---
+    // ------------------------------------------------------------
+    // 3. Vérifie une annulation APRES l'étape (peut être arrivée
+    //    pendant son exécution)
+    // ------------------------------------------------------------
+    if (!cancelled && (await isPipelineCancelled(pipelineId))) {
+      cancelled = true;
+      aborted = true;
+      abortReason = "Annulation demandée par l'utilisateur";
+      await logStep(
+        pipelineId,
+        null,
+        "warn",
+        "Annulation détectée après l'étape — arrêt du pipeline",
+      );
+    }
+
+    // ------------------------------------------------------------
+    // 4. Cas spécial : Security Gate a bloqué le déploiement
+    // ------------------------------------------------------------
     if (result.blockDeployment === true) {
       await markStepFinished(step.id, StepStatus.SECURITY_BLOCKED, {
         exitCode: result.exitCode ?? 1,
@@ -137,20 +174,20 @@ export async function runPipeline(pipelineId: string): Promise<void> {
       );
 
       securityBlocked = true;
-      deploymentSkipped = true;
       abortReason = `Security Gate bloqué : ${result.error ?? ""}`;
 
       await logStep(
         pipelineId,
         null,
         "warn",
-        `Pipeline : déploiement bloqué — les étapes Deployment et ZAP seront sautées`,
+        `Pipeline : déploiement bloqué — Deployment et ZAP seront sautés`,
       );
-      // On ne met PAS aborted=true : le Final Report doit tourner.
       continue;
     }
 
-    // --- Cas normal : succès ---
+    // ------------------------------------------------------------
+    // 5. Cas normal : succès
+    // ------------------------------------------------------------
     if (result.success) {
       await markStepFinished(step.id, StepStatus.SUCCESS, {
         exitCode: result.exitCode ?? 0,
@@ -162,7 +199,9 @@ export async function runPipeline(pipelineId: string): Promise<void> {
       continue;
     }
 
-    // --- Cas normal : échec ---
+    // ------------------------------------------------------------
+    // 6. Cas normal : échec
+    // ------------------------------------------------------------
     await markStepFinished(step.id, StepStatus.FAILED, {
       exitCode: result.exitCode ?? 1,
       error: result.error ?? "Échec",
@@ -186,20 +225,48 @@ export async function runPipeline(pipelineId: string): Promise<void> {
     }
   }
 
-  // Statut final.
-  const finalStatus = securityBlocked
-    ? PipelineStatus.SECURITY_BLOCKED
-    : aborted
-      ? PipelineStatus.FAILED
-      : PipelineStatus.SUCCESS;
+  // ------------------------------------------------------------
+  // Détermine le statut final
+  // ------------------------------------------------------------
+  const finalStatus = cancelled
+    ? PipelineStatus.CANCELLED
+    : securityBlocked
+      ? PipelineStatus.SECURITY_BLOCKED
+      : aborted
+        ? PipelineStatus.FAILED
+        : PipelineStatus.SUCCESS;
 
-  await markPipelineFinished(pipelineId, finalStatus);
-  await logStep(
-    pipelineId,
-    null,
-    "info",
-    `Pipeline terminé : ${finalStatus}`,
-  );
+  // ------------------------------------------------------------
+  // Ne réécrit PAS le statut si l'API l'a déjà positionné à CANCELLED.
+  // (évite une race condition si l'utilisateur annule à la fin)
+  // ------------------------------------------------------------
+  const current = await prisma.pipeline.findUnique({
+    where: { id: pipelineId },
+    select: { status: true },
+  });
 
-  logger.info({ pipelineId, finalStatus }, "Pipeline terminé");
+  if (current?.status === PipelineStatus.CANCELLED) {
+    await logStep(
+      pipelineId,
+      null,
+      "info",
+      "Pipeline déjà marqué CANCELLED — statut conservé",
+    );
+    logger.info(
+      { pipelineId },
+      "Pipeline terminé : statut CANCELLED déjà appliqué",
+    );
+  } else {
+    await markPipelineFinished(pipelineId, finalStatus);
+    await logStep(
+      pipelineId,
+      null,
+      "info",
+      `Pipeline terminé : ${finalStatus}`,
+    );
+    logger.info({ pipelineId, finalStatus }, "Pipeline terminé");
+  }
+
+  // Nettoyage du flag Redis à la fin, quelle que soit l'issue.
+  await clearPipelineCancellation(pipelineId);
 }
