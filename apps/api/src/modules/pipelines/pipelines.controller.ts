@@ -169,3 +169,24 @@ export async function getPipelineReport(
     next(err);
   }
 }
+
+// ============================================================
+// DELETE
+// ============================================================
+export async function deletePipeline(
+  req: Request,
+  res: Response,
+  next: NextFunction,
+): Promise<void> {
+  try {
+    const actor = actorFrom(req);
+    await pipelinesService.deletePipeline(
+      actor,
+      req.params.projectId,
+      req.params.id,
+    );
+    res.status(204).end();
+  } catch (err) {
+    next(err);
+  }
+}

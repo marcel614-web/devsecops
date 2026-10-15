@@ -9,11 +9,14 @@ import { globalLimiter } from "../middleware/rateLimiter";
 import { errorHandler } from "../middleware/errorHandler";
 import { rawBodyMiddleware } from "../middleware/rawBody";
 import { authRouter } from "../modules/auth/auth.routes";
+import { auditRouter } from "../modules/audit/audit.routes";
 import { usersRouter } from "../modules/users/users.routes";
 import { projectsRouter } from "../modules/projects/projects.routes";
+import { reportsRouter } from "../modules/reports/reports.routes";
 import { pipelinesRouter } from "../modules/pipelines/pipelines.routes";
 import { vulnerabilitiesRouter } from "../modules/vulnerabilities/vulnerabilities.routes";
 import { dashboardRouter } from "../modules/dashboard/dashboard.routes";
+import { deploymentsRouter } from "../modules/deployments/deployments.routes";
 import { serversRouter } from "../modules/servers/servers.routes";
 import { githubRouter } from "../modules/github/github.routes";
 import { systemConfigRouter } from "../modules/system-config/system-config.routes";
@@ -71,6 +74,7 @@ export function createApp() {
   // Routes
   // ----------------------------------------------------------
   app.use("/api/auth", authRouter);
+app.use("/api/audit-logs", auditRouter);
   app.use("/api/users", usersRouter);
   app.use("/api/dashboard", dashboardRouter);
   app.use("/api/servers", serversRouter);
@@ -81,6 +85,8 @@ export function createApp() {
   app.use("/api/projects/:projectId/pipelines", pipelinesRouter);
   app.use("/api/projects/:projectId/vulnerabilities", vulnerabilitiesRouter);
   app.use("/api/projects", projectsRouter);
+app.use("/api/deployments", deploymentsRouter);
+app.use("/api/reports", reportsRouter);
 
   // ----------------------------------------------------------
   // 404

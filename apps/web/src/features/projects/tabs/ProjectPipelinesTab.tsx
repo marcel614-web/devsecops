@@ -1,12 +1,14 @@
 // apps/web/src/features/projects/tabs/ProjectPipelinesTab.tsx
-import { Link } from "react-router-dom";
+import { useState } from "react";
+import { Link, useNavigate } from "react-router-dom";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
-import { Play } from "lucide-react";
+import { Play, Trash2 } from "lucide-react";
 import { Card, CardContent } from "@/components/ui/Card";
 import { Button } from "@/components/ui/Button";
 import { StatusBadge } from "@/components/ui/Badge";
 import { EmptyState } from "@/components/feedback/EmptyState";
 import { ErrorState } from "@/components/feedback/ErrorState";
+import { ConfirmDialog } from "@/components/ui/ConfirmDialog";
 import { Skeleton } from "@/components/ui/Skeleton";
 import { useToast } from "@/components/feedback/Toast";
 import { pipelineService } from "@/services/pipeline.service";
@@ -16,6 +18,11 @@ import { getErrorMessage } from "@/services/api";
 export function ProjectPipelinesTab({ projectId }: { projectId: string }) {
   const qc = useQueryClient();
   const toast = useToast();
+  const navigate = useNavigate();
+  const [deleteTarget, setDeleteTarget] = useState<{
+    pipelineId: string;
+    commitSha: string;
+  } | null>(null);
 
   const { data, isLoading, isError, error, refetch, isFetching } = useQuery({
     queryKey: ["project-pipelines", projectId],
@@ -28,6 +35,18 @@ export function ProjectPipelinesTab({ projectId }: { projectId: string }) {
     onSuccess: (p) => {
       toast.show("success", `Pipeline ${p.id.slice(0, 8)} lancé`);
       qc.invalidateQueries({ queryKey: ["project-pipelines", projectId] });
+    },
+    onError: (err) => toast.show("error", getErrorMessage(err)),
+  });
+
+  const deleteMutation = useMutation({
+    mutationFn: (pipelineId: string) =>
+      pipelineService.delete(projectId, pipelineId),
+    onSuccess: () => {
+      toast.show("success", "Pipeline supprimé");
+      qc.invalidateQueries({ queryKey: ["project-pipelines", projectId] });
+      qc.invalidateQueries({ queryKey: ["global-pipelines"] });
+      setDeleteTarget(null);
     },
     onError: (err) => toast.show("error", getErrorMessage(err)),
   });
@@ -78,13 +97,19 @@ export function ProjectPipelinesTab({ projectId }: { projectId: string }) {
                   <th className="text-left py-2 px-4 font-medium">Statut</th>
                   <th className="text-right py-2 px-4 font-medium">Durée</th>
                   <th className="text-right py-2 px-4 font-medium">Date</th>
+                  <th className="text-right py-2 px-4 font-medium">Actions</th>
                 </tr>
               </thead>
               <tbody>
                 {data.items.map((p) => (
                   <tr
                     key={p.id}
-                    className="border-b border-border/60 last:border-0 hover:bg-slate-100 dark:hover:bg-slate-700/30"
+                    className="border-b border-border/60 last:border-0 hover:bg-slate-100 dark:hover:bg-slate-700/30 cursor-pointer"
+                    onClick={(e) => {
+                      const target = e.target as HTMLElement;
+                      if (target.closest("a,button")) return;
+                      navigate(`/projects/${projectId}/pipelines/${p.id}`);
+                    }}
                   >
                     <td className="py-2.5 px-4">
                       <Link
@@ -102,6 +127,19 @@ export function ProjectPipelinesTab({ projectId }: { projectId: string }) {
                       {formatDuration(p.durationMs)}
                     </td>
                     <td className="py-2.5 px-4 text-right text-muted">{timeAgo(p.createdAt)}</td>
+                    <td className="py-2.5 px-4 text-right">
+                      <button
+                        type="button"
+                        className="text-muted hover:text-red-500 p-1"
+                        title="Supprimer ce pipeline"
+                        onClick={(e) => {
+                          e.stopPropagation();
+                          setDeleteTarget({ pipelineId: p.id, commitSha: p.commitSha });
+                        }}
+                      >
+                        <Trash2 className="w-4 h-4" />
+                      </button>
+                    </td>
                   </tr>
                 ))}
               </tbody>
@@ -109,6 +147,23 @@ export function ProjectPipelinesTab({ projectId }: { projectId: string }) {
           </div>
         )}
       </CardContent>
+      <ConfirmDialog
+        open={!!deleteTarget}
+        title="Supprimer ce pipeline ?"
+        description={
+          deleteTarget
+            ? `Le pipeline ${deleteTarget.commitSha.slice(0, 10)} et toutes ses données associées seront définitivement supprimés.`
+            : ""
+        }
+        confirmLabel="Supprimer"
+        danger
+        loading={deleteMutation.isPending}
+        onConfirm={() => {
+          if (!deleteTarget) return;
+          deleteMutation.mutate(deleteTarget.pipelineId);
+        }}
+        onCancel={() => setDeleteTarget(null)}
+      />
     </Card>
   );
 }

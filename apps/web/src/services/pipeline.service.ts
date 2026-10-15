@@ -47,6 +47,9 @@ export const pipelineService = {
   cancel: (projectId: string, pipelineId: string) =>
     api.post(`/api/projects/${projectId}/pipelines/${pipelineId}/cancel`),
 
+  delete: (projectId: string, pipelineId: string) =>
+    api.delete(`/api/projects/${projectId}/pipelines/${pipelineId}`),
+
   logs: (
     projectId: string,
     pipelineId: string,

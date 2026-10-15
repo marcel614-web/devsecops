@@ -38,8 +38,16 @@ serversRouter.patch(
   serversController.updateServer,
 );
 
+
+
 serversRouter.delete(
   "/:id",
   validate({ params: serverIdParamSchema }),
   serversController.deleteServer,
+);
+
+serversRouter.post(
+  "/:id/test",
+  validate({ params: serverIdParamSchema }),
+  serversController.testServer,
 );

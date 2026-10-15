@@ -20,6 +20,11 @@ import { UsersPage } from "@/features/users/UsersPage";
 import { AuditPage } from "@/features/audit/AuditPage";
 import { SettingsPage } from "@/features/settings/SettingsPage";
 import { GithubSettingsPage } from "@/features/settings/GithubSettingsPage";
+import { ProfilePage } from "@/features/settings/ProfilePage";
+import { SecurityPage as SettingsSecurityPage } from "@/features/settings/SecurityPage";
+import { NotificationsPage } from "@/features/settings/NotificationsPage";
+import { AppearancePage } from "@/features/settings/AppearancePage";
+import { ServersDefaultPage } from "@/features/settings/ServersDefaultPage";
 import { NotFoundPage } from "@/features/errors/NotFoundPage";
 
 export function AppRouter() {
@@ -107,6 +112,11 @@ export function AppRouter() {
 
         {/* Paramètres */}
         <Route path="settings" element={<SettingsPage />} />
+        <Route path="settings/profile" element={<ProfilePage />} />
+        <Route path="settings/security" element={<SettingsSecurityPage />} />
+        <Route path="settings/notifications" element={<NotificationsPage />} />
+        <Route path="settings/appearance" element={<AppearancePage />} />
+        <Route path="settings/servers" element={<ServersDefaultPage />} />
         <Route
           path="settings/github"
           element={

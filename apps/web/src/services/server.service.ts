@@ -2,6 +2,10 @@
 import { api } from "./api";
 import type { DeploymentServer, Paginated } from "@/types/api";
 
+// ============================================================
+// TYPES
+// ============================================================
+
 export interface CreateServerInput {
   name: string;
   host: string;
@@ -20,6 +24,35 @@ export interface UpdateServerInput {
   privateKey?: string;
   passphrase?: string;
 }
+
+export interface ServerToolStatus {
+  ok: boolean;
+  version?: string;
+  error?: string;
+}
+
+export interface ServerSshStatus {
+  ok: boolean;
+  error?: string;
+  latencyMs?: number;
+}
+
+export interface ServerTestResult {
+  ssh: ServerSshStatus;
+  docker: ServerToolStatus;
+  dockerCompose: ServerToolStatus;
+  nginx: ServerToolStatus;
+}
+
+export interface ServerTestResponse {
+  result: ServerTestResult;
+  status: "ok" | "failed";
+  lastCheckedAt: string;
+}
+
+// ============================================================
+// SERVICE
+// ============================================================
 
 export const serverService = {
   list: (params?: { page?: number; pageSize?: number; search?: string }) =>
@@ -43,4 +76,13 @@ export const serverService = {
       .then((r) => r.data.server),
 
   remove: (id: string) => api.delete(`/api/servers/${id}`),
+
+  /**
+   * Teste la connexion SSH + vérifie Docker / Docker Compose / Nginx.
+   * Met à jour le status du serveur en base (ok / failed).
+   */
+  testServer: (id: string) =>
+    api
+      .post<ServerTestResponse>(`/api/servers/${id}/test`)
+      .then((r) => r.data),
 };

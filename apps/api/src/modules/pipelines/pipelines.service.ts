@@ -582,3 +582,42 @@ export async function listProjectVulnerabilities(
     severityCounts,
   };
 }
+
+// ============================================================
+// DELETE
+// ============================================================
+export async function deletePipeline(
+  actor: ActorContext,
+  projectId: string,
+  pipelineId: string,
+) {
+  await ensureProjectAccess(actor, projectId);
+
+  const pipeline = await prisma.pipeline.findFirst({
+    where: { id: pipelineId, projectId },
+    select: { id: true, status: true },
+  });
+  if (!pipeline) throw new NotFoundError("Pipeline introuvable");
+
+  if (pipeline.status === PipelineStatus.RUNNING) {
+    throw new ConflictError("Pipeline en cours — annulez-le avant de le supprimer");
+  }
+
+  if (pipeline.status === PipelineStatus.QUEUED) {
+    await cancelPipeline(actor, projectId, pipelineId);
+  }
+
+  await prisma.pipeline.delete({ where: { id: pipelineId } });
+
+  await prisma.auditLog.create({
+    data: {
+      userId: actor.id,
+      action: "PIPELINE_DELETED",
+      targetType: "Pipeline",
+      targetId: pipelineId,
+      metadataJson: {
+        previousStatus: pipeline.status,
+      },
+    },
+  });
+}

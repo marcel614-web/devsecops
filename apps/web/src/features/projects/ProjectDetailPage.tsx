@@ -1,13 +1,17 @@
 // apps/web/src/features/projects/ProjectDetailPage.tsx
 import { useParams, Link, useSearchParams, Navigate } from "react-router-dom";
 import { Play } from "lucide-react";
+import { useMutation, useQueryClient } from "@tanstack/react-query";
 import { PageHeader } from "@/components/layout/PageHeader";
-import { Card, CardHeader, CardTitle, CardContent } from "@/components/ui/Card";
+import { Card, CardContent } from "@/components/ui/Card";
 import { Tabs } from "@/components/ui/Tabs";
 import { Button } from "@/components/ui/Button";
 import { ErrorState } from "@/components/feedback/ErrorState";
 import { Skeleton } from "@/components/ui/Skeleton";
+import { useToast } from "@/components/feedback/Toast";
 import { useProject } from "@/hooks/useProjects";
+import { pipelineService } from "@/services/pipeline.service";
+import { getErrorMessage } from "@/services/api";
 import { ProjectOverviewTab } from "./tabs/ProjectOverviewTab";
 import { ProjectPipelinesTab } from "./tabs/ProjectPipelinesTab";
 import { ProjectConfigTab } from "./tabs/ProjectConfigTab";
@@ -24,8 +28,30 @@ export function ProjectDetailPage() {
   const { projectId } = useParams<{ projectId: string }>();
   const [searchParams, setSearchParams] = useSearchParams();
   const active = searchParams.get("tab") ?? "pipelines";
+  const toast = useToast();
+  const qc = useQueryClient();
 
   const { data: project, isLoading, isError, error, refetch } = useProject(projectId);
+
+  // ------------------------------------------------------------
+  // Mutation : lancer un pipeline
+  // ------------------------------------------------------------
+  const runMutation = useMutation({
+    mutationFn: () => pipelineService.run(projectId!, {}),
+    onSuccess: (pipeline) => {
+      toast.show(
+        "success",
+        `Pipeline ${pipeline.id.slice(0, 8)} lancé`,
+      );
+      // Rafraîchit la liste des pipelines du projet
+      qc.invalidateQueries({ queryKey: ["project-pipelines", projectId] });
+      qc.invalidateQueries({ queryKey: ["global-pipelines"] });
+      qc.invalidateQueries({ queryKey: ["dashboard"] });
+    },
+    onError: (err) => {
+      toast.show("error", getErrorMessage(err));
+    },
+  });
 
   if (isLoading) {
     return (
@@ -52,17 +78,27 @@ export function ProjectDetailPage() {
     setSearchParams(next);
   };
 
+  const handleRunPipeline = () => {
+    runMutation.mutate();
+  };
+
   return (
     <div>
       <PageHeader
         title={project.name}
-        description={project.description ?? `${project.repoFullName} · ${project.defaultBranch}`}
+        description={
+          project.description ??
+          `${project.repoFullName} · ${project.defaultBranch}`
+        }
         actions={
-          <Link to={`/projects/${project.id}/pipelines/run`}>
-            <Button>
-              <Play className="w-4 h-4" /> Lancer un pipeline
-            </Button>
-          </Link>
+          <Button
+            onClick={handleRunPipeline}
+            loading={runMutation.isPending}
+            disabled={runMutation.isPending}
+          >
+            <Play className="w-4 h-4" />
+            {runMutation.isPending ? "Lancement…" : "Lancer un pipeline"}
+          </Button>
         }
       />
 
@@ -83,11 +119,7 @@ export function ProjectDetailPage() {
           ...TABS.map((t) => ({
             ...t,
             badge:
-              t.key === "pipelines"
-                ? project._count?.pipelines
-                : t.key === "vulnerabilities"
-                  ? undefined
-                  : undefined,
+              t.key === "pipelines" ? project._count?.pipelines : undefined,
           })),
         ]}
         active={active}
@@ -97,7 +129,9 @@ export function ProjectDetailPage() {
 
       {active === "overview" && <ProjectOverviewTab project={project} />}
       {active === "pipelines" && <ProjectPipelinesTab projectId={project.id} />}
-      {active === "vulnerabilities" && <ProjectVulnerabilitiesTab projectId={project.id} />}
+      {active === "vulnerabilities" && (
+        <ProjectVulnerabilitiesTab projectId={project.id} />
+      )}
       {active === "config" && <ProjectConfigTab project={project} />}
 
       {!TABS.some((t) => t.key === active) && (
@@ -107,7 +141,15 @@ export function ProjectDetailPage() {
   );
 }
 
-function Info({ label, value, mono }: { label: string; value: string; mono?: boolean }) {
+function Info({
+  label,
+  value,
+  mono,
+}: {
+  label: string;
+  value: string;
+  mono?: boolean;
+}) {
   return (
     <div className="min-w-0">
       <p className="text-xs text-muted mb-0.5">{label}</p>

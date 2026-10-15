@@ -12,6 +12,15 @@ import type {
 } from "@devsecops/scanners";
 
 // ============================================================
+// CONFIGURATION TRIVY
+// ============================================================
+
+// Volume Docker persistant contenant la DB Trivy pré-téléchargée
+const TRIVY_VOLUME = "trivy-cache";
+// Timeout du scan complet
+const TRIVY_SCAN_TIMEOUT_MS = 15 * 60_000;
+
+// ============================================================
 // TYPES TRIVY
 // ============================================================
 
@@ -72,9 +81,7 @@ export async function trivyStep(
   _step: unknown,
   ctx: StepContext,
 ): Promise<StepResult> {
-  // ----------------------------------------------------------
-  // 1. Récupère l'image Docker du pipeline
-  // ----------------------------------------------------------
+  // 1. Récupère l'image Docker
   const image = await prisma.dockerImage.findUnique({
     where: { pipelineId: ctx.pipelineId },
     select: { imageTag: true },
@@ -89,9 +96,7 @@ export async function trivyStep(
     };
   }
 
-  // ----------------------------------------------------------
   // 2. Charge le projet + serveur
-  // ----------------------------------------------------------
   const project = await prisma.project.findUnique({
     where: { id: ctx.projectId },
     include: { server: true },
@@ -107,9 +112,6 @@ export async function trivyStep(
 
   const server = project.server;
 
-  // ----------------------------------------------------------
-  // 3. Vérifie la présence de la clé SSH (narrowing TypeScript)
-  // ----------------------------------------------------------
   if (!server.encryptedPrivateKey) {
     return {
       success: false,
@@ -122,9 +124,7 @@ export async function trivyStep(
   const startTime = Date.now();
   const logs: string[] = [];
 
-  // ----------------------------------------------------------
-  // 4. Déchiffre la clé SSH
-  // ----------------------------------------------------------
+  // 3. Déchiffre la clé SSH
   let privateKey: string;
   try {
     privateKey = decryptString(server.encryptedPrivateKey);
@@ -132,7 +132,7 @@ export async function trivyStep(
     return {
       success: false,
       exitCode: 1,
-      error: "Impossible de déchiffrer la clé SSH du serveur",
+      error: "Impossible de déchiffrer la clé SSH",
     };
   }
 
@@ -141,9 +141,7 @@ export async function trivyStep(
     : undefined;
 
   try {
-    // --------------------------------------------------------
-    // 5. Connexion SSH
-    // --------------------------------------------------------
+    // 4. Connexion SSH
     await ctx.log("info", "Connexion SSH pour le scan Trivy...");
     await ssh.connect({
       host: server.host,
@@ -153,34 +151,55 @@ export async function trivyStep(
       passphrase,
     });
 
-    // --------------------------------------------------------
-    // 6. Prépare l'image Trivy sur la VM (pull si absent)
-    // --------------------------------------------------------
-    await ctx.log("info", "Préparation de l'image Trivy sur la VM...");
-    const pullCode = await ssh.execStream(
-      `docker image inspect aquasec/trivy:latest >/dev/null 2>&1 || docker pull aquasec/trivy:latest`,
-      (chunk, stream) => {
-        const line = chunk.trim();
-        if (line && stream === "stderr") {
-          void ctx.log("debug", `[pull] ${line}`);
-        }
-      },
-      10 * 60_000,
+    // 5. Vérifie la présence de l'image Trivy (pull si absent)
+    await ctx.log("info", "Vérification de l'image Trivy sur la VM...");
+    const imageCheck = await ssh.exec(
+      `docker image inspect aquasec/trivy:latest >/dev/null 2>&1 && echo OK || echo MISSING`,
+      15_000,
     );
 
-    if (pullCode !== 0) {
-      throw new Error("Impossible de préparer l'image Trivy sur la VM");
+    if (imageCheck.stdout.includes("MISSING")) {
+      await ctx.log("info", "Téléchargement de l'image Trivy...");
+      const pullCode = await ssh.execStream(
+        `docker pull aquasec/trivy:latest`,
+        (chunk, stream) => {
+          const line = chunk.trim();
+          if (line && stream === "stderr") {
+            void ctx.log("debug", `[pull] ${line}`);
+          }
+        },
+        10 * 60_000,
+      );
+      if (pullCode !== 0) {
+        throw new Error("Impossible de télécharger l'image Trivy");
+      }
     }
 
-    // --------------------------------------------------------
-    // 7. Scan Trivy
-    // --------------------------------------------------------
+    // 6. Vérifie que la DB Trivy est présente dans le volume
+    await ctx.log("info", "Vérification du cache Trivy...");
+    const dbCheck = await ssh.exec(
+      `docker run --rm -v ${TRIVY_VOLUME}:/root/.cache/ aquasec/trivy:latest filesystem --help >/dev/null 2>&1 && echo CACHE_OK || echo CACHE_MISSING`,
+      2 * 60_000,
+    );
+
+    // On ne bloque pas si le cache est vide : Trivy tentera de le télécharger/mettre à jour
+    if (dbCheck.stdout.includes("CACHE_OK")) {
+      await ctx.log("info", "Cache Trivy présent — Trivy réutilisera/mettra la DB à jour si nécessaire");
+    } else {
+      await ctx.log(
+        "warn",
+        "Cache Trivy absent/manquant — Trivy téléchargera/mettra à jour la DB pendant le scan",
+      );
+    }
+
+    // 7. Scan Trivy avec le volume de cache
     await ctx.log("info", `Scan Trivy de l'image ${image.imageTag}...`);
     const trivyStart = Date.now();
 
     const scanCmd = [
       "docker run --rm",
       "-v /var/run/docker.sock:/var/run/docker.sock",
+      `-v ${TRIVY_VOLUME}:/root/.cache/`,
       "aquasec/trivy:latest",
       "image",
       "--format json",
@@ -190,11 +209,11 @@ export async function trivyStep(
       `"${image.imageTag}"`,
     ].join(" ");
 
-    const scanResult = await ssh.exec(scanCmd, 15 * 60_000);
+    const scanResult = await ssh.exec(scanCmd, TRIVY_SCAN_TIMEOUT_MS);
 
     if (scanResult.code !== 0) {
       throw new Error(
-        `Trivy a échoué (code ${scanResult.code}) : ${scanResult.stderr.slice(0, 300)}`,
+        `Trivy a échoué (code ${scanResult.code}) : ${scanResult.stderr.slice(0, 500)}`,
       );
     }
 
@@ -204,9 +223,7 @@ export async function trivyStep(
       `Trivy terminé en ${(trivyDuration / 1000).toFixed(1)}s`,
     );
 
-    // --------------------------------------------------------
     // 8. Parse le JSON
-    // --------------------------------------------------------
     let parsed: TrivyOutput = {};
     try {
       parsed = JSON.parse(scanResult.stdout) as TrivyOutput;
@@ -253,9 +270,7 @@ export async function trivyStep(
       logs,
     };
 
-    // --------------------------------------------------------
-    // 9. Persiste le résultat
-    // --------------------------------------------------------
+    // 9. Persiste
     await persistScanResult(
       {
         pipelineId: ctx.pipelineId,
@@ -286,7 +301,6 @@ export async function trivyStep(
     const msg = err instanceof Error ? err.message : String(err);
     await ctx.log("error", `Échec de Trivy : ${msg}`);
 
-    // Persiste un scan en échec pour que le Security Gate le voie
     await persistScanResult(
       {
         pipelineId: ctx.pipelineId,

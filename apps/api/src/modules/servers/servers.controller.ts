@@ -92,3 +92,19 @@ export async function deleteServer(
     next(err);
   }
 }
+
+// apps/api/src/modules/servers/servers.controller.ts (ajout)
+
+export async function testServer(
+  req: Request,
+  res: Response,
+  next: NextFunction,
+): Promise<void> {
+  try {
+    const actor = actorFrom(req);
+    const response = await serversService.testServer(actor, req.params.id);
+    res.json(response);
+  } catch (err) {
+    next(err);
+  }
+}

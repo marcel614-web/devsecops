@@ -1,7 +1,8 @@
 // apps/web/src/features/pipelines/PipelinesPage.tsx
-import { useSearchParams, Link } from "react-router-dom";
-import { useQuery } from "@tanstack/react-query";
-import { GitBranch, RefreshCw } from "lucide-react";
+import { useState } from "react";
+import { useSearchParams, Link, useNavigate } from "react-router-dom";
+import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
+import { GitBranch, RefreshCw, Trash2 } from "lucide-react";
 import { PageHeader } from "@/components/layout/PageHeader";
 import { Card, CardContent } from "@/components/ui/Card";
 import { Button } from "@/components/ui/Button";
@@ -10,12 +11,23 @@ import { Select } from "@/components/ui/Select";
 import { EmptyState } from "@/components/feedback/EmptyState";
 import { ErrorState } from "@/components/feedback/ErrorState";
 import { Skeleton } from "@/components/ui/Skeleton";
+import { ConfirmDialog } from "@/components/ui/ConfirmDialog";
+import { useToast } from "@/components/feedback/Toast";
 import { projectService } from "@/services/project.service";
 import { pipelineService } from "@/services/pipeline.service";
+import { getErrorMessage } from "@/services/api";
 import { formatDuration, timeAgo } from "@/lib/utils";
 
 export function PipelinesPage() {
   const [params, setParams] = useSearchParams();
+  const navigate = useNavigate();
+  const qc = useQueryClient();
+  const toast = useToast();
+  const [deleteTarget, setDeleteTarget] = useState<{
+    projectId: string;
+    pipelineId: string;
+    commitSha: string;
+  } | null>(null);
   const projectId = params.get("projectId") ?? "";
 
   const { data: projects } = useQuery({
@@ -38,6 +50,18 @@ export function PipelinesPage() {
       pipelineService.listByProject(effectiveProjectId, { pageSize: 50 }),
     enabled: !!effectiveProjectId,
     refetchInterval: 10_000,
+  });
+
+  const deleteMutation = useMutation({
+    mutationFn: (t: { projectId: string; pipelineId: string }) =>
+      pipelineService.delete(t.projectId, t.pipelineId),
+    onSuccess: () => {
+      toast.show("success", "Pipeline supprimé");
+      qc.invalidateQueries({ queryKey: ["global-pipelines"] });
+      qc.invalidateQueries({ queryKey: ["project-pipelines"] });
+      setDeleteTarget(null);
+    },
+    onError: (err) => toast.show("error", getErrorMessage(err)),
   });
 
   return (
@@ -133,13 +157,19 @@ export function PipelinesPage() {
                     <th className="text-left py-2 px-4 font-medium">Statut</th>
                     <th className="text-right py-2 px-4 font-medium">Durée</th>
                     <th className="text-right py-2 px-4 font-medium">Date</th>
+                    <th className="text-right py-2 px-4 font-medium">Actions</th>
                   </tr>
                 </thead>
                 <tbody>
                   {data.items.map((p) => (
                     <tr
                       key={p.id}
-                      className="border-b border-border/60 last:border-0 hover:bg-slate-100 dark:hover:bg-slate-700/30"
+                      className="border-b border-border/60 last:border-0 hover:bg-slate-100 dark:hover:bg-slate-700/30 cursor-pointer"
+                      onClick={(e) => {
+                        const target = e.target as HTMLElement;
+                        if (target.closest("a,button")) return;
+                        navigate(`/projects/${effectiveProjectId}/pipelines/${p.id}`);
+                      }}
                     >
                       <td className="py-2.5 px-4">
                         <Link
@@ -165,6 +195,23 @@ export function PipelinesPage() {
                       <td className="py-2.5 px-4 text-right text-muted">
                         {timeAgo(p.createdAt)}
                       </td>
+                      <td className="py-2.5 px-4 text-right">
+                        <button
+                          type="button"
+                          className="text-muted hover:text-red-500 p-1"
+                          title="Supprimer ce pipeline"
+                          onClick={(e) => {
+                            e.stopPropagation();
+                            setDeleteTarget({
+                              projectId: effectiveProjectId,
+                              pipelineId: p.id,
+                              commitSha: p.commitSha,
+                            });
+                          }}
+                        >
+                          <Trash2 className="w-4 h-4" />
+                        </button>
+                      </td>
                     </tr>
                   ))}
                 </tbody>
@@ -173,6 +220,23 @@ export function PipelinesPage() {
           </CardContent>
         </Card>
       )}
+      <ConfirmDialog
+        open={!!deleteTarget}
+        title="Supprimer ce pipeline ?"
+        description={
+          deleteTarget
+            ? `Le pipeline ${deleteTarget.commitSha.slice(0, 10)} et toutes ses données associées seront définitivement supprimés.`
+            : ""
+        }
+        confirmLabel="Supprimer"
+        danger
+        loading={deleteMutation.isPending}
+        onConfirm={() => {
+          if (!deleteTarget) return;
+          deleteMutation.mutate(deleteTarget);
+        }}
+        onCancel={() => setDeleteTarget(null)}
+      />
     </div>
   );
 }

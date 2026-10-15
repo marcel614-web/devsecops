@@ -15,7 +15,7 @@ export const JWT_AUDIENCE = "devsecops-api";
 
 // --- Rate limiting ---
 export const RATE_LIMIT_GLOBAL_WINDOW_MS = 15 * 60 * 1000; // 15 min
-export const RATE_LIMIT_GLOBAL_MAX = 300;
+export const RATE_LIMIT_GLOBAL_MAX = 5000;
 
 export const RATE_LIMIT_AUTH_WINDOW_MS = 15 * 60 * 1000; // 15 min
 export const RATE_LIMIT_AUTH_MAX = 10;

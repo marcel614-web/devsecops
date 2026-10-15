@@ -58,3 +58,9 @@ pipelinesRouter.post(
   validate({ params: projectPipelineParamSchema }),
   pipelinesController.cancelPipeline,
 );
+
+pipelinesRouter.delete(
+  "/:id",
+  validate({ params: projectPipelineParamSchema }),
+  pipelinesController.deletePipeline,
+);

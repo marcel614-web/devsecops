@@ -10,6 +10,69 @@ import { SshRunner } from "../../runners/ssh.runner";
 import type { StepContext, StepResult } from "../../orchestrator/step.executor";
 
 // ============================================================
+// EXCLUSIONS DE L'ARCHIVE
+// ============================================================
+// Répertoires qui ne doivent PAS être envoyés à la VM.
+// docker build refera les installations nécessaires via le Dockerfile.
+// Sans ce filtre, l'archive contient node_modules (plusieurs centaines
+// de MB) et sature le disque de la VM.
+const EXCLUDED_DIRS = [
+  "node_modules",
+  ".git",
+  "dist",
+  "build",
+  "out",
+  ".next",
+  ".nuxt",
+  ".cache",
+  ".turbo",
+  ".parcel-cache",
+  ".venv",
+  "venv",
+  "__pycache__",
+  "vendor",
+  ".pytest_cache",
+  ".mypy_cache",
+  ".ruff_cache",
+  "coverage",
+  ".nyc_output",
+  ".idea",
+  ".vscode",
+];
+
+// Fichiers individuels à exclure (nom exact du fichier).
+const EXCLUDED_FILES = [
+  ".DS_Store",
+  "Thumbs.db",
+];
+
+/**
+ * Filtre utilisé par `tar.create`. Retourne `true` pour inclure le chemin,
+ * `false` pour l'exclure.
+ */
+function shouldIncludePath(entryPath: string): boolean {
+  // Normalise les séparateurs (Windows → Unix)
+  const normalized = entryPath.replace(/\\/g, "/").replace(/^\.\//, "");
+  if (normalized === "." || normalized === "") return true;
+
+  // Exclut les fichiers journaux
+  if (normalized.endsWith(".log")) return false;
+
+  const parts = normalized.split("/");
+  const basename = parts[parts.length - 1] ?? "";
+
+  // Exclut les noms de fichiers individuels
+  if (EXCLUDED_FILES.includes(basename)) return false;
+
+  // Exclut si un des segments du chemin est dans EXCLUDED_DIRS
+  for (const part of parts) {
+    if (EXCLUDED_DIRS.includes(part)) return false;
+  }
+
+  return true;
+}
+
+// ============================================================
 // GÉNÉRATION DU DOCKERFILE PAR DÉFAUT
 // ============================================================
 async function fileExists(p: string): Promise<boolean> {
@@ -24,7 +87,7 @@ async function fileExists(p: string): Promise<boolean> {
 function generateDockerfile(tech: string): string {
   if (tech === "NODEJS") {
     return [
-      "FROM node:22-alpine",
+      "FROM node:24-alpine",
       "WORKDIR /app",
       "COPY package*.json ./",
       "RUN npm ci --omit=dev --no-audit --no-fund || npm install --omit=dev --no-audit --no-fund",
@@ -82,7 +145,9 @@ export async function dockerBuildStep(
 ): Promise<StepResult> {
   const imageTag = `devsecops/${ctx.projectId}:${ctx.commitSha.slice(0, 12)}`;
 
-  // 1. Charge le serveur de déploiement du projet
+  // ----------------------------------------------------------
+  // 1. Charge le projet + serveur
+  // ----------------------------------------------------------
   const project = await prisma.project.findUnique({
     where: { id: ctx.projectId },
     include: { server: true },
@@ -111,7 +176,9 @@ export async function dockerBuildStep(
     };
   }
 
+  // ----------------------------------------------------------
   // 2. Prépare le Dockerfile
+  // ----------------------------------------------------------
   let dockerfileArg = "Dockerfile";
   let generated = false;
 
@@ -133,13 +200,19 @@ export async function dockerBuildStep(
     await ctx.log("info", "Dockerfile trouvé dans le repository");
   }
 
-  // 3. Crée l'archive tar.gz du workspace
+  // ----------------------------------------------------------
+  // 3. Crée l'archive tar.gz du workspace (avec exclusions)
+  // ----------------------------------------------------------
   const archivePath = path.join(
     os.tmpdir(),
     `devsecops-build-${ctx.pipelineId}.tar.gz`,
   );
 
-  await ctx.log("info", "Préparation de l'archive source...");
+  await ctx.log(
+    "info",
+    "Préparation de l'archive source (exclusion de node_modules, .git, dist, etc.)...",
+  );
+
   try {
     await tar.create(
       {
@@ -147,6 +220,7 @@ export async function dockerBuildStep(
         file: archivePath,
         cwd: ctx.workspaceDir,
         portable: true,
+        filter: (entryPath: string) => shouldIncludePath(entryPath),
       },
       ["."],
     );
@@ -157,17 +231,19 @@ export async function dockerBuildStep(
   }
 
   const stat = await fs.stat(archivePath);
-  await ctx.log(
-    "info",
-    `Archive créée (${(stat.size / 1024 / 1024).toFixed(1)} MB)`,
-  );
+  const sizeMb = (stat.size / 1024 / 1024).toFixed(2);
+  await ctx.log("info", `Archive créée (${sizeMb} MB)`);
 
+  // ----------------------------------------------------------
   // 4. Connexion SSH
+  // ----------------------------------------------------------
   const ssh = new SshRunner();
+
   let privateKey: string;
   try {
     privateKey = decryptString(server.encryptedPrivateKey);
-  } catch (err) {
+  } catch {
+    await fs.rm(archivePath, { force: true }).catch(() => undefined);
     return {
       success: false,
       exitCode: 1,
@@ -192,20 +268,31 @@ export async function dockerBuildStep(
       passphrase,
     });
 
+    // ------------------------------------------------------
     // 5. Prépare le répertoire distant
-    const prep = await ssh.exec(`mkdir -p "${remoteDir}" && cd "${remoteDir}" && pwd`);
+    // ------------------------------------------------------
+    const prep = await ssh.exec(
+      `mkdir -p "${remoteDir}" && cd "${remoteDir}" && pwd`,
+      30_000,
+    );
     if (prep.code !== 0) {
-      throw new Error(`Préparation du dossier distant échouée : ${prep.stderr}`);
+      throw new Error(
+        `Préparation du dossier distant échouée : ${prep.stderr}`,
+      );
     }
 
+    // ------------------------------------------------------
     // 6. Upload de l'archive
+    // ------------------------------------------------------
     await ctx.log("info", "Envoi de l'archive source vers la VM...");
     await ssh.uploadFile(archivePath, remoteArchive);
 
+    // ------------------------------------------------------
     // 7. Extraction
+    // ------------------------------------------------------
     await ctx.log("info", "Extraction de l'archive sur la VM...");
     const extractCode = await ssh.execStream(
-      `cd "${remoteDir}" && tar -xzf source.tar.gz && rm -f source.tar.gz && ls -la | head -5`,
+      `cd "${remoteDir}" && tar -xzf source.tar.gz && rm -f source.tar.gz && ls -la | head -10`,
       (chunk, stream) => {
         if (stream === "stderr") {
           const line = chunk.trim();
@@ -218,16 +305,17 @@ export async function dockerBuildStep(
       throw new Error(`Extraction tar échouée (code ${extractCode})`);
     }
 
+    // ------------------------------------------------------
     // 8. Build sur la VM
+    // ------------------------------------------------------
     await ctx.log("info", `Build de l'image ${imageTag} sur la VM...`);
     const buildStart = Date.now();
 
     const buildCode = await ssh.execStream(
-      `cd "${remoteDir}" && docker build -f "${dockerfileArg}" -t "${imageTag}" --label devsecops.pipeline=${ctx.pipelineId} --label devsecops.project=${ctx.projectId} .`,
+      `cd "${remoteDir}" && DOCKER_BUILDKIT=1 docker build -f "${dockerfileArg}" -t "${imageTag}" --label devsecops.pipeline=${ctx.pipelineId} --label devsecops.project=${ctx.projectId} .`,
       (chunk, stream) => {
         const trimmed = chunk.trim();
         if (!trimmed) return;
-        // Découpe en lignes pour un affichage propre
         for (const line of trimmed.split("\n")) {
           if (!line.trim()) continue;
           void ctx.log(
@@ -249,7 +337,9 @@ export async function dockerBuildStep(
       `Build réussi en ${(buildDuration / 1000).toFixed(1)}s`,
     );
 
+    // ------------------------------------------------------
     // 9. Récupère l'ID et la taille de l'image
+    // ------------------------------------------------------
     let imageId: string | null = null;
     let sizeBytes: bigint | null = null;
 
@@ -279,7 +369,9 @@ export async function dockerBuildStep(
       }`,
     );
 
+    // ------------------------------------------------------
     // 10. Persiste dans DockerImage
+    // ------------------------------------------------------
     await prisma.dockerImage.upsert({
       where: { pipelineId: ctx.pipelineId },
       create: {
@@ -315,6 +407,7 @@ export async function dockerBuildStep(
   } finally {
     // Nettoyage local
     await fs.rm(archivePath, { force: true }).catch(() => undefined);
+
     // Nettoyage du Dockerfile généré
     if (generated) {
       await fs
@@ -323,10 +416,12 @@ export async function dockerBuildStep(
         })
         .catch(() => undefined);
     }
-    // Nettoyage distant
+
+    // Nettoyage distant (dossier de build)
     await ssh
       .exec(`rm -rf "${remoteDir}"`, 30_000)
       .catch(() => undefined);
+
     await ssh.disconnect().catch(() => undefined);
   }
 }
