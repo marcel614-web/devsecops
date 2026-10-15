@@ -237,11 +237,10 @@ export async function updateGithubConfig(
   });
 
   const complete = !!(
-    row.githubAppId &&
-    row.githubAppSlug &&
-    row.githubPrivateKeyEncrypted &&
-    row.githubWebhookSecretEncrypted
-  );
+  row.githubAppId &&
+  row.githubAppSlug &&
+  row.githubPrivateKeyEncrypted
+);
 
   if (complete !== row.githubConfigured) {
     await prisma.systemConfig.update({

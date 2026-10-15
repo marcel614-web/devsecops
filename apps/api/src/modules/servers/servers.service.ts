@@ -269,3 +269,77 @@ export async function getServerPrivateKeyInternal(serverId: string): Promise<{
       : null,
   };
 }
+
+// apps/api/src/modules/servers/servers.service.ts (ajout à la fin)
+
+import { testServerConnection, type ServerTestResult } from "./ssh-tester.service";
+
+/**
+ * Teste la connexion SSH + vérifie Docker / Docker Compose / Nginx.
+ * Met à jour le status du serveur en base (ok / failed).
+ */
+export async function testServer(
+  actor: ActorContext,
+  serverId: string,
+): Promise<{
+  result: ServerTestResult;
+  status: string;
+  lastCheckedAt: Date;
+}> {
+  await ensureServerAccess(actor, serverId);
+
+  const server = await prisma.deploymentServer.findUnique({
+    where: { id: serverId },
+    select: {
+      id: true,
+      host: true,
+      sshPort: true,
+      username: true,
+      encryptedPrivateKey: true,
+      encryptedPassphrase: true,
+    },
+  });
+  if (!server) throw new NotFoundError("Serveur introuvable");
+
+  const result = await testServerConnection({
+    host: server.host,
+    sshPort: server.sshPort,
+    username: server.username,
+    encryptedPrivateKey: server.encryptedPrivateKey,
+    encryptedPassphrase: server.encryptedPassphrase,
+  });
+
+  // Statut global : "ok" seulement si SSH + Docker OK
+  const globalStatus = result.ssh.ok && result.docker.ok ? "ok" : "failed";
+
+  const now = new Date();
+  await prisma.deploymentServer.update({
+    where: { id: serverId },
+    data: {
+      status: globalStatus,
+      lastCheckedAt: now,
+    },
+  });
+
+  await prisma.auditLog.create({
+    data: {
+      userId: actor.id,
+      action: "SERVER_TESTED",
+      targetType: "DeploymentServer",
+      targetId: serverId,
+      metadataJson: {
+        status: globalStatus,
+        ssh: result.ssh.ok,
+        docker: result.docker.ok,
+        dockerCompose: result.dockerCompose.ok,
+        nginx: result.nginx.ok,
+      },
+    },
+  });
+
+  return {
+    result,
+    status: globalStatus,
+    lastCheckedAt: now,
+  };
+}

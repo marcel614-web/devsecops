@@ -1,5 +1,6 @@
 // apps/worker/src/runners/ssh.runner.ts
 import { Client, type ConnectConfig, type SFTPWrapper } from "ssh2";
+import path from "node:path";
 import { logger } from "../utils/logger";
 
 export interface SshConnectOptions {
@@ -17,10 +18,6 @@ export interface ExecResult {
   code: number;
 }
 
-/**
- * Wrapper haut niveau autour de ssh2.
- * Fournit : exec, execStream, uploadFile.
- */
 export class SshRunner {
   private conn: Client | null = null;
 
@@ -52,15 +49,14 @@ export class SshRunner {
     logger.debug({ host: opts.host, user: opts.username }, "SSH connecté");
   }
 
-  /**
-   * Exécute une commande et retourne stdout/stderr + code.
-   */
   async exec(command: string, timeoutMs = 5 * 60_000): Promise<ExecResult> {
     if (!this.conn) throw new Error("SSH non connecté");
 
     return new Promise((resolve, reject) => {
       const timer = setTimeout(() => {
-        reject(new Error(`Timeout SSH (${timeoutMs}ms) : ${command.slice(0, 80)}`));
+        reject(
+          new Error(`Timeout SSH (${timeoutMs}ms) : ${command.slice(0, 80)}`),
+        );
       }, timeoutMs);
 
       this.conn!.exec(command, (err, stream) => {
@@ -71,7 +67,6 @@ export class SshRunner {
 
         let stdout = "";
         let stderr = "";
-        let code = 0;
 
         stream.on("data", (data: Buffer) => {
           stdout += data.toString("utf8");
@@ -79,17 +74,17 @@ export class SshRunner {
         stream.stderr.on("data", (data: Buffer) => {
           stderr += data.toString("utf8");
         });
-        stream.on("close", (exitCode: number) => {
+        stream.on("close", (code: number) => {
           clearTimeout(timer);
-          code = exitCode ?? 0;
-          resolve({ stdout, stderr, code });
+          resolve({ stdout, stderr, code: code ?? 0 });
         });
       });
     });
   }
 
   /**
-   * Exécute une commande et stream les lignes en temps réel via onData.
+   * Exécute une commande et stream les lignes en temps réel.
+   * Retourne le code de sortie.
    */
   async execStream(
     command: string,
@@ -100,7 +95,11 @@ export class SshRunner {
 
     return new Promise((resolve, reject) => {
       const timer = setTimeout(() => {
-        reject(new Error(`Timeout SSH stream (${timeoutMs}ms) : ${command.slice(0, 80)}`));
+        reject(
+          new Error(
+            `Timeout SSH stream (${timeoutMs}ms) : ${command.slice(0, 80)}`,
+          ),
+        );
       }, timeoutMs);
 
       this.conn!.exec(command, (err, stream) => {
@@ -109,11 +108,15 @@ export class SshRunner {
           return reject(err);
         }
 
-        stream.on("data", (data: Buffer) => onData(data.toString("utf8"), "stdout"));
-        stream.stderr.on("data", (data: Buffer) => onData(data.toString("utf8"), "stderr"));
-        stream.on("close", (exitCode: number) => {
+        stream.on("data", (data: Buffer) =>
+          onData(data.toString("utf8"), "stdout"),
+        );
+        stream.stderr.on("data", (data: Buffer) =>
+          onData(data.toString("utf8"), "stderr"),
+        );
+        stream.on("close", (code: number) => {
           clearTimeout(timer);
-          resolve(exitCode ?? 0);
+          resolve(code ?? 0);
         });
       });
     });
@@ -142,19 +145,21 @@ export class SshRunner {
   }
 
   /**
-   * Écrit un fichier texte distant sans passer par SFTP (via heredoc).
-   * Pratique pour les petits fichiers de config.
+   * Écrit un fichier texte distant sans passer par SFTP.
+   * Encode en base64 pour éviter les problèmes d'échappement.
    */
   async writeRemoteFile(remotePath: string, content: string): Promise<void> {
-    // On évite les injections en base64-encodant le contenu.
     const b64 = Buffer.from(content, "utf8").toString("base64");
+    const dir = path.dirname(remotePath).replace(/\\/g, "/");
     const cmd =
-      `mkdir -p "$(dirname ${remotePath})" && ` +
-      `echo ${b64} | base64 -d > ${remotePath}`;
+      `mkdir -p "${dir}" && ` +
+      `echo "${b64}" | base64 -d > "${remotePath}"`;
 
     const result = await this.exec(cmd, 30_000);
     if (result.code !== 0) {
-      throw new Error(`Ecriture distante echouee (${result.code}) : ${result.stderr}`);
+      throw new Error(
+        `Écriture distante échouée (code ${result.code}) : ${result.stderr.slice(0, 200)}`,
+      );
     }
   }
 

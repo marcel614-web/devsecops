@@ -12,7 +12,6 @@ import {
   Clock,
   Package,
 } from "lucide-react";
-import { PageHeader } from "@/components/layout/PageHeader";
 import { Button } from "@/components/ui/Button";
 import { Card, CardContent } from "@/components/ui/Card";
 import { StatusBadge } from "@/components/ui/Badge";
@@ -21,133 +20,23 @@ import { ErrorState } from "@/components/feedback/ErrorState";
 import { Skeleton } from "@/components/ui/Skeleton";
 import { ConfirmDialog } from "@/components/ui/ConfirmDialog";
 import { useToast } from "@/components/feedback/Toast";
+import { SecurityGatePanel } from "@/components/security/SecurityGatePanel";
+import { ScanSummary } from "@/components/security/ScanSummary";
+import { PipelineTimeline } from "@/components/security/PipelineTimeline";
+import { PipelineLogs } from "@/components/security/PipelineLogs";
+import { PipelineFailureBanner } from "@/components/security/PipelineFailureBanner";
 import {
   useCancelPipeline,
   usePipelineDetail,
   usePipelineScans,
 } from "@/hooks/usePipeline";
+import { getPipelineFailure } from "@/lib/pipelineFailure";
 import { getErrorMessage } from "@/services/api";
 import {
   formatBytes,
   formatDate,
   formatDuration,
 } from "@/lib/utils";
-
-function SecurityGatePanel({ gate }: { gate?: any }) {
-  return (
-    <Card className="h-full border-slate-200 bg-slate-50/50 dark:border-slate-700 dark:bg-slate-900/30">
-      <CardContent className="py-4">
-        <p className="text-sm font-medium mb-2">Gate de sécurité</p>
-        <p className="text-sm text-muted">
-          {gate?.status ?? "INCONNU"}
-        </p>
-        {gate?.reason && (
-          <p className="text-xs text-muted mt-2">{gate.reason}</p>
-        )}
-      </CardContent>
-    </Card>
-  );
-}
-
-function ScanSummary({ scans }: { scans?: any[] }) {
-  if (!scans || scans.length === 0) {
-    return (
-      <Card className="h-full border-slate-200 bg-slate-50/50 dark:border-slate-700 dark:bg-slate-900/30">
-        <CardContent className="py-4">
-          <p className="text-sm font-medium">Résumé des scans</p>
-          <p className="text-sm text-muted mt-2">Aucun scan disponible.</p>
-        </CardContent>
-      </Card>
-    );
-  }
-
-  return (
-    <Card className="h-full border-slate-200 bg-slate-50/50 dark:border-slate-700 dark:bg-slate-900/30">
-      <CardContent className="py-4">
-        <p className="text-sm font-medium mb-2">Résumé des scans</p>
-        <div className="space-y-2">
-          {scans.map((scan, index) => (
-            <div key={scan?.id ?? index} className="flex items-center justify-between gap-2 text-sm">
-              <span className="text-muted">{scan?.name ?? "Scan"}</span>
-              <StatusBadge status={scan?.status ?? "UNKNOWN"} />
-            </div>
-          ))}
-        </div>
-      </CardContent>
-    </Card>
-  );
-}
-
-function PipelineTimeline({
-  steps,
-  selectedStepId,
-  onSelectStep,
-  blockedReason,
-}: {
-  steps?: any[];
-  selectedStepId?: string | null;
-  onSelectStep?: (id: string) => void;
-  blockedReason?: string | null;
-}) {
-  return (
-    <Card className="h-full border-slate-200 bg-slate-50/50 dark:border-slate-700 dark:bg-slate-900/30">
-      <CardContent className="py-4">
-        <p className="text-sm font-medium mb-2">Étapes du pipeline</p>
-        {blockedReason && (
-          <p className="text-xs text-muted mb-3">Bloqué: {blockedReason}</p>
-        )}
-        <div className="space-y-2">
-          {(steps ?? []).map((step) => (
-            <button
-              key={step.id}
-              type="button"
-              onClick={() => onSelectStep?.(step.id)}
-              className={`w-full rounded-md border px-3 py-2 text-left text-sm ${
-                selectedStepId === step.id
-                  ? "border-primary-500 bg-primary-50 dark:bg-primary-950/30"
-                  : "border-slate-200 dark:border-slate-700"
-              }`}
-            >
-              <div className="flex items-center justify-between gap-2">
-                <span>{step.name}</span>
-                <StatusBadge status={step.status} />
-              </div>
-            </button>
-          ))}
-        </div>
-      </CardContent>
-    </Card>
-  );
-}
-
-function PipelineLogs({
-  projectId,
-  pipelineId,
-  stepId,
-  isRunning,
-}: {
-  projectId?: string;
-  pipelineId?: string;
-  stepId?: string | null;
-  isRunning?: boolean;
-}) {
-  return (
-    <Card className="h-full border-slate-200 bg-slate-50/50 dark:border-slate-700 dark:bg-slate-900/30">
-      <CardContent className="py-4">
-        <p className="text-sm font-medium mb-2">Logs</p>
-        <p className="text-sm text-muted">
-          {stepId ? `Étape: ${stepId}` : "Aucune étape sélectionnée."}
-        </p>
-        <p className="text-xs text-muted mt-2">
-          {projectId && pipelineId
-            ? `projectId=${projectId} / pipelineId=${pipelineId}`
-            : "Projet ou pipeline non défini."}
-        </p>
-        {isRunning && <p className="text-xs text-muted mt-2">Pipeline en cours d'exécution.</p>}
-      </CardContent>
-    </Card>
-  );
-}
 
 export function PipelineDetailPage() {
   const { projectId, pipelineId } = useParams<{
@@ -183,7 +72,9 @@ export function PipelineDetailPage() {
     pipelineId ?? "",
   );
 
-  // Sélectionne automatiquement la première étape pertinente.
+  // ------------------------------------------------------------
+  // Sélection automatique de la première étape pertinente
+  // ------------------------------------------------------------
   useEffect(() => {
     if (!pipeline || selectedStepId) return;
     const running = pipeline.steps.find((s) => s.status === "RUNNING");
@@ -194,7 +85,9 @@ export function PipelineDetailPage() {
     setSelectedStepId(running?.id ?? failed?.id ?? first?.id ?? null);
   }, [pipeline, selectedStepId]);
 
-  // Redirection si pas de projectId (cas d'accès direct via /pipelines/:id)
+  // ------------------------------------------------------------
+  // Redirection si pas de projectId (accès direct /pipelines/:id)
+  // ------------------------------------------------------------
   useEffect(() => {
     if (!projectId && pipeline) {
       navigate(`/projects/${pipeline.projectId}/pipelines/${pipeline.id}`, {
@@ -213,8 +106,6 @@ export function PipelineDetailPage() {
         "Demande d'annulation envoyée. Le pipeline va s'arrêter.",
       );
       setConfirmCancel(false);
-      // Le polling détectera le changement de statut, mais on force
-      // aussi un refetch immédiat pour un retour visuel rapide.
       setTimeout(() => refetch(), 500);
     } catch (err) {
       toast.show("error", getErrorMessage(err));
@@ -258,6 +149,11 @@ export function PipelineDetailPage() {
 
   const canCancel =
     pipeline.status === "QUEUED" || pipeline.status === "RUNNING";
+
+  // ------------------------------------------------------------
+  // Cause d'arrêt (si échec ou blocage)
+  // ------------------------------------------------------------
+  const failure = getPipelineFailure(pipeline);
 
   // ------------------------------------------------------------
   // Rendu principal
@@ -312,7 +208,12 @@ export function PipelineDetailPage() {
         </div>
       </div>
 
-      {/* Bandeau d'annulation en cours (feedback visuel) */}
+      {/* Bandeau d'explication en cas d'échec ou de blocage */}
+      {failure && (
+        <PipelineFailureBanner failure={failure} projectId={projectId} />
+      )}
+
+      {/* Bandeau d'annulation (feedback visuel) */}
       {pipeline.status === "CANCELLED" && (
         <Card className="mb-4 border-slate-500/40 bg-slate-500/5">
           <CardContent className="py-3">
@@ -358,9 +259,9 @@ export function PipelineDetailPage() {
             <Info
               icon={Package}
               label="Image Docker"
-              value={`${pipeline.dockerImage.imageTag.split(":").pop()} (${
-                formatBytes(pipeline.dockerImage.sizeBytes)
-              })`}
+              value={`${pipeline.dockerImage.imageTag.split(":").pop()} (${formatBytes(
+                pipeline.dockerImage.sizeBytes,
+              )})`}
               mono
             />
           )}
@@ -427,7 +328,7 @@ export function PipelineDetailPage() {
 }
 
 // ------------------------------------------------------------
-// Petit composant d'affichage clé/valeur
+// Composant d'affichage clé/valeur
 // ------------------------------------------------------------
 interface InfoProps {
   icon?: React.ComponentType<{ className?: string }>;
@@ -442,7 +343,7 @@ function Info({ icon: Icon, label, value, mono }: InfoProps) {
       <p className="text-xs text-muted mb-0.5 flex items-center gap-1">
         {Icon && <Icon className="w-3 h-3" />}
         {label}
-      </p>
+      </p> 
       <p className={`text-sm truncate ${mono ? "font-mono text-xs" : ""}`}>
         {value}
       </p>

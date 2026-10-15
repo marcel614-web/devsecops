@@ -4,9 +4,10 @@ import crypto from "node:crypto";
 import { Octokit } from "@octokit/rest";
 import { logger } from "../../utils/logger";
 import { getGithubConfigInternal } from "../system-config/system-config.service";
+import { env } from "../../config/env";
 
 // ============================================================
-// CACHE DES TOKENS D'INSTALLATION (1h, cachés 55 min)
+// CACHE DES TOKENS D'INSTALLATION
 // ============================================================
 interface CachedToken {
   token: string;
@@ -15,13 +16,20 @@ interface CachedToken {
 const tokenCache = new Map<string, CachedToken>();
 
 // ============================================================
+// SECRET POUR SIGNER LES STATE OAUTH
+// ============================================================
+// Si le webhook secret n'est pas configuré (mode manuel uniquement),
+// on utilise JWT_ACCESS_SECRET comme secret HMAC pour signer les state.
+// Ça évite de bloquer l'installation quand le webhook est désactivé.
+async function getStateSigningSecret(): Promise<string> {
+  const config = await getGithubConfigInternal();
+  if (config?.webhookSecret) return config.webhookSecret;
+  return env.JWT_ACCESS_SECRET;
+}
+
+// ============================================================
 // JWT APP
 // ============================================================
-
-/**
- * Génère un JWT signé avec la clé privée stockée en base.
- * Lève une erreur explicite si la config est incomplète.
- */
 async function generateAppJwt(): Promise<string> {
   const config = await getGithubConfigInternal();
   if (!config) {
@@ -32,11 +40,7 @@ async function generateAppJwt(): Promise<string> {
 
   const now = Math.floor(Date.now() / 1000);
   return jwt.sign(
-    {
-      iat: now - 60,
-      exp: now + 9 * 60,
-      iss: config.appId,
-    },
+    { iat: now - 60, exp: now + 9 * 60, iss: config.appId },
     config.privateKey,
     { algorithm: "RS256" },
   );
@@ -45,23 +49,11 @@ async function generateAppJwt(): Promise<string> {
 // ============================================================
 // OCTOKIT
 // ============================================================
-
-/**
- * Retourne un Octokit authentifié en tant qu'App.
- * Utilisé pour les endpoints /app/* (gestion des installations).
- */
 export async function getAppOctokit(): Promise<Octokit> {
   const appJwt = await generateAppJwt();
-  return new Octokit({
-    auth: appJwt,
-    userAgent: "devsecops-platform",
-  });
+  return new Octokit({ auth: appJwt, userAgent: "devsecops-platform" });
 }
 
-/**
- * Récupère (ou renouvelle) un token d'installation.
- * Les tokens GitHub sont valides 1h, on les cache 55 min.
- */
 export async function getInstallationToken(
   installationId: string,
 ): Promise<string> {
@@ -92,22 +84,13 @@ export async function getInstallationToken(
   return data.token;
 }
 
-/**
- * Octokit scoped sur une installation (accès aux repos de cette installation).
- */
 export async function getInstallationOctokit(
   installationId: string,
 ): Promise<Octokit> {
   const token = await getInstallationToken(installationId);
-  return new Octokit({
-    auth: token,
-    userAgent: "devsecops-platform",
-  });
+  return new Octokit({ auth: token, userAgent: "devsecops-platform" });
 }
 
-/**
- * Vérifie qu'une installation existe côté GitHub.
- */
 export async function fetchInstallation(installationId: string) {
   const appOctokit = await getAppOctokit();
   const { data } = await appOctokit.apps.getInstallation({
@@ -119,23 +102,10 @@ export async function fetchInstallation(installationId: string) {
 // ============================================================
 // STATE SIGNÉ POUR LE FLUX D'INSTALLATION
 // ============================================================
+const STATE_TTL_MS = 15 * 60_000;
 
-const STATE_TTL_MS = 15 * 60_000; // 15 min
-
-async function getWebhookSecret(): Promise<string> {
-  const config = await getGithubConfigInternal();
-  if (!config) {
-    throw new Error("GitHub App non configurée.");
-  }
-  return config.webhookSecret;
-}
-
-/**
- * Signe un state pour le retour d'installation GitHub.
- * Format : base64url(payload).signature
- */
 export async function signInstallState(userId: string): Promise<string> {
-  const secret = await getWebhookSecret();
+  const secret = await getStateSigningSecret();
   const payload = JSON.stringify({
     userId,
     ts: Date.now(),
@@ -149,14 +119,10 @@ export async function signInstallState(userId: string): Promise<string> {
   return `${payloadB64}.${sig}`;
 }
 
-/**
- * Vérifie et décode un state d'installation.
- * Lève une erreur si invalide ou expiré.
- */
 export async function verifyInstallState(
   state: string,
 ): Promise<{ userId: string }> {
-  const secret = await getWebhookSecret();
+  const secret = await getStateSigningSecret();
   const parts = state.split(".");
   if (parts.length !== 2) {
     throw new Error("State malformé");
@@ -185,9 +151,6 @@ export async function verifyInstallState(
   return { userId: payload.userId };
 }
 
-/**
- * Construit l'URL d'installation officielle de la GitHub App.
- */
 export async function buildInstallUrl(userId: string): Promise<string> {
   const config = await getGithubConfigInternal();
   if (!config) {
@@ -200,9 +163,6 @@ export async function buildInstallUrl(userId: string): Promise<string> {
   return `https://github.com/apps/${config.slug}/installations/new?${params.toString()}`;
 }
 
-/**
- * Invalide le cache de tokens (utile après désinstallation).
- */
 export function invalidateInstallationToken(installationId: string): void {
   tokenCache.delete(installationId);
 }

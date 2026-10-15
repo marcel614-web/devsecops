@@ -9,6 +9,7 @@ import {
   Loader2,
   Eye,
   EyeOff,
+  Info,
 } from "lucide-react";
 import { PageHeader } from "@/components/layout/PageHeader";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/Card";
@@ -40,13 +41,11 @@ export function GithubSettingsPage() {
   const [error, setError] = useState<string | null>(null);
   const [testResult, setTestResult] = useState<{ ok: boolean; message: string } | null>(null);
 
-  // Charge les valeurs actuelles (sauf secrets)
   useEffect(() => {
     if (config) {
       setAppId(config.appId ?? "");
       setSlug(config.slug ?? "");
       setClientId(config.clientId ?? "");
-      // Les secrets ne sont jamais renvoyés : on les laisse vides
     }
   }, [config]);
 
@@ -76,7 +75,6 @@ export function GithubSettingsPage() {
         clientSecret: clientSecret.trim() || undefined,
       });
       toast.show("success", "Configuration GitHub App enregistrée");
-      // Reset les champs secrets (ne doivent pas rester affichés)
       setPrivateKey("");
       setWebhookSecret("");
       setClientSecret("");
@@ -103,9 +101,19 @@ export function GithubSettingsPage() {
       />
 
       {/* Statut actuel */}
-      <Card className={`mb-6 border-2 ${config?.configured ? "border-emerald-500/40 bg-emerald-500/5" : "border-amber-500/40 bg-amber-500/5"}`}>
+      <Card
+        className={`mb-6 border-2 ${
+          config?.configured
+            ? "border-emerald-500/40 bg-emerald-500/5"
+            : "border-amber-500/40 bg-amber-500/5"
+        }`}
+      >
         <CardContent className="flex items-center gap-4 py-4">
-          <div className={`w-10 h-10 rounded-full flex items-center justify-center shrink-0 ${config?.configured ? "bg-emerald-500/15" : "bg-amber-500/15"}`}>
+          <div
+            className={`w-10 h-10 rounded-full flex items-center justify-center shrink-0 ${
+              config?.configured ? "bg-emerald-500/15" : "bg-amber-500/15"
+            }`}
+          >
             {config?.configured ? (
               <CheckCircle2 className="w-5 h-5 text-emerald-500" />
             ) : (
@@ -114,12 +122,38 @@ export function GithubSettingsPage() {
           </div>
           <div className="flex-1 min-w-0">
             <p className="text-sm font-medium">
-              {config?.configured ? "GitHub App configurée" : "GitHub App non configurée"}
+              {config?.configured
+                ? "GitHub App configurée"
+                : "GitHub App non configurée"}
             </p>
             <p className="text-xs text-muted mt-0.5">
               {config?.configured
-                ? `App ID ${config.appId} · Slug ${config.slug} · Mise à jour ${config.updatedAt ? timeAgo(config.updatedAt) : "—"}`
+                ? `App ID ${config.appId} · Slug ${config.slug} · Mise à jour ${
+                    config.updatedAt ? timeAgo(config.updatedAt) : "—"
+                  }`
                 : "Renseigne les informations de ta GitHub App ci-dessous pour activer l'intégration."}
+            </p>
+          </div>
+        </CardContent>
+      </Card>
+
+      {/* Note explicative */}
+      <Card className="mb-6 border-blue-500/40 bg-blue-500/5">
+        <CardContent className="flex items-start gap-3 py-4">
+          <div className="w-8 h-8 rounded-full bg-blue-500/15 flex items-center justify-center shrink-0">
+            <Info className="w-4 h-4 text-blue-500" />
+          </div>
+          <div className="text-xs text-muted leading-relaxed">
+            <p>
+              <strong className="text-slate-700 dark:text-slate-200">
+                Déclenchement manuel activé.
+              </strong>{" "}
+              Les pipelines sont lancés depuis l'interface, pas automatiquement
+              sur <code>git push</code>.
+            </p>
+            <p className="mt-1">
+              Le <strong>webhook secret</strong> est donc optionnel — laissez-le
+              vide si vous n'utilisez pas les déclenchements automatiques.
             </p>
           </div>
         </CardContent>
@@ -151,10 +185,12 @@ export function GithubSettingsPage() {
               <Input
                 value={slug}
                 onChange={(e) => setSlug(e.target.value)}
-                placeholder="plateforme-devsecops"
+                placeholder="teste-connection-github"
               />
               <p className="text-xs text-muted mt-1">
-                Segment de l'URL <code>github.com/apps/&lt;slug&gt;</code>
+                Segment de l'URL{" "}
+                <code>github.com/apps/&lt;slug&gt;</code> — en minuscules
+                uniquement
               </p>
             </div>
           </div>
@@ -182,7 +218,10 @@ export function GithubSettingsPage() {
 
           <div>
             <label className="block text-sm mb-1">
-              Webhook secret *
+              Webhook secret{" "}
+              <span className="text-xs text-muted font-normal">
+                (optionnel — déclenchements automatiques uniquement)
+              </span>
               {config?.hasWebhookSecret && (
                 <span className="ml-2 text-xs text-emerald-500">
                   (déjà enregistré)
@@ -193,8 +232,12 @@ export function GithubSettingsPage() {
               type={showSecrets ? "text" : "password"}
               value={webhookSecret}
               onChange={(e) => setWebhookSecret(e.target.value)}
-              placeholder="64 caractères hexadécimaux"
+              placeholder="Laisser vide si vous utilisez uniquement le déclenchement manuel"
             />
+            <p className="text-xs text-muted mt-1">
+              Uniquement si vous voulez que les <code>git push</code>{" "}
+              déclenchent des pipelines.
+            </p>
           </div>
 
           <details className="text-sm">
@@ -214,7 +257,9 @@ export function GithubSettingsPage() {
                 <label className="block text-xs mb-1">
                   Client Secret
                   {config?.hasClientSecret && (
-                    <span className="ml-2 text-emerald-500">(déjà enregistré)</span>
+                    <span className="ml-2 text-emerald-500">
+                      (déjà enregistré)
+                    </span>
                   )}
                 </label>
                 <Input
@@ -232,13 +277,23 @@ export function GithubSettingsPage() {
               onClick={() => setShowSecrets((v) => !v)}
               className="text-xs text-muted hover:text-slate-700 dark:hover:text-slate-200 inline-flex items-center gap-1"
             >
-              {showSecrets ? <EyeOff className="w-3.5 h-3.5" /> : <Eye className="w-3.5 h-3.5" />}
+              {showSecrets ? (
+                <EyeOff className="w-3.5 h-3.5" />
+              ) : (
+                <Eye className="w-3.5 h-3.5" />
+              )}
               {showSecrets ? "Masquer" : "Afficher"} les secrets saisis
             </button>
           </div>
 
           {testResult && (
-            <div className={`text-sm p-3 rounded border ${testResult.ok ? "bg-emerald-500/10 border-emerald-500/30 text-emerald-600 dark:text-emerald-400" : "bg-red-500/10 border-red-500/30 text-red-600 dark:text-red-400"}`}>
+            <div
+              className={`text-sm p-3 rounded border ${
+                testResult.ok
+                  ? "bg-emerald-500/10 border-emerald-500/30 text-emerald-600 dark:text-emerald-400"
+                  : "bg-red-500/10 border-red-500/30 text-red-600 dark:text-red-400"
+              }`}
+            >
               {testResult.ok ? "✓ " : "✗ "}
               {testResult.message}
             </div>

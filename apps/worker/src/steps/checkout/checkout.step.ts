@@ -2,74 +2,171 @@
 import path from "node:path";
 import fs from "node:fs/promises";
 import os from "node:os";
+import { prisma } from "../../utils/prisma";
+import { logger } from "../../utils/logger";
+import { redactGithubSecrets } from "../../utils/github-redact";
+import { getInstallationToken } from "../../services/github-token.service";
+import { getGithubAppConfig } from "../../services/github-config.service";
 import { execFileAsync } from "../../orchestrator/step.executor";
 import type { StepContext, StepResult } from "../../orchestrator/step.executor";
 
 const WORKSPACES_ROOT = path.join(os.tmpdir(), "devsecops-workspaces");
 const MAX_ATTEMPTS = 3;
-const RETRY_DELAY_MS = 5000;
+const RETRY_DELAY_MS = 5_000;
+
+// ============================================================
+// RÉSOLUTION DE L'URL DE CLONE
+// ============================================================
+interface CloneSource {
+  url: string;
+  authHeader: string | null;
+  kind: "local" | "github-app" | "github-mirror" | "github-public";
+}
 
 /**
- * Résout l'URL de clonage :
- *  - "local:CHEMIN" → file:///CHEMIN (repo git local)
- *  - sinon → GitHub avec préfixe miroir optionnel (GIT_MIRROR_PREFIX)
+ * Détermine l'URL et l'authentification pour cloner un repo.
+ *
+ * 1. Repo local "local:..."  → file://
+ * 2. Repo lié à une GitHub App → token d'installation
+ * 3. Fallback : repo public via miroir ghfast.top
+ * 4. Fallback final : GitHub direct
  */
-function resolveRepoUrl(repoFullName: string): {
-  url: string;
-  kind: "local" | "mirror" | "github";
-} {
+async function resolveCloneSource(
+  repoFullName: string,
+  projectId: string,
+): Promise<CloneSource> {
+  // -------- 1. Repo local --------
   if (repoFullName.startsWith("local:")) {
     const localPath = repoFullName.slice("local:".length);
     const normalized = localPath.replace(/\//g, "\\").replace(/\\+/g, "\\");
     return {
       url: `file:///${normalized.replace(/\\/g, "/")}`,
+      authHeader: null,
       kind: "local",
     };
   }
 
-  const raw = `https://github.com/${repoFullName}.git`;
-  const mirrorPrefix = process.env.GIT_MIRROR_PREFIX?.trim() ?? "";
-  if (mirrorPrefix) {
-    return { url: `${mirrorPrefix}${raw}`, kind: "mirror" };
+  // -------- 2. Repo lié à une GitHub App --------
+  const project = await prisma.project.findUnique({
+    where: { id: projectId },
+    select: {
+      githubRepository: {
+        select: {
+          installation: {
+            select: {
+              installationId: true,
+              revokedAt: true,
+              suspendedAt: true,
+            },
+          },
+        },
+      },
+    },
+  });
+
+  const githubApp = await getGithubAppConfig();
+
+  if (
+    githubApp &&
+    project?.githubRepository?.installation &&
+    !project.githubRepository.installation.revokedAt &&
+    !project.githubRepository.installation.suspendedAt
+  ) {
+    try {
+      const token = await getInstallationToken(
+        project.githubRepository.installation.installationId,
+      );
+
+      // Encodage Basic pour le header Git
+      const basicAuth = Buffer.from(`x-access-token:${token}`).toString(
+        "base64",
+      );
+
+      return {
+        url: `https://github.com/${repoFullName}.git`,
+        authHeader: `AUTHORIZATION: basic ${basicAuth}`,
+        kind: "github-app",
+      };
+    } catch (err) {
+      logger.warn(
+        { err, repoFullName },
+        "Échec génération token installation — fallback vers clone public",
+      );
+    }
   }
-  return { url: raw, kind: "github" };
+
+  // -------- 3. Miroir (utile pour réseau instable) --------
+  const mirrorPrefix = process.env.GIT_MIRROR_PREFIX?.trim() ?? "";
+  const raw = `https://github.com/${repoFullName}.git`;
+
+  if (mirrorPrefix) {
+    return {
+      url: `${mirrorPrefix}${raw}`,
+      authHeader: null,
+      kind: "github-mirror",
+    };
+  }
+
+  // -------- 4. GitHub direct --------
+  return {
+    url: raw,
+    authHeader: null,
+    kind: "github-public",
+  };
+}
+
+// ============================================================
+// CLONE AVEC RETRY
+// ============================================================
+interface CloneAttemptResult {
+  ok: boolean;
+  error?: string;
 }
 
 async function tryClone(
-  url: string,
+  source: CloneSource,
   branch: string,
   target: string,
   timeoutMs: number,
-): Promise<{ ok: true } | { ok: false; error: string }> {
+): Promise<CloneAttemptResult> {
+  const args: string[] = [];
+
+  // Header d'authentification Git (jamais persisté sur disque)
+  if (source.authHeader) {
+    args.push("-c", `http.extraheader=${source.authHeader}`);
+  }
+
+  args.push(
+    "clone",
+    "--depth", "1",
+    "--branch", branch,
+    "--single-branch",
+    "--no-tags",
+    source.url,
+    target,
+  );
+
   try {
-    await execFileAsync(
-      "git",
-      [
-        "clone",
-        "--depth", "1",
-        "--branch", branch,
-        "--single-branch",
-        "--no-tags",
-        url,
-        target,
-      ],
-      {
-        timeout: timeoutMs,
-        env: {
-          ...process.env,
-          GIT_TERMINAL_PROMPT: "0",
-          GIT_HTTP_LOW_SPEED_LIMIT: "1000",
-          GIT_HTTP_LOW_SPEED_TIME: "60",
-        },
+    await execFileAsync("git", args, {
+      timeout: timeoutMs,
+      env: {
+        ...process.env,
+        GIT_TERMINAL_PROMPT: "0",
+        GIT_HTTP_LOW_SPEED_LIMIT: "1000",
+        GIT_HTTP_LOW_SPEED_TIME: "60",
       },
-    );
+    });
     return { ok: true };
   } catch (err) {
-    const msg = err instanceof Error ? err.message : String(err);
-    return { ok: false, error: msg };
+    const rawMsg = err instanceof Error ? err.message : String(err);
+    // Toujours masquer les tokens dans le message d'erreur
+    return { ok: false, error: redactGithubSecrets(rawMsg) };
   }
 }
 
+// ============================================================
+// ÉTAPE CHECKOUT
+// ============================================================
 export async function checkoutStep(
   _step: unknown,
   ctx: StepContext,
@@ -77,14 +174,24 @@ export async function checkoutStep(
   await ctx.log("info", `Workspace : ${ctx.workspaceDir}`);
   await fs.mkdir(WORKSPACES_ROOT, { recursive: true });
 
-  const { url, kind } = resolveRepoUrl(ctx.repoFullName);
+  const source = await resolveCloneSource(ctx.repoFullName, ctx.projectId);
 
-  if (kind === "local") {
-    await ctx.log("info", `Repo local détecté : ${url}`);
-  } else if (kind === "mirror") {
-    await ctx.log("info", `Miroir utilisé : ${url}`);
-  } else {
-    await ctx.log("info", `Source : GitHub direct`);
+  switch (source.kind) {
+    case "local":
+      await ctx.log("info", `Repo local détecté`);
+      break;
+    case "github-app":
+      await ctx.log(
+        "info",
+        `Clone via GitHub App (installation authentifiée)`,
+      );
+      break;
+    case "github-mirror":
+      await ctx.log("info", `Clone via miroir Git`);
+      break;
+    case "github-public":
+      await ctx.log("info", `Clone via GitHub direct (public)`);
+      break;
   }
 
   await ctx.log(
@@ -93,6 +200,7 @@ export async function checkoutStep(
   );
 
   let lastError = "";
+
   for (let attempt = 1; attempt <= MAX_ATTEMPTS; attempt++) {
     await fs.rm(ctx.workspaceDir, { recursive: true, force: true });
 
@@ -105,7 +213,12 @@ export async function checkoutStep(
     }
 
     const start = Date.now();
-    const result = await tryClone(url, ctx.branch, ctx.workspaceDir, 5 * 60_000);
+    const result = await tryClone(
+      source,
+      ctx.branch,
+      ctx.workspaceDir,
+      5 * 60_000,
+    );
     const duration = Date.now() - start;
 
     if (result.ok) {
@@ -131,7 +244,7 @@ export async function checkoutStep(
             headSha,
             attempts: attempt,
             cloneDurationMs: duration,
-            sourceKind: kind,
+            sourceKind: source.kind,
           },
         };
       } catch (err) {
@@ -141,7 +254,7 @@ export async function checkoutStep(
       }
     }
 
-    lastError = result.error;
+    lastError = result.error ?? "Erreur inconnue";
     const shortError = lastError
       .split("\n")
       .filter(Boolean)

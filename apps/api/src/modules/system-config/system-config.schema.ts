@@ -19,7 +19,13 @@ export const updateGithubConfigSchema = z
         "Format PEM attendu (-----BEGIN ... PRIVATE KEY-----)",
       )
       .optional(),
-    webhookSecret: z.string().trim().min(16).max(200).optional(),
+    // Webhook secret OPTIONNEL (min 16 si fourni)
+    webhookSecret: z
+      .string()
+      .trim()
+      .min(16, "Au moins 16 caractères si fourni")
+      .max(200)
+      .optional(),
     clientId: z.string().trim().max(100).optional(),
     clientSecret: z.string().trim().max(200).optional(),
     markConfigured: z.boolean().optional(),

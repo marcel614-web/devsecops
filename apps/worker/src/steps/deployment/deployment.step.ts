@@ -1,13 +1,8 @@
 // apps/worker/src/steps/deployment/deployment.step.ts
-import path from "node:path";
-import os from "node:os";
-import fs from "node:fs/promises";
 import { DeploymentStatus } from "@prisma/client";
 import { prisma } from "../../utils/prisma";
-import { logger } from "../../utils/logger";
-import { SshRunner } from "../../runners/ssh.runner";
 import { decryptString } from "../../utils/crypto";
-import { execFileAsync } from "../../orchestrator/step.executor";
+import { SshRunner } from "../../runners/ssh.runner";
 import type { StepContext, StepResult } from "../../orchestrator/step.executor";
 
 // Ports exposés par l'application selon la techno.
@@ -18,14 +13,18 @@ const APP_PORT_BY_TECH: Record<string, number> = {
   UNKNOWN: 80,
 };
 
-// Port externe utilisé sur la VM pour exposer l'application.
-// On évite 80 pour ne pas entrer en conflit avec le Nginx système.
+// Port externe utilisé sur la VM (évite le conflit avec Nginx système).
 const EXTERNAL_PORT = 8080;
 
-/**
- * Construit le docker-compose.yml déployé sur la VM.
- */
-function buildComposeFile(imageTag: string, appPort: number, externalPort: number): string {
+// ============================================================
+// GÉNÉRATION DES FICHIERS DE DÉPLOIEMENT
+// ============================================================
+
+function buildComposeFile(
+  imageTag: string,
+  appPort: number,
+  externalPort: number,
+): string {
   return `services:
   app:
     image: ${imageTag}
@@ -56,9 +55,6 @@ networks:
 `;
 }
 
-/**
- * Construit le nginx.conf qui redirige vers le conteneur app.
- */
 function buildNginxConf(appPort: number): string {
   return `server {
   listen 80;
@@ -77,22 +73,9 @@ function buildNginxConf(appPort: number): string {
 `;
 }
 
-/**
- * Sauvegarde l'image Docker en archive tar.gz locale.
- */
-async function saveImageLocally(imageTag: string): Promise<string> {
-  const tmpPath = path.join(os.tmpdir(), `devsecops-image-${Date.now()}.tar.gz`);
-
-  // docker save image | gzip > file.tar.gz
-  // On utilise sh pour gérer le pipe.
-  await execFileAsync(
-    "sh",
-    ["-c", `docker save ${imageTag} | gzip > "${tmpPath}"`],
-    { timeout: 15 * 60_000, shell: true },
-  );
-
-  return tmpPath;
-}
+// ============================================================
+// ÉTAPE DÉPLOIEMENT
+// ============================================================
 
 export async function deploymentStep(
   _step: unknown,
@@ -100,9 +83,9 @@ export async function deploymentStep(
 ): Promise<StepResult> {
   await ctx.log("info", "Déploiement : initialisation...");
 
-  // ------------------------------------------------------------
+  // ----------------------------------------------------------
   // 1. Charge le projet + serveur
-  // ------------------------------------------------------------
+  // ----------------------------------------------------------
   const project = await prisma.project.findUnique({
     where: { id: ctx.projectId },
     include: { server: true },
@@ -121,7 +104,7 @@ export async function deploymentStep(
     };
   }
 
-  if (!project.serverId || !project.server) {
+  if (!project.server) {
     await ctx.log("warn", "Aucun serveur de déploiement associé — étape ignorée");
     return {
       success: true,
@@ -132,11 +115,23 @@ export async function deploymentStep(
 
   const server = project.server;
 
-  // ------------------------------------------------------------
-  // 2. Charge l'image Docker
-  // ------------------------------------------------------------
+  // ----------------------------------------------------------
+  // 2. Vérifie que la clé SSH est présente (narrowing TypeScript)
+  // ----------------------------------------------------------
+  if (!server.encryptedPrivateKey) {
+    return {
+      success: false,
+      exitCode: 1,
+      error: "Clé SSH du serveur manquante",
+    };
+  }
+
+  // ----------------------------------------------------------
+  // 3. Charge l'image Docker construite sur la VM
+  // ----------------------------------------------------------
   const image = await prisma.dockerImage.findUnique({
     where: { pipelineId: ctx.pipelineId },
+    select: { imageTag: true },
   });
 
   if (!image) {
@@ -147,12 +142,15 @@ export async function deploymentStep(
     };
   }
 
-  await ctx.log("info", `Serveur cible : ${server.name} (${server.host}:${server.sshPort})`);
+  await ctx.log(
+    "info",
+    `Serveur cible : ${server.name} (${server.host}:${server.sshPort})`,
+  );
   await ctx.log("info", `Image à déployer : ${image.imageTag}`);
 
-  // ------------------------------------------------------------
-  // 3. Crée l'entrée Deployment
-  // ------------------------------------------------------------
+  // ----------------------------------------------------------
+  // 4. Crée l'entrée Deployment
+  // ----------------------------------------------------------
   const deployment = await prisma.deployment.create({
     data: {
       pipelineId: ctx.pipelineId,
@@ -163,7 +161,7 @@ export async function deploymentStep(
       imageTag: image.imageTag,
       releaseVersion: ctx.commitSha.slice(0, 12),
     },
-    select: { id: true },
+    select: { id: true, startedAt: true },
   });
 
   await prisma.auditLog.create({
@@ -178,27 +176,40 @@ export async function deploymentStep(
 
   const appPort = APP_PORT_BY_TECH[project.technology] ?? 80;
   const remoteDir = `/home/${server.username}/apps/${project.id}`;
-  const remoteImagePath = `${remoteDir}/image.tar.gz`;
 
   const ssh = new SshRunner();
-  let localImagePath: string | null = null;
+
+  // ----------------------------------------------------------
+  // 5. Déchiffre la clé SSH
+  // ----------------------------------------------------------
+  let privateKey: string;
+  try {
+    privateKey = decryptString(server.encryptedPrivateKey);
+  } catch {
+    await prisma.deployment.update({
+      where: { id: deployment.id },
+      data: {
+        status: DeploymentStatus.FAILED,
+        finishedAt: new Date(),
+        error: "Impossible de déchiffrer la clé SSH",
+      },
+    });
+    return {
+      success: false,
+      exitCode: 1,
+      error: "Impossible de déchiffrer la clé SSH",
+    };
+  }
+
+  const passphrase = server.encryptedPassphrase
+    ? decryptString(server.encryptedPassphrase)
+    : undefined;
 
   try {
-    // ----------------------------------------------------------
-    // 4. Connexion SSH
-    // ----------------------------------------------------------
+    // --------------------------------------------------------
+    // 6. Connexion SSH
+    // --------------------------------------------------------
     await ctx.log("info", "Connexion SSH...");
-    const privateKey = decryptString(
-      (await prisma.deploymentServer.findUniqueOrThrow({
-        where: { id: server.id },
-        select: { encryptedPrivateKey: true, encryptedPassphrase: true },
-      })).encryptedPrivateKey ?? "",
-    );
-
-    const passphrase = server.encryptedPassphrase
-      ? decryptString(server.encryptedPassphrase)
-      : undefined;
-
     await ssh.connect({
       host: server.host,
       port: server.sshPort,
@@ -208,114 +219,90 @@ export async function deploymentStep(
     });
     await ctx.log("info", "SSH connecté");
 
-    // ----------------------------------------------------------
-    // 5. Préparation du répertoire distant
-    // ----------------------------------------------------------
-    const prep = await ssh.exec(`mkdir -p ${remoteDir} && cd ${remoteDir} && pwd`, 30_000);
+    // --------------------------------------------------------
+    // 7. Prépare le répertoire distant
+    // --------------------------------------------------------
+    const prep = await ssh.exec(
+      `mkdir -p "${remoteDir}" && cd "${remoteDir}" && pwd`,
+      30_000,
+    );
     if (prep.code !== 0) {
-      throw new Error(`Préparation du dossier distant échouée : ${prep.stderr}`);
+      throw new Error(`Préparation dossier distant échouée : ${prep.stderr}`);
     }
     await ctx.log("info", `Répertoire distant prêt : ${remoteDir}`);
 
-    // ----------------------------------------------------------
-    // 6. Écriture du docker-compose.yml + nginx.conf
-    // ----------------------------------------------------------
+    // --------------------------------------------------------
+    // 8. Écrit les fichiers de configuration
+    // --------------------------------------------------------
     await ctx.log("info", "Écriture de docker-compose.yml et nginx.conf...");
     await ssh.writeRemoteFile(
       `${remoteDir}/docker-compose.yml`,
       buildComposeFile(image.imageTag, appPort, EXTERNAL_PORT),
     );
-    await ssh.writeRemoteFile(
-      `${remoteDir}/nginx.conf`,
-      buildNginxConf(appPort),
-    );
+    await ssh.writeRemoteFile(`${remoteDir}/nginx.conf`, buildNginxConf(appPort));
 
-    // ----------------------------------------------------------
-    // 7. Transfert de l'image Docker
-    // ----------------------------------------------------------
-    await ctx.log("info", "Sauvegarde locale de l'image Docker...");
-    localImagePath = await saveImageLocally(image.imageTag);
-    const stat = await fs.stat(localImagePath);
-    await ctx.log(
-      "info",
-      `Archive créée : ${(stat.size / 1024 / 1024).toFixed(1)} MB — envoi en cours...`,
-    );
-
-    await ssh.uploadFile(localImagePath, remoteImagePath);
-    await ctx.log("info", "Archive transférée — chargement de l'image...");
-
-    const loadCode = await ssh.execStream(
-      `docker load -i ${remoteImagePath}`,
-      (chunk, stream) => {
-        const line = chunk.trim();
-        if (line) void ctx.log(stream === "stderr" ? "debug" : "info", `[load] ${line}`);
-      },
-      10 * 60_000,
-    );
-    if (loadCode !== 0) {
-      throw new Error(`docker load a échoué (code ${loadCode})`);
-    }
-    await ctx.log("info", "Image chargée sur le serveur");
-
-    // ----------------------------------------------------------
-    // 8. Démarrage des conteneurs
-    // ----------------------------------------------------------
+    // --------------------------------------------------------
+    // 9. Démarre les conteneurs
+    // --------------------------------------------------------
     await ctx.log("info", "Lancement des conteneurs (docker compose up -d)...");
     const upCode = await ssh.execStream(
-      `cd ${remoteDir} && docker compose up -d --remove-orphans`,
+      `cd "${remoteDir}" && docker compose up -d --remove-orphans`,
       (chunk, stream) => {
         const line = chunk.trim();
-        if (line) void ctx.log(stream === "stderr" ? "debug" : "info", `[compose] ${line}`);
+        if (!line) return;
+        for (const l of line.split("\n")) {
+          if (l.trim()) {
+            void ctx.log(
+              stream === "stderr" ? "debug" : "info",
+              `[compose] ${l}`,
+            );
+          }
+        }
       },
       5 * 60_000,
     );
+
     if (upCode !== 0) {
       throw new Error(`docker compose up a échoué (code ${upCode})`);
     }
 
-    // ----------------------------------------------------------
-    // 9. Healthcheck HTTP
-    // ----------------------------------------------------------
+    // --------------------------------------------------------
+    // 10. Healthcheck HTTP
+    // --------------------------------------------------------
     const appUrl = `http://${server.host}:${EXTERNAL_PORT}`;
     await ctx.log("info", `Healthcheck sur ${appUrl}...`);
 
-    await new Promise((r) => setTimeout(r, 5000)); // laisse le temps aux conteneurs de démarrer
+    await new Promise((r) => setTimeout(r, 5_000));
 
-    const healthCmd = `curl -sS -o /dev/null -w "%{http_code}" --max-time 10 ${appUrl}/ || echo "FAILED"`;
-    const health = await ssh.exec(healthCmd, 20_000);
+    const health = await ssh.exec(
+      `curl -sS -o /dev/null -w "%{http_code}" --max-time 10 "${appUrl}/" || echo "FAILED"`,
+      20_000,
+    );
+
     const httpCode = health.stdout.trim();
-
     if (httpCode === "FAILED" || !/^[23]/.test(httpCode)) {
       await ctx.log("warn", `Healthcheck retourne : ${httpCode} (non bloquant)`);
     } else {
       await ctx.log("info", `Healthcheck OK (HTTP ${httpCode})`);
     }
 
-    // ----------------------------------------------------------
-    // 10. Persiste le succès
-    // ----------------------------------------------------------
+    // --------------------------------------------------------
+    // 11. Persiste le succès
+    // --------------------------------------------------------
     const finishedAt = new Date();
-    const durationMs = finishedAt.getTime() - (deployment ? new Date().getTime() : finishedAt.getTime());
+    const durationMs = deployment.startedAt
+      ? finishedAt.getTime() - deployment.startedAt.getTime()
+      : null;
 
     await prisma.deployment.update({
       where: { id: deployment.id },
       data: {
         status: DeploymentStatus.SUCCESS,
         finishedAt,
-        durationMs: finishedAt.getTime() - (new Date()).getTime(), // sera recalculé
+        durationMs,
         url: appUrl,
-        imageTag: image.imageTag,
       },
     });
-
-    // Correction : calcule la durée correctement
-    const dep = await prisma.deployment.findUniqueOrThrow({ where: { id: deployment.id } });
-    if (dep.startedAt) {
-      await prisma.deployment.update({
-        where: { id: deployment.id },
-        data: { durationMs: finishedAt.getTime() - dep.startedAt.getTime() },
-      });
-    }
 
     await ctx.log("info", `Déploiement réussi : ${appUrl}`);
 
@@ -355,12 +342,6 @@ export async function deploymentStep(
 
     return { success: false, exitCode: 1, error: msg };
   } finally {
-    // Nettoyage local
-    if (localImagePath) {
-      await fs.rm(localImagePath, { force: true }).catch(() => undefined);
-    }
-    // Nettoyage distant
-    await ssh.exec(`rm -f ${remoteImagePath}`, 30_000).catch(() => undefined);
     await ssh.disconnect().catch(() => undefined);
   }
 }

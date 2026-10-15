@@ -1,14 +1,22 @@
-import { clsx } from "clsx";
-import type { SelectHTMLAttributes } from "react";
+// apps/web/src/components/ui/Select.tsx
+import { forwardRef, type SelectHTMLAttributes } from "react";
+import { cn } from "@/lib/utils";
 
-export function Select({ className, ...props }: SelectHTMLAttributes<HTMLSelectElement>) {
-  return (
-    <select
-      {...props}
-      className={clsx(
-        "w-full px-3 py-2 rounded-md bg-slate-900 border border-border text-slate-100 focus:outline-none focus:ring-2 focus:ring-blue-500",
-        className,
-      )}
-    />
-  );
-}
+export const Select = forwardRef<
+  HTMLSelectElement,
+  SelectHTMLAttributes<HTMLSelectElement>
+>(({ className, children, ...props }, ref) => (
+  <select
+    ref={ref}
+    className={cn(
+      "w-full px-3 py-2 rounded-md bg-surface border border-border text-slate-800 dark:text-slate-100",
+      "focus:outline-none focus:ring-2 focus:ring-primary-500 focus:border-transparent",
+      "disabled:opacity-50 disabled:cursor-not-allowed",
+      className,
+    )}
+    {...props}
+  >
+    {children}
+  </select>
+));
+Select.displayName = "Select";

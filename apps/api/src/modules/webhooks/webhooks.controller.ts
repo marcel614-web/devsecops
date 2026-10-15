@@ -15,13 +15,14 @@ import { getGithubConfigInternal } from "../system-config/system-config.service"
 async function verifySignature(
   rawBody: string,
   signature: string | undefined,
-): Promise<boolean> {
-  if (!signature || !signature.startsWith("sha256=")) return false;
+): Promise<{ valid: boolean; reason?: string }> {
+  if (!signature || !signature.startsWith("sha256=")) {
+    return { valid: false, reason: "missing_signature" };
+  }
 
   const config = await getGithubConfigInternal();
-  if (!config) {
-    logger.warn("Webhook reçu mais GitHub App non configurée");
-    return false;
+  if (!config || !config.webhookSecret) {
+    return { valid: false, reason: "webhook_not_configured" };
   }
 
   const expected = `sha256=${crypto
@@ -30,12 +31,13 @@ async function verifySignature(
     .digest("hex")}`;
 
   try {
-    return crypto.timingSafeEqual(
+    const ok = crypto.timingSafeEqual(
       Buffer.from(signature),
       Buffer.from(expected),
     );
+    return { valid: ok, reason: ok ? undefined : "invalid_signature" };
   } catch {
-    return false;
+    return { valid: false, reason: "invalid_signature" };
   }
 }
 
@@ -51,20 +53,34 @@ export async function githubWebhook(
   const delivery = req.headers["x-github-delivery"] as string;
   const signature = req.headers["x-hub-signature-256"] as string | undefined;
 
-  // 1. Vérification signature (asynchrone car secret lu en base)
   const rawBody = (req as Request & { rawBody?: string }).rawBody ?? "";
 
-  const valid = await verifySignature(rawBody, signature);
-  if (!valid) {
-    logger.warn({ delivery }, "Webhook GitHub : signature invalide");
+  const verification = await verifySignature(rawBody, signature);
+
+  if (!verification.valid) {
+    // Si le webhook n'est juste pas configuré, on répond 200 pour ne pas
+    // faire échouer GitHub (utile en mode déclenchement manuel uniquement).
+    if (verification.reason === "webhook_not_configured") {
+      logger.debug(
+        { delivery },
+        "Webhook reçu mais non configuré — ignoré silencieusement",
+      );
+      res.status(200).json({ status: "ignored", reason: "not_configured" });
+      return;
+    }
+
+    logger.warn(
+      { delivery, reason: verification.reason },
+      "Webhook GitHub : signature invalide",
+    );
     res.status(401).json({ error: "Invalid signature" });
     return;
   }
 
-  // 2. Réponse immédiate (GitHub exige < 10 s)
+  // Réponse immédiate
   res.status(202).json({ status: "accepted" });
 
-  // 3. Traitement asynchrone
+  // Traitement asynchrone
   try {
     const already = await prisma.webhookEvent.findUnique({
       where: { deliveryId: delivery },
@@ -90,7 +106,6 @@ export async function githubWebhook(
       select: { id: true },
     });
 
-    // Dispatch selon le type d'événement
     switch (event) {
       case "push":
         await handlePush(payload, webhookRecord.id);
@@ -167,7 +182,6 @@ async function handlePush(payload: PushEvent, webhookRecordId: string) {
     "Push GitHub reçu",
   );
 
-  // Trouve le repository en base
   const repo = await prisma.gitHubRepository.findFirst({
     where: { repositoryId: repoId },
     select: {
@@ -189,7 +203,6 @@ async function handlePush(payload: PushEvent, webhookRecordId: string) {
     return;
   }
 
-  // Trouve les projets liés à ce repository
   const projects = await prisma.project.findMany({
     where: { githubRepositoryId: repo.id },
     include: {
@@ -204,7 +217,6 @@ async function handlePush(payload: PushEvent, webhookRecordId: string) {
   }
 
   for (const project of projects) {
-    // Vérifie que la branche surveillée matche
     const monitored = project.monitoredBranch ?? project.defaultBranch;
     if (monitored !== branch) {
       logger.debug(
@@ -214,7 +226,6 @@ async function handlePush(payload: PushEvent, webhookRecordId: string) {
       continue;
     }
 
-    // Crée le pipeline + steps
     const pipeline = await prisma.$transaction(async (tx) => {
       const created = await tx.pipeline.create({
         data: {
