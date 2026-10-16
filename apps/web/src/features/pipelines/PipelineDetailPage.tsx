@@ -1,17 +1,6 @@
-// apps/web/src/features/pipelines/PipelineDetailPage.tsx
 import { useEffect, useState } from "react";
 import { Link, useParams, useNavigate } from "react-router-dom";
-import {
-  ArrowLeft,
-  RefreshCw,
-  XCircle,
-  ExternalLink,
-  GitBranch,
-  GitCommit,
-  User,
-  Clock,
-  Package,
-} from "lucide-react";
+import { RefreshCw, XCircle, ExternalLink, GitBranch, GitCommit, User, Clock, Package, ChevronRight, Copy, Check, Timer, PlayCircle, Flag } from "lucide-react";
 import { Button } from "@/components/ui/Button";
 import { Card, CardContent } from "@/components/ui/Card";
 import { StatusBadge } from "@/components/ui/Badge";
@@ -25,86 +14,42 @@ import { ScanSummary } from "@/components/security/ScanSummary";
 import { PipelineTimeline } from "@/components/security/PipelineTimeline";
 import { PipelineLogs } from "@/components/security/PipelineLogs";
 import { PipelineFailureBanner } from "@/components/security/PipelineFailureBanner";
-import {
-  useCancelPipeline,
-  usePipelineDetail,
-  usePipelineScans,
-} from "@/hooks/usePipeline";
+import { useCancelPipeline, usePipelineDetail, usePipelineScans } from "@/hooks/usePipeline";
 import { getPipelineFailure } from "@/lib/pipelineFailure";
 import { getErrorMessage } from "@/services/api";
-import {
-  formatBytes,
-  formatDate,
-  formatDuration,
-} from "@/lib/utils";
+import { formatBytes, formatDate, formatDuration, cn } from "@/lib/utils";
 
 export function PipelineDetailPage() {
-  const { projectId, pipelineId } = useParams<{
-    projectId?: string;
-    pipelineId: string;
-  }>();
+  const { projectId, pipelineId } = useParams<{ projectId?: string; pipelineId: string }>();
   const navigate = useNavigate();
   const toast = useToast();
 
   const [selectedStepId, setSelectedStepId] = useState<string | null>(null);
   const [confirmCancel, setConfirmCancel] = useState(false);
+  const [copied, setCopied] = useState(false);
 
-  const {
-    data: pipeline,
-    isLoading,
-    isError,
-    error,
-    refetch,
-    isFetching,
-  } = usePipelineDetail(projectId, pipelineId);
+  const { data: pipeline, isLoading, isError, error, refetch, isFetching } = usePipelineDetail(projectId, pipelineId);
+  const isRunning = pipeline?.status === "QUEUED" || pipeline?.status === "RUNNING";
+  const { data: scans } = usePipelineScans(projectId, pipelineId, !isRunning && !!pipeline);
+  const cancelMutation = useCancelPipeline(projectId ?? "", pipelineId ?? "");
 
-  const isRunning =
-    pipeline?.status === "QUEUED" || pipeline?.status === "RUNNING";
-
-  const { data: scans } = usePipelineScans(
-    projectId,
-    pipelineId,
-    !isRunning && !!pipeline,
-  );
-
-  const cancelMutation = useCancelPipeline(
-    projectId ?? "",
-    pipelineId ?? "",
-  );
-
-  // ------------------------------------------------------------
-  // Sélection automatique de la première étape pertinente
-  // ------------------------------------------------------------
   useEffect(() => {
     if (!pipeline || selectedStepId) return;
     const running = pipeline.steps.find((s) => s.status === "RUNNING");
-    const failed = pipeline.steps.find(
-      (s) => s.status === "FAILED" || s.status === "SECURITY_BLOCKED",
-    );
-    const first = pipeline.steps[0];
-    setSelectedStepId(running?.id ?? failed?.id ?? first?.id ?? null);
+    const failed = pipeline.steps.find((s) => s.status === "FAILED" || s.status === "SECURITY_BLOCKED");
+    setSelectedStepId(running?.id ?? failed?.id ?? pipeline.steps[0]?.id ?? null);
   }, [pipeline, selectedStepId]);
 
-  // ------------------------------------------------------------
-  // Redirection si pas de projectId (accès direct /pipelines/:id)
-  // ------------------------------------------------------------
   useEffect(() => {
     if (!projectId && pipeline) {
-      navigate(`/projects/${pipeline.projectId}/pipelines/${pipeline.id}`, {
-        replace: true,
-      });
+      navigate(`/projects/${pipeline.projectId}/pipelines/${pipeline.id}`, { replace: true });
     }
   }, [projectId, pipeline, navigate]);
-
-  const handleSelectStep = (id: string) => setSelectedStepId(id);
 
   const handleCancel = async () => {
     try {
       await cancelMutation.mutateAsync();
-      toast.show(
-        "success",
-        "Demande d'annulation envoyée. Le pipeline va s'arrêter.",
-      );
+      toast.show("success", "Annulation demandée. Le pipeline va s'arrêter.");
       setConfirmCancel(false);
       setTimeout(() => refetch(), 500);
     } catch (err) {
@@ -113,210 +58,133 @@ export function PipelineDetailPage() {
     }
   };
 
-  // ------------------------------------------------------------
-  // État de chargement
-  // ------------------------------------------------------------
   if (isLoading) {
     return (
       <div className="space-y-4">
-        <div className="flex items-center gap-3">
-          <Skeleton className="h-8 w-8 rounded-full" />
-          <Skeleton className="h-8 w-64" />
-        </div>
-        <Skeleton className="h-32" />
-        <div className="grid grid-cols-1 lg:grid-cols-2 gap-4">
-          <Skeleton className="h-96" />
-          <Skeleton className="h-96" />
+        <Skeleton className="h-4 w-56" />
+        <Skeleton className="h-10 w-80" />
+        <Skeleton className="h-28 rounded-xl" />
+        <div className="grid grid-cols-1 gap-4 lg:grid-cols-2">
+          <Skeleton className="h-96 rounded-xl" />
+          <Skeleton className="h-96 rounded-xl" />
         </div>
       </div>
     );
   }
 
-  // ------------------------------------------------------------
-  // Erreur
-  // ------------------------------------------------------------
   if (isError || !pipeline) {
     return (
       <ErrorState
         title="Pipeline introuvable"
-        description={
-          error instanceof Error ? error.message : "Une erreur est survenue."
-        }
+        description={error instanceof Error ? error.message : "Une erreur est survenue."}
         onRetry={() => refetch()}
       />
     );
   }
 
-  const canCancel =
-    pipeline.status === "QUEUED" || pipeline.status === "RUNNING";
-
-  // ------------------------------------------------------------
-  // Cause d'arrêt (si échec ou blocage)
-  // ------------------------------------------------------------
   const failure = getPipelineFailure(pipeline);
 
-  // ------------------------------------------------------------
-  // Rendu principal
-  // ------------------------------------------------------------
-  return (
-    <div>
-      {/* En-tête : retour + titre + statut + actions */}
-      <div className="flex items-center gap-3 mb-4">
-        {projectId && (
-          <Link
-            to={`/projects/${projectId}?tab=pipelines`}
-            className="text-muted hover:text-slate-700 dark:hover:text-slate-200 shrink-0"
-            title="Retour au projet"
-          >
-            <ArrowLeft className="w-5 h-5" />
-          </Link>
-        )}
-        <div className="flex-1 min-w-0">
-          <h1 className="text-2xl font-bold truncate flex items-center gap-3 flex-wrap">
-            <span>Pipeline</span>
-            <span className="font-mono text-muted text-lg">
-              #{pipeline.id.slice(0, 8)}
-            </span>
-            <StatusBadge status={pipeline.status} />
-          </h1>
-        </div>
+  const copySha = async () => {
+    try {
+      await navigator.clipboard.writeText(pipeline.commitSha);
+      setCopied(true);
+      setTimeout(() => setCopied(false), 1500);
+    } catch {
+      toast.show("error", "Copie impossible");
+    }
+  };
 
-        <div className="flex items-center gap-2 shrink-0">
-          <Button
-            variant="ghost"
-            size="sm"
-            onClick={() => refetch()}
-            disabled={isFetching}
-            title="Rafraîchir"
-          >
-            <RefreshCw
-              className={`w-4 h-4 ${isFetching ? "animate-spin" : ""}`}
-            />
+  return (
+    <div className="space-y-4">
+
+      <div className="flex flex-wrap items-center gap-3">
+        <div className="flex min-w-0 flex-1 flex-wrap items-center gap-3">
+          <h1 className="text-2xl font-bold">Pipeline</h1>
+          <StatusBadge status={pipeline.status} />
+          {isRunning && (
+            <span className="inline-flex items-center gap-1.5 text-xs text-muted">
+              <span className="h-2 w-2 animate-pulse rounded-full bg-emerald-500" /> En cours d'exécution
+            </span>
+          )}
+        </div>
+        <div className="flex shrink-0 items-center gap-2">
+          <Button variant="ghost" size="sm" onClick={() => refetch()} disabled={isFetching} title="Rafraîchir" className="gap-1.5">
+            <RefreshCw className={cn("h-4 w-4", isFetching && "animate-spin")} />
             <span className="hidden md:inline">Rafraîchir</span>
           </Button>
-          {canCancel && (
-            <Button
-              variant="danger"
-              size="sm"
-              onClick={() => setConfirmCancel(true)}
-              title="Annuler le pipeline"
-            >
-              <XCircle className="w-4 h-4" />
+          {isRunning && (
+            <Button variant="danger" size="sm" onClick={() => setConfirmCancel(true)} className="gap-1.5">
+              <XCircle className="h-4 w-4" />
               <span className="hidden md:inline">Annuler</span>
             </Button>
           )}
         </div>
       </div>
 
-      {/* Bandeau d'explication en cas d'échec ou de blocage */}
-      {failure && (
-        <PipelineFailureBanner failure={failure} projectId={projectId} />
-      )}
+      {failure && <PipelineFailureBanner failure={failure} projectId={projectId} />}
 
-      {/* Bandeau d'annulation (feedback visuel) */}
       {pipeline.status === "CANCELLED" && (
-        <Card className="mb-4 border-slate-500/40 bg-slate-500/5">
+        <Card className="border-slate-500/40 bg-slate-500/5">
           <CardContent className="py-3">
             <p className="text-sm text-slate-500 dark:text-slate-400">
-              Ce pipeline a été <strong>annulé</strong>. Les étapes qui
-              n'avaient pas encore démarré ne seront pas exécutées.
+              Ce pipeline a été <strong>annulé</strong>. Les étapes non démarrées ne seront pas exécutées.
             </p>
           </CardContent>
         </Card>
       )}
 
-      {/* Informations d'exécution */}
-      <Card className="mb-4">
-        <CardContent className="grid grid-cols-2 md:grid-cols-4 gap-4 py-4">
-          <Info
-            icon={GitCommit}
-            label="Commit"
-            value={pipeline.commitSha.slice(0, 10)}
-            mono
-          />
-          <Info
-            icon={GitBranch}
-            label="Branche"
-            value={pipeline.branch}
-            mono
-          />
-          <Info
-            icon={User}
-            label="Auteur"
-            value={pipeline.author.slice(0, 12)}
-          />
-          <Info icon={Clock} label="Trigger" value={pipeline.trigger} />
-          <Info
-            label="Démarrage"
-            value={pipeline.startedAt ? formatDate(pipeline.startedAt) : "—"}
-          />
-          <Info
-            label="Fin"
-            value={pipeline.finishedAt ? formatDate(pipeline.finishedAt) : "—"}
-          />
-          <Info label="Durée" value={formatDuration(pipeline.durationMs)} />
+      <Card>
+        <CardContent className="grid grid-cols-2 gap-x-4 gap-y-4 py-4 md:grid-cols-4">
+          <Info icon={GitCommit} label="Commit" value={pipeline.commitSha.slice(0, 10)} mono
+            action={
+              <button type="button" onClick={copySha} aria-label="Copier le SHA complet" className="rounded p-0.5 text-muted hover:text-slate-800 dark:hover:text-slate-100">
+                {copied ? <Check className="h-3 w-3 text-emerald-500" /> : <Copy className="h-3 w-3" />}
+              </button>
+            } />
+          <Info icon={GitBranch} label="Branche" value={pipeline.branch} mono />
+          <Info icon={User} label="Auteur" value={pipeline.author.slice(0, 16)} />
+          <Info icon={Clock} label="Déclencheur" value={pipeline.trigger} />
+          <Info icon={PlayCircle} label="Démarrage" value={pipeline.startedAt ? formatDate(pipeline.startedAt) : "—"} />
+          <Info icon={Flag} label="Fin" value={pipeline.finishedAt ? formatDate(pipeline.finishedAt) : "—"} />
+          <Info icon={Timer} label="Durée" value={formatDuration(pipeline.durationMs)} />
           {pipeline.dockerImage && (
-            <Info
-              icon={Package}
-              label="Image Docker"
-              value={`${pipeline.dockerImage.imageTag.split(":").pop()} (${formatBytes(
-                pipeline.dockerImage.sizeBytes,
-              )})`}
-              mono
-            />
+            <Info icon={Package} label="Image Docker"
+              value={`${pipeline.dockerImage.imageTag.split(":").pop()} · ${formatBytes(pipeline.dockerImage.sizeBytes)}`} mono />
           )}
         </CardContent>
       </Card>
 
-      {/* Security Gate + résumé des scans */}
-      <div className="grid grid-cols-1 lg:grid-cols-2 gap-4 mb-6">
+      <div className="grid grid-cols-1 gap-4 lg:grid-cols-2">
         <SecurityGatePanel gate={pipeline.gateResult} />
         {scans && <ScanSummary scans={scans} />}
       </div>
 
-      {/* Timeline + Logs */}
-      <div className="grid grid-cols-1 lg:grid-cols-2 gap-4">
+      <div className="grid grid-cols-1 gap-4 lg:grid-cols-2">
         <PipelineTimeline
           steps={pipeline.steps}
           selectedStepId={selectedStepId}
-          onSelectStep={handleSelectStep}
+          onSelectStep={setSelectedStepId}
           blockedReason={pipeline.gateResult?.reason ?? null}
         />
-
         {projectId ? (
-          <PipelineLogs
-            projectId={projectId}
-            pipelineId={pipeline.id}
-            stepId={selectedStepId}
-            isRunning={isRunning}
-          />
+          <PipelineLogs projectId={projectId} pipelineId={pipeline.id} stepId={selectedStepId} isRunning={isRunning} />
         ) : (
-          <EmptyState
-            title="Contexte projet manquant"
-            description="Ouvre ce pipeline depuis la page d'un projet."
-          />
+          <EmptyState title="Contexte projet manquant" description="Ouvrez ce pipeline depuis la page d'un projet." />
         )}
       </div>
 
-      {/* Actions secondaires */}
-      {!isRunning &&
-        pipeline.status !== "CANCELLED" &&
-        pipeline.deployment && (
-          <div className="mt-6 flex justify-end">
-            <Link
-              to={`/deployments?pipelineId=${pipeline.id}`}
-              className="text-sm text-primary-500 hover:underline inline-flex items-center gap-1"
-            >
-              Voir le déploiement <ExternalLink className="w-3.5 h-3.5" />
-            </Link>
-          </div>
-        )}
+      {!isRunning && pipeline.status !== "CANCELLED" && pipeline.deployment && (
+        <div className="flex justify-end">
+          <Link to={`/deployments?pipelineId=${pipeline.id}`} className="inline-flex items-center gap-1 text-sm text-primary-500 hover:underline">
+            Voir le déploiement <ExternalLink className="h-3.5 w-3.5" />
+          </Link>
+        </div>
+      )}
 
-      {/* Modale de confirmation d'annulation */}
       <ConfirmDialog
         open={confirmCancel}
         title="Annuler ce pipeline ?"
-        description="L'exécution en cours sera interrompue. Les étapes suivantes ne seront pas lancées. L'étape actuellement en cours peut prendre quelques secondes pour se terminer proprement."
+        description="L'exécution sera interrompue et les étapes suivantes ne seront pas lancées. L'étape en cours peut mettre quelques secondes à s'arrêter."
         confirmLabel="Annuler le pipeline"
         danger
         loading={cancelMutation.isPending}
@@ -327,26 +195,23 @@ export function PipelineDetailPage() {
   );
 }
 
-// ------------------------------------------------------------
-// Composant d'affichage clé/valeur
-// ------------------------------------------------------------
 interface InfoProps {
   icon?: React.ComponentType<{ className?: string }>;
   label: string;
   value: string;
   mono?: boolean;
+  action?: React.ReactNode;
 }
 
-function Info({ icon: Icon, label, value, mono }: InfoProps) {
+function Info({ icon: Icon, label, value, mono, action }: InfoProps) {
   return (
     <div className="min-w-0">
-      <p className="text-xs text-muted mb-0.5 flex items-center gap-1">
-        {Icon && <Icon className="w-3 h-3" />}
+      <p className="mb-1 flex items-center gap-1.5 text-xs text-muted">
+        {Icon && <Icon className="h-3.5 w-3.5" />}
         {label}
-      </p> 
-      <p className={`text-sm truncate ${mono ? "font-mono text-xs" : ""}`}>
-        {value}
+        {action}
       </p>
+      <p className={cn("truncate text-sm font-medium", mono && "font-mono text-xs")} title={value}>{value}</p>
     </div>
   );
 }

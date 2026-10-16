@@ -1,5 +1,5 @@
 // apps/web/src/app/router.tsx
-import { Navigate, Route, Routes } from "react-router-dom";
+import { Navigate, Route, Routes, useParams } from "react-router-dom";
 import { AppLayout } from "@/components/layout/AppLayout";
 import { GuestRoute, ProtectedRoute, RoleGuard } from "./guards";
 
@@ -26,6 +26,17 @@ import { NotificationsPage } from "@/features/settings/NotificationsPage";
 import { AppearancePage } from "@/features/settings/AppearancePage";
 import { ServersDefaultPage } from "@/features/settings/ServersDefaultPage";
 import { NotFoundPage } from "@/features/errors/NotFoundPage";
+
+/**
+ * Les sous-sections d'un projet n'ont pas de route autonome : elles sont
+ * affichées via l'onglet du projet (`?tab=...`). Ce composant redirige les
+ * URLs "profondes" (ex. `/projects/:id/pipelines` issu d'un fil d'Ariane ou
+ * d'un ancien lien) vers l'onglet correspondant.
+ */
+function ProjectSectionRedirect({ tab }: { tab: string }) {
+  const { projectId } = useParams<{ projectId: string }>();
+  return <Navigate to={`/projects/${projectId}?tab=${tab}`} replace />;
+}
 
 export function AppRouter() {
   return (
@@ -69,6 +80,18 @@ export function AppRouter() {
         {/* Projets */}
         <Route path="projects" element={<ProjectsPage />} />
         <Route path="projects/:projectId" element={<ProjectDetailPage />} />
+        <Route
+          path="projects/:projectId/pipelines"
+          element={<ProjectSectionRedirect tab="pipelines" />}
+        />
+        <Route
+          path="projects/:projectId/vulnerabilities"
+          element={<ProjectSectionRedirect tab="vulnerabilities" />}
+        />
+        <Route
+          path="projects/:projectId/config"
+          element={<ProjectSectionRedirect tab="config" />}
+        />
         <Route
           path="projects/:projectId/pipelines/:pipelineId"
           element={<PipelineDetailPage />}
