@@ -1,8 +1,7 @@
-// apps/web/src/features/projects/tabs/ProjectPipelinesTab.tsx
 import { useState } from "react";
 import { Link, useNavigate } from "react-router-dom";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
-import { Play, Trash2 } from "lucide-react";
+import { Play, Trash2, GitBranch, RefreshCw } from "lucide-react";
 import { Card, CardContent } from "@/components/ui/Card";
 import { Button } from "@/components/ui/Button";
 import { StatusBadge } from "@/components/ui/Badge";
@@ -19,10 +18,7 @@ export function ProjectPipelinesTab({ projectId }: { projectId: string }) {
   const qc = useQueryClient();
   const toast = useToast();
   const navigate = useNavigate();
-  const [deleteTarget, setDeleteTarget] = useState<{
-    pipelineId: string;
-    commitSha: string;
-  } | null>(null);
+  const [deleteTarget, setDeleteTarget] = useState<{ pipelineId: string; commitSha: string } | null>(null);
 
   const { data, isLoading, isError, error, refetch, isFetching } = useQuery({
     queryKey: ["project-pipelines", projectId],
@@ -40,8 +36,7 @@ export function ProjectPipelinesTab({ projectId }: { projectId: string }) {
   });
 
   const deleteMutation = useMutation({
-    mutationFn: (pipelineId: string) =>
-      pipelineService.delete(projectId, pipelineId),
+    mutationFn: (pipelineId: string) => pipelineService.delete(projectId, pipelineId),
     onSuccess: () => {
       toast.show("success", "Pipeline supprimé");
       qc.invalidateQueries({ queryKey: ["project-pipelines", projectId] });
@@ -54,21 +49,22 @@ export function ProjectPipelinesTab({ projectId }: { projectId: string }) {
   return (
     <Card>
       <CardContent className="p-0">
-        <div className="flex items-center justify-between p-4 border-b border-border">
-          <p className="text-sm text-muted">
-            {data ? `${data.total} pipeline(s)` : "Chargement…"}
-            {isFetching && <span className="ml-2 text-primary-500 text-xs">· actualisation</span>}
-          </p>
-          <Button size="sm" onClick={() => runMutation.mutate()} loading={runMutation.isPending}>
-            <Play className="w-3.5 h-3.5" /> Lancer
+        <div className="flex items-center justify-between gap-3 border-b border-border p-4">
+          <div className="flex items-center gap-2 text-sm text-muted">
+            <span className="tabular-nums">{data ? `${data.total} pipeline${data.total > 1 ? "s" : ""}` : "Chargement…"}</span>
+            <span className="inline-flex items-center gap-1 text-xs" title="Actualisation automatique toutes les 5 s">
+              <RefreshCw className={`h-3 w-3 ${isFetching ? "animate-spin text-primary-500" : ""}`} />
+              {isFetching ? "Actualisation" : "Auto"}
+            </span>
+          </div>
+          <Button size="sm" onClick={() => runMutation.mutate()} loading={runMutation.isPending} className="gap-1.5">
+            <Play className="h-3.5 w-3.5" /> Lancer un pipeline
           </Button>
         </div>
 
         {isLoading && (
-          <div className="p-4 space-y-2">
-            {Array.from({ length: 3 }).map((_, i) => (
-              <Skeleton key={i} className="h-10" />
-            ))}
+          <div className="space-y-2 p-4">
+            {Array.from({ length: 4 }).map((_, i) => <Skeleton key={i} className="h-11" />)}
           </div>
         )}
 
@@ -83,61 +79,59 @@ export function ProjectPipelinesTab({ projectId }: { projectId: string }) {
         {data && data.items.length === 0 && (
           <EmptyState
             title="Aucun pipeline"
-            description="Lance ton premier pipeline pour voir apparaître les résultats ici."
+            description="Lancez un pipeline pour analyser le code et voir les résultats ici."
+            action={<Button onClick={() => runMutation.mutate()} loading={runMutation.isPending}><Play className="h-4 w-4" /> Lancer un pipeline</Button>}
           />
         )}
 
         {data && data.items.length > 0 && (
           <div className="overflow-x-auto">
             <table className="w-full text-sm">
-              <thead className="text-muted border-b border-border">
+              <thead className="border-b border-border bg-slate-50/60 text-xs text-muted dark:bg-slate-800/30">
                 <tr>
-                  <th className="text-left py-2 px-4 font-medium">Commit</th>
-                  <th className="text-left py-2 px-4 font-medium">Branche</th>
-                  <th className="text-left py-2 px-4 font-medium">Statut</th>
-                  <th className="text-right py-2 px-4 font-medium">Durée</th>
-                  <th className="text-right py-2 px-4 font-medium">Date</th>
-                  <th className="text-right py-2 px-4 font-medium">Actions</th>
+                  <th className="px-4 py-2.5 text-left font-medium">Commit</th>
+                  <th className="px-4 py-2.5 text-left font-medium">Branche</th>
+                  <th className="px-4 py-2.5 text-left font-medium">Statut</th>
+                  <th className="px-4 py-2.5 text-right font-medium">Durée</th>
+                  <th className="px-4 py-2.5 text-right font-medium">Lancé</th>
+                  <th className="w-12 px-4 py-2.5"><span className="sr-only">Actions</span></th>
                 </tr>
               </thead>
               <tbody>
                 {data.items.map((p) => (
                   <tr
                     key={p.id}
-                    className="border-b border-border/60 last:border-0 hover:bg-slate-100 dark:hover:bg-slate-700/30 cursor-pointer"
+                    className="cursor-pointer border-b border-border/60 transition-colors last:border-0 hover:bg-slate-100 dark:hover:bg-slate-700/30"
                     onClick={(e) => {
-                      const target = e.target as HTMLElement;
-                      if (target.closest("a,button")) return;
+                      if ((e.target as HTMLElement).closest("a,button")) return;
                       navigate(`/projects/${projectId}/pipelines/${p.id}`);
                     }}
                   >
-                    <td className="py-2.5 px-4">
-                      <Link
-                        to={`/projects/${projectId}/pipelines/${p.id}`}
-                        className="font-mono text-xs text-primary-500 hover:underline"
-                      >
-                        {p.commitSha.slice(0, 10)}
+                    <td className="px-4 py-3">
+                      <Link to={`/projects/${projectId}/pipelines/${p.id}`} className="rounded bg-slate-200/60 px-1.5 py-0.5 font-mono text-xs text-primary-600 hover:underline dark:bg-slate-700/60 dark:text-primary-400">
+                        {p.commitSha.slice(0, 7)}
                       </Link>
                     </td>
-                    <td className="py-2.5 px-4">{p.branch}</td>
-                    <td className="py-2.5 px-4">
-                      <StatusBadge status={p.status} />
+                    <td className="px-4 py-3">
+                      <span className="inline-flex items-center gap-1.5 text-muted">
+                        <GitBranch className="h-3.5 w-3.5" /> {p.branch}
+                      </span>
                     </td>
-                    <td className="py-2.5 px-4 text-right text-muted">
-                      {formatDuration(p.durationMs)}
-                    </td>
-                    <td className="py-2.5 px-4 text-right text-muted">{timeAgo(p.createdAt)}</td>
-                    <td className="py-2.5 px-4 text-right">
+                    <td className="px-4 py-3"><StatusBadge status={p.status} /></td>
+                    <td className="px-4 py-3 text-right tabular-nums text-muted">{formatDuration(p.durationMs)}</td>
+                    <td className="px-4 py-3 text-right text-muted">{timeAgo(p.createdAt)}</td>
+                    <td className="px-4 py-3 text-right">
                       <button
                         type="button"
-                        className="text-muted hover:text-red-500 p-1"
+                        className="rounded-md p-1.5 text-muted hover:bg-red-500/10 hover:text-red-500 focus-visible:ring-2 focus-visible:ring-red-500"
                         title="Supprimer ce pipeline"
+                        aria-label={`Supprimer le pipeline ${p.commitSha.slice(0, 7)}`}
                         onClick={(e) => {
                           e.stopPropagation();
                           setDeleteTarget({ pipelineId: p.id, commitSha: p.commitSha });
                         }}
                       >
-                        <Trash2 className="w-4 h-4" />
+                        <Trash2 className="h-4 w-4" />
                       </button>
                     </td>
                   </tr>
@@ -147,21 +141,15 @@ export function ProjectPipelinesTab({ projectId }: { projectId: string }) {
           </div>
         )}
       </CardContent>
+
       <ConfirmDialog
         open={!!deleteTarget}
         title="Supprimer ce pipeline ?"
-        description={
-          deleteTarget
-            ? `Le pipeline ${deleteTarget.commitSha.slice(0, 10)} et toutes ses données associées seront définitivement supprimés.`
-            : ""
-        }
+        description={deleteTarget ? `Le pipeline ${deleteTarget.commitSha.slice(0, 7)} et ses données seront définitivement supprimés.` : ""}
         confirmLabel="Supprimer"
         danger
         loading={deleteMutation.isPending}
-        onConfirm={() => {
-          if (!deleteTarget) return;
-          deleteMutation.mutate(deleteTarget.pipelineId);
-        }}
+        onConfirm={() => deleteTarget && deleteMutation.mutate(deleteTarget.pipelineId)}
         onCancel={() => setDeleteTarget(null)}
       />
     </Card>
