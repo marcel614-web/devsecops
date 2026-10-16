@@ -7,6 +7,7 @@ import { useToast } from "@/components/feedback/Toast";
 import { authService } from "@/services/auth.service";
 import { getErrorMessage } from "@/services/api";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
+import { User, Lock } from "lucide-react";
 
 export function ProfilePage() {
   const qc = useQueryClient();
@@ -45,12 +46,21 @@ export function ProfilePage() {
   });
 
   return (
-    <div>
-      <PageHeader title="Profil" description="Modifier vos informations personnelles" />
-      <div className="grid gap-6 max-w-md">
-        <Card>
-          <CardContent className="space-y-4 py-4">
-            <h3 className="font-semibold">Informations</h3>
+    <div className="space-y-6">
+      <PageHeader title="Profil" description="Gérer vos informations personnelles et votre mot de passe" />
+
+      <div className="grid gap-6 lg:grid-cols-2">
+        <Card className="rounded-2xl">
+          <CardContent className="space-y-4 py-5">
+            <div className="flex items-center gap-3 mb-2">
+              <div className="w-10 h-10 rounded-xl bg-primary-600/15 flex items-center justify-center">
+                <User className="w-5 h-5 text-primary-600" />
+              </div>
+              <div>
+                <h3 className="font-semibold">Informations</h3>
+                <p className="text-xs text-muted">Nom et email de connexion</p>
+              </div>
+            </div>
             <Input placeholder="Nom" value={name} onChange={(e) => setName(e.target.value)} />
             <Input placeholder="Email" type="email" value={email} onChange={(e) => setEmail(e.target.value)} />
             <Button onClick={() => updateMutation.mutate()} loading={updateMutation.isPending}>
@@ -58,9 +68,18 @@ export function ProfilePage() {
             </Button>
           </CardContent>
         </Card>
-        <Card>
-          <CardContent className="space-y-4 py-4">
-            <h3 className="font-semibold">Mot de passe</h3>
+
+        <Card className="rounded-2xl">
+          <CardContent className="space-y-4 py-5">
+            <div className="flex items-center gap-3 mb-2">
+              <div className="w-10 h-10 rounded-xl bg-amber-500/15 flex items-center justify-center">
+                <Lock className="w-5 h-5 text-amber-600" />
+              </div>
+              <div>
+                <h3 className="font-semibold">Mot de passe</h3>
+                <p className="text-xs text-muted">Changer votre mot de passe</p>
+              </div>
+            </div>
             <Input
               placeholder="Mot de passe actuel"
               type="password"

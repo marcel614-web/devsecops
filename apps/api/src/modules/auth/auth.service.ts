@@ -132,6 +132,7 @@ export async function registerUser(
       name: input.name,
       passwordHash,
       role: Role.DEVELOPER,
+      isActive: false,
     },
     select: {
       id: true,

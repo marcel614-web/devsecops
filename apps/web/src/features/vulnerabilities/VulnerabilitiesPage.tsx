@@ -1,6 +1,5 @@
-// apps/web/src/features/vulnerabilities/VulnerabilitiesPage.tsx
 import { useSearchParams } from "react-router-dom";
-import { AlertTriangle, ExternalLink, ShieldAlert } from "lucide-react";
+import { AlertTriangle, ExternalLink, ShieldAlert, Filter } from "lucide-react";
 import { useQuery } from "@tanstack/react-query";
 import { PageHeader } from "@/components/layout/PageHeader";
 import { Card, CardContent } from "@/components/ui/Card";
@@ -64,50 +63,51 @@ export function VulnerabilitiesPage() {
   };
 
   return (
-    <div>
+    <div className="space-y-6">
       <PageHeader
         title="Vulnérabilités"
         description="Toutes les vulnérabilités détectées par les scanners"
       />
 
-      {/* Filtre projet */}
-      <Card className="mb-4">
-        <CardContent className="grid grid-cols-1 md:grid-cols-4 gap-3 py-4">
-          <Select
-            value={effectiveProjectId}
-            onChange={(e) => updateParams({ projectId: e.target.value, page: 1 })}
-          >
-            {projects?.items.map((p) => (
-              <option key={p.id} value={p.id}>
-                {p.name}
-              </option>
-            ))}
-          </Select>
+      <Card className="rounded-2xl">
+        <CardContent className="p-4">
+          <div className="flex items-center gap-2 mb-3 text-sm text-muted">
+            <Filter className="w-4 h-4" />
+            Filtres
+          </div>
+          <div className="grid grid-cols-1 md:grid-cols-4 gap-3">
+            <Select
+              value={effectiveProjectId}
+              onChange={(e) => updateParams({ projectId: e.target.value, page: 1 })}
+            >
+              {projects?.items.map((p) => (
+                <option key={p.id} value={p.id}>
+                  {p.name}
+                </option>
+              ))}
+            </Select>
 
-          <Select
-            value={tool}
-            onChange={(e) => updateParams({ tool: e.target.value, page: 1 })}
-          >
-            {TOOLS.map((t) => (
-              <option key={t.value} value={t.value}>
-                {t.label}
-              </option>
-            ))}
-          </Select>
+            <Select value={tool} onChange={(e) => updateParams({ tool: e.target.value, page: 1 })}>
+              {TOOLS.map((t) => (
+                <option key={t.value} value={t.value}>
+                  {t.label}
+                </option>
+              ))}
+            </Select>
 
-          <div className="md:col-span-2">
-            <Input
-              value={search}
-              onChange={(e) => updateParams({ search: e.target.value, page: 1 })}
-              placeholder="Rechercher un package, fichier ou CVE…"
-            />
+            <div className="md:col-span-2">
+              <Input
+                value={search}
+                onChange={(e) => updateParams({ search: e.target.value, page: 1 })}
+                placeholder="Rechercher un package, fichier ou CVE…"
+              />
+            </div>
           </div>
         </CardContent>
       </Card>
 
-      {/* Compteurs par sévérité */}
       {data && (
-        <div className="mb-6">
+        <div className="mb-2">
           <SeveritySummaryCards
             counts={data.severityCounts}
             active={severity || null}
@@ -116,12 +116,11 @@ export function VulnerabilitiesPage() {
         </div>
       )}
 
-      {/* Tableau */}
       {isLoading && (
         <Card>
-          <CardContent className="space-y-2">
+          <CardContent className="space-y-2 p-4">
             {Array.from({ length: 8 }).map((_, i) => (
-              <Skeleton key={i} className="h-10" />
+              <Skeleton key={i} className="h-11 rounded-lg" />
             ))}
           </CardContent>
         </Card>
@@ -149,59 +148,61 @@ export function VulnerabilitiesPage() {
 
       {data && data.items.length > 0 && (
         <>
-          <Card>
+          <Card className="rounded-2xl">
             <CardContent className="p-0">
               <div className="overflow-x-auto">
                 <table className="w-full text-sm">
-                  <thead className="text-muted border-b border-border">
+                  <thead className="text-muted border-b border-border bg-slate-50/60 dark:bg-slate-800/40">
                     <tr>
-                      <th className="text-left py-2 px-4 font-medium">Sévérité</th>
-                      <th className="text-left py-2 px-4 font-medium">Outil</th>
-                      <th className="text-left py-2 px-4 font-medium">Package / Fichier</th>
-                      <th className="text-left py-2 px-4 font-medium">Version</th>
-                      <th className="text-left py-2 px-4 font-medium">Description</th>
-                      <th className="text-right py-2 px-4 font-medium">Détecté</th>
+                      <th className="text-left py-3 px-4 font-medium">Sévérité</th>
+                      <th className="text-left py-3 px-4 font-medium">Outil</th>
+                      <th className="text-left py-3 px-4 font-medium">Package / Fichier</th>
+                      <th className="text-left py-3 px-4 font-medium">Version</th>
+                      <th className="text-left py-3 px-4 font-medium">Description</th>
+                      <th className="text-right py-3 px-4 font-medium">Détecté</th>
                     </tr>
                   </thead>
                   <tbody>
                     {data.items.map((v) => (
                       <tr
                         key={v.id}
-                        className="border-b border-border/60 last:border-0 hover:bg-slate-100 dark:hover:bg-slate-700/30"
+                        className="border-b border-border/60 last:border-0 hover:bg-slate-50 dark:hover:bg-slate-800/40 transition-colors"
                       >
-                        <td className="py-2.5 px-4">
+                        <td className="py-3 px-4">
                           <SeverityBadge severity={v.severity} />
                         </td>
-                        <td className="py-2.5 px-4 text-xs text-muted">{v.tool}</td>
-                        <td className="py-2.5 px-4 font-mono text-xs">
+                        <td className="py-3 px-4">
+                          <span className="text-xs px-2 py-0.5 rounded-md bg-slate-200/70 dark:bg-slate-700/60 text-muted font-medium">
+                            {v.tool}
+                          </span>
+                        </td>
+                        <td className="py-3 px-4 font-mono text-xs text-slate-700 dark:text-slate-200">
                           {v.packageName ?? v.filePath?.split("\\").pop() ?? "—"}
                         </td>
-                        <td className="py-2.5 px-4 font-mono text-xs">
+                        <td className="py-3 px-4 font-mono text-xs">
                           {v.version ?? "—"}
                           {v.fixedVersion && (
-                            <span className="text-emerald-500 ml-1">
-                              → {v.fixedVersion}
-                            </span>
+                            <span className="text-emerald-500 ml-1">→ {v.fixedVersion}</span>
                           )}
                         </td>
-                        <td className="py-2.5 px-4 max-w-md">
+                        <td className="py-3 px-4 max-w-md">
                           {v.reference ? (
                             <a
                               href={v.reference}
                               target="_blank"
                               rel="noopener noreferrer"
-                              className="hover:text-primary-500 inline-flex items-center gap-1 truncate max-w-full"
+                              className="hover:text-primary-500 inline-flex items-center gap-1 truncate max-w-full text-muted"
                               title={v.description ?? ""}
                             >
-                              <AlertTriangle className="w-3 h-3 shrink-0" />
+                              <AlertTriangle className="w-3.5 h-3.5 shrink-0" />
                               <span className="truncate">{v.description}</span>
                               <ExternalLink className="w-3 h-3 shrink-0" />
                             </a>
                           ) : (
-                            <span className="truncate block">{v.description}</span>
+                            <span className="truncate block text-muted">{v.description}</span>
                           )}
                         </td>
-                        <td className="py-2.5 px-4 text-right text-xs text-muted">
+                        <td className="py-3 px-4 text-right text-xs text-muted">
                           {timeAgo(v.detectedAt)}
                         </td>
                       </tr>
@@ -212,11 +213,13 @@ export function VulnerabilitiesPage() {
             </CardContent>
           </Card>
 
-          <Pagination
-            page={data.page}
-            totalPages={data.totalPages}
-            onPage={(p) => updateParams({ page: p })}
-          />
+          <div className="pt-2">
+            <Pagination
+              page={data.page}
+              totalPages={data.totalPages}
+              onPage={(p) => updateParams({ page: p })}
+            />
+          </div>
         </>
       )}
     </div>

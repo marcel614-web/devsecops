@@ -66,7 +66,7 @@ export function UserMenu() {
             <Settings className="w-4 h-4" /> Paramètres
           </button>
           <button
-            onClick={() => { setOpen(false); navigate("/settings"); }}
+            onClick={() => { setOpen(false); navigate("/settings/profile"); }}
             className="w-full flex items-center gap-2 px-4 py-2 text-sm hover:bg-slate-100 dark:hover:bg-slate-700/40"
           >
             <User className="w-4 h-4" /> Profil

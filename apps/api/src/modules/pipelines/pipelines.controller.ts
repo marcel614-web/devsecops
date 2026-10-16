@@ -190,3 +190,27 @@ export async function deletePipeline(
     next(err);
   }
 }
+
+
+export async function downloadPipelineLogs(
+  req: Request,
+  res: Response,
+  next: NextFunction,
+): Promise<void> {
+  try {
+    const actor = actorFrom(req);
+    const content = await pipelinesService.downloadPipelineLogs(
+      actor,
+      req.params.projectId,
+      req.params.id,
+    );
+    res.setHeader("Content-Type", "text/plain; charset=utf-8");
+    res.setHeader(
+      "Content-Disposition",
+      `attachment; filename="pipeline-${req.params.id}.log"`,
+    );
+    res.send(content);
+  } catch (err) {
+    next(err);
+  }
+}

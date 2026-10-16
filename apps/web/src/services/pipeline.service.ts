@@ -62,6 +62,13 @@ export const pipelineService = {
       )
       .then((r) => r.data),
 
+  downloadLogs: (projectId: string, pipelineId: string) =>
+    api
+      .get<Blob>(`/api/projects/${projectId}/pipelines/${pipelineId}/logs/download`, {
+        responseType: "blob",
+      })
+      .then((r) => r.data),
+
   scans: (projectId: string, pipelineId: string) =>
     api
       .get<{ scans: SecurityScan[] }>(

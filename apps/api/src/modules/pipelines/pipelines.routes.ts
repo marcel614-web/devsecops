@@ -42,6 +42,12 @@ pipelinesRouter.get(
 );
 
 pipelinesRouter.get(
+  "/:id/logs/download",
+  validate({ params: projectPipelineParamSchema }),
+  pipelinesController.downloadPipelineLogs,
+);
+
+pipelinesRouter.get(
   "/:id/scans",
   validate({ params: projectPipelineParamSchema, query: pipelineScansQuerySchema }),
   pipelinesController.getPipelineScans,

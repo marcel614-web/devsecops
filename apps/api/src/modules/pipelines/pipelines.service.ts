@@ -621,3 +621,35 @@ export async function deletePipeline(
     },
   });
 }
+
+
+// ============================================================
+// DOWNLOAD LOGS
+// ============================================================
+export async function downloadPipelineLogs(
+  actor: ActorContext,
+  projectId: string,
+  pipelineId: string,
+): Promise<string> {
+  await ensureProjectAccess(actor, projectId);
+
+  const pipeline = await prisma.pipeline.findFirst({
+    where: { id: pipelineId, projectId },
+    select: { id: true },
+  });
+  if (!pipeline) throw new NotFoundError("Pipeline introuvable");
+
+  const logs = await prisma.pipelineLog.findMany({
+    where: { pipelineId },
+    orderBy: { sequence: "asc" },
+    select: { sequence: true, level: true, message: true, createdAt: true, step: { select: { name: true } } },
+  });
+
+  const lines = logs.map((l) => {
+    const ts = l.createdAt.toISOString();
+    const step = l.step?.name ? ` [${l.step.name}]` : "";
+    return `${ts} [${l.level.toUpperCase()}]${step} ${l.message}`;
+  });
+
+  return lines.join("\n");
+}

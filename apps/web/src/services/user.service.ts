@@ -21,4 +21,6 @@ export const userService = {
   update: (id: string, data: Partial<{ name: string; email: string; role: "ADMIN" | "DEVELOPER"; isActive: boolean }>) =>
     api.patch<{ user: ApiUser }>(`/api/users/${id}`, data).then((r) => r.data.user),
   deactivate: (id: string) => api.delete(`/api/users/${id}`),
+  setActive: (id: string, isActive: boolean) =>
+    api.patch<{ user: ApiUser }>(`/api/users/${id}`, { isActive }).then((r) => r.data.user),
 };

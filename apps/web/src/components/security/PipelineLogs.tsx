@@ -3,6 +3,7 @@ import { useEffect, useMemo, useRef, useState } from "react";
 import {
   Search,
   Copy,
+  Download,
   ArrowDown,
   ArrowUp,
   Loader2,
@@ -13,6 +14,7 @@ import { Input } from "@/components/ui/Input";
 import { Button } from "@/components/ui/Button";
 import { useToast } from "@/components/feedback/Toast";
 import { usePipelineLogs } from "@/hooks/usePipeline";
+import { pipelineService } from "@/services/pipeline.service";
 import { cn } from "@/lib/utils";
 
 interface Props {
@@ -38,6 +40,7 @@ export function PipelineLogs({
   const [search, setSearch] = useState("");
   const [levelFilter, setLevelFilter] = useState<string | null>(null);
   const [autoScroll, setAutoScroll] = useState(true);
+  const [downloading, setDownloading] = useState(false);
   const containerRef = useRef<HTMLDivElement>(null);
   const toast = useToast();
 
@@ -84,6 +87,24 @@ export function PipelineLogs({
     }
   };
 
+  const handleDownload = async () => {
+    setDownloading(true);
+    try {
+      const blob = await pipelineService.downloadLogs(projectId, pipelineId);
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement("a");
+      a.href = url;
+      a.download = `pipeline-${pipelineId}.log`;
+      a.click();
+      URL.revokeObjectURL(url);
+      toast.show("success", "Logs téléchargés");
+    } catch (err) {
+      toast.show("error", "Impossible de télécharger les logs");
+    } finally {
+      setDownloading(false);
+    }
+  };
+
   return (
     <Card className="flex flex-col h-full min-h-[400px]">
       <CardHeader className="flex flex-col gap-3 !pb-3">
@@ -120,6 +141,15 @@ export function PipelineLogs({
               title="Copier les logs"
             >
               <Copy className="w-3.5 h-3.5" />
+            </Button>
+            <Button
+              variant="ghost"
+              size="sm"
+              onClick={handleDownload}
+              disabled={downloading}
+              title="Télécharger les logs"
+            >
+              <Download className="w-3.5 h-3.5" />
             </Button>
           </div>
         </div>

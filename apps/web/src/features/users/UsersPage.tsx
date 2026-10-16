@@ -1,8 +1,10 @@
 import { useState } from "react";
-import { Users, Plus, Pencil, UserX } from "lucide-react";
+import { Users, Plus, Pencil, UserX, UserCheck, Shield, Mail, Search } from "lucide-react";
 import { PageHeader } from "@/components/layout/PageHeader";
 import { Card, CardContent } from "@/components/ui/Card";
 import { Button } from "@/components/ui/Button";
+import { Input } from "@/components/ui/Input";
+import { Select } from "@/components/ui/Select";
 import { EmptyState } from "@/components/feedback/EmptyState";
 import { ErrorState } from "@/components/feedback/ErrorState";
 import { Skeleton } from "@/components/ui/Skeleton";
@@ -11,6 +13,7 @@ import { useToast } from "@/components/feedback/Toast";
 import { userService, type ApiUser } from "@/services/user.service";
 import { getErrorMessage } from "@/services/api";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
+import { useAuthStore } from "@/stores/authStore";
 
 type FormState = {
   id?: string;
@@ -22,12 +25,33 @@ type FormState = {
 
 const emptyForm: FormState = { name: "", email: "", password: "", role: "DEVELOPER" };
 
+function initials(name?: string | null) {
+  return (name ?? "?")
+    .split(" ")
+    .map((p) => p[0])
+    .join("")
+    .slice(0, 2)
+    .toUpperCase();
+}
+
 export function UsersPage() {
   const qc = useQueryClient();
   const toast = useToast();
-  const { data, isLoading, isError, error, refetch, isFetching } = useQuery({
-    queryKey: ["users"],
-    queryFn: () => userService.list({ pageSize: 100 }),
+  const { user: currentUser } = useAuthStore();
+  const [search, setSearch] = useState("");
+  const [roleFilter, setRoleFilter] = useState("");
+  const [statusFilter, setStatusFilter] = useState("");
+  const [appliedSearch, setAppliedSearch] = useState("");
+
+  const { data, isLoading, isError, error, refetch } = useQuery({
+    queryKey: ["users", appliedSearch, roleFilter, statusFilter],
+    queryFn: () =>
+      userService.list({
+        pageSize: 100,
+        search: appliedSearch || undefined,
+        role: roleFilter || undefined,
+        isActive: statusFilter === "" ? undefined : statusFilter === "active",
+      }),
   });
 
   const [formOpen, setFormOpen] = useState(false);
@@ -68,6 +92,15 @@ export function UsersPage() {
     onError: (err) => toast.show("error", getErrorMessage(err)),
   });
 
+  const activateMutation = useMutation({
+    mutationFn: (id: string) => userService.setActive(id, true),
+    onSuccess: () => {
+      toast.show("success", "Utilisateur activé");
+      qc.invalidateQueries({ queryKey: ["users"] });
+    },
+    onError: (err) => toast.show("error", getErrorMessage(err)),
+  });
+
   const items = data?.items ?? [];
 
   const openCreate = () => {
@@ -87,22 +120,51 @@ export function UsersPage() {
   };
 
   return (
-    <div>
+    <div className="space-y-6">
       <PageHeader
         title="Utilisateurs"
-        description="Gestion des comptes utilisateurs"
+        description="Gestion des comptes et des rôles"
         actions={
-          <Button onClick={openCreate}>
+          <Button onClick={openCreate} className="gap-2">
             <Plus className="w-4 h-4" /> Nouvel utilisateur
           </Button>
         }
       />
 
+      <Card className="rounded-2xl">
+        <CardContent className="p-4">
+          <div className="flex items-center gap-2 mb-3 text-sm text-muted">
+            <Search className="w-4 h-4" />
+            Filtres
+          </div>
+          <div className="grid grid-cols-1 md:grid-cols-4 gap-3">
+            <Input
+              value={search}
+              onChange={(e) => setSearch(e.target.value)}
+              placeholder="Rechercher un nom ou email…"
+            />
+            <Select value={roleFilter} onChange={(e) => setRoleFilter(e.target.value)}>
+              <option value="">Tous les rôles</option>
+              <option value="ADMIN">ADMIN</option>
+              <option value="DEVELOPER">DEVELOPER</option>
+            </Select>
+            <Select value={statusFilter} onChange={(e) => setStatusFilter(e.target.value)}>
+              <option value="">Tous les statuts</option>
+              <option value="active">Actif</option>
+              <option value="inactive">Désactivé</option>
+            </Select>
+            <Button variant="outline" onClick={() => setAppliedSearch(search)}>
+              Appliquer
+            </Button>
+          </div>
+        </CardContent>
+      </Card>
+
       {isLoading && (
         <Card>
-          <CardContent className="space-y-2">
-            {Array.from({ length: 5 }).map((_, i) => (
-              <Skeleton key={i} className="h-10" />
+          <CardContent className="space-y-2 p-4">
+            {Array.from({ length: 6 }).map((_, i) => (
+              <Skeleton key={i} className="h-12 rounded-lg" />
             ))}
           </CardContent>
         </Card>
@@ -121,33 +183,87 @@ export function UsersPage() {
       )}
 
       {!isLoading && !isError && items.length > 0 && (
-        <Card>
+        <Card className="rounded-2xl">
           <CardContent className="p-0">
             <table className="w-full text-sm">
-              <thead className="text-muted border-b border-border">
+              <thead className="text-muted border-b border-border bg-slate-50/60 dark:bg-slate-800/40">
                 <tr>
-                  <th className="text-left py-2 px-4 font-medium">Nom</th>
-                  <th className="text-left py-2 px-4 font-medium">Email</th>
-                  <th className="text-left py-2 px-4 font-medium">Rôle</th>
-                  <th className="text-left py-2 px-4 font-medium">Statut</th>
-                  <th className="text-right py-2 px-4 font-medium">Actions</th>
+                  <th className="text-left py-3 px-4 font-medium">Utilisateur</th>
+                  <th className="text-left py-3 px-4 font-medium">Email</th>
+                  <th className="text-left py-3 px-4 font-medium">Rôle</th>
+                  <th className="text-left py-3 px-4 font-medium">Statut</th>
+                  <th className="text-right py-3 px-4 font-medium">Actions</th>
                 </tr>
               </thead>
               <tbody>
                 {items.map((u) => (
-                  <tr key={u.id} className="border-b border-border/60 last:border-0">
-                    <td className="py-2.5 px-4">{u.name ?? "—"}</td>
-                    <td className="py-2.5 px-4 font-mono text-xs">{u.email}</td>
-                    <td className="py-2.5 px-4">{u.role}</td>
-                    <td className="py-2.5 px-4">{u.isActive ? "Actif" : "Désactivé"}</td>
-                    <td className="py-2.5 px-4 text-right">
+                  <tr key={u.id} className="border-b border-border/60 last:border-0 hover:bg-slate-50 dark:hover:bg-slate-800/40 transition-colors">
+                    <td className="py-3 px-4">
+                      <div className="flex items-center gap-3">
+                        <div className="w-9 h-9 rounded-full bg-primary-600/15 text-primary-600 dark:text-primary-400 flex items-center justify-center text-xs font-bold">
+                          {initials(u.name)}
+                        </div>
+                        <span className="font-medium">{u.name ?? "—"}</span>
+                      </div>
+                    </td>
+                    <td className="py-3 px-4 font-mono text-xs text-muted">{u.email}</td>
+                    <td className="py-3 px-4">
+                      <span
+                        className={`text-[11px] px-2 py-0.5 rounded-md font-medium ${
+                          u.role === "ADMIN"
+                            ? "bg-amber-500/15 text-amber-600 dark:text-amber-400"
+                            : "bg-slate-200/70 dark:bg-slate-700/60 text-muted"
+                        }`}
+                      >
+                        {u.role === "ADMIN" ? (
+                          <Shield className="w-3 h-3 inline mr-1" />
+                        ) : null}
+                        {u.role}
+                      </span>
+                    </td>
+                    <td className="py-3 px-4">
+                      <span
+                        className={`text-[11px] px-2 py-0.5 rounded-md font-medium ${
+                          u.isActive
+                            ? "bg-emerald-500/15 text-emerald-600 dark:text-emerald-400"
+                            : "bg-red-500/15 text-red-600 dark:text-red-400"
+                        }`}
+                      >
+                        {u.isActive ? "Actif" : "Désactivé"}
+                      </span>
+                    </td>
+                    <td className="py-3 px-4 text-right">
                       <div className="flex items-center justify-end gap-1">
                         <Button size="sm" variant="ghost" title="Modifier" onClick={() => openEdit(u)}>
                           <Pencil className="w-4 h-4" />
                         </Button>
-                        <Button size="sm" variant="ghost" title="Désactiver" onClick={() => setDeactivateTarget(u)}>
-                          <UserX className="w-4 h-4" />
-                        </Button>
+                        {u.isActive ? (
+                          <Button
+                            size="sm"
+                            variant="ghost"
+                            className="text-red-500 hover:bg-red-500/10"
+                            title={
+                              u.id === currentUser?.id
+                                ? "Impossible de désactiver votre propre compte"
+                                : "Désactiver"
+                            }
+                            onClick={() => setDeactivateTarget(u)}
+                            disabled={u.id === currentUser?.id}
+                          >
+                            <UserX className="w-4 h-4" />
+                          </Button>
+                        ) : (
+                          <Button
+                            size="sm"
+                            variant="ghost"
+                            className="text-emerald-600 hover:bg-emerald-500/10"
+                            title="Activer"
+                            onClick={() => activateMutation.mutate(u.id)}
+                            loading={activateMutation.isPending}
+                          >
+                            <UserCheck className="w-4 h-4" />
+                          </Button>
+                        )}
                       </div>
                     </td>
                   </tr>
@@ -160,21 +276,19 @@ export function UsersPage() {
 
       {formOpen && (
         <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/50 p-4">
-          <Card className="w-full max-w-md">
-            <CardContent className="space-y-4 py-4">
-              <h3 className="font-semibold text-base">
+          <Card className="w-full max-w-md rounded-3xl">
+            <CardContent className="space-y-4 py-5">
+              <h3 className="font-semibold text-lg">
                 {form.id ? "Modifier l'utilisateur" : "Nouvel utilisateur"}
               </h3>
               <form onSubmit={submit} className="space-y-3">
-                <input
-                  className="w-full px-3 py-2 rounded border border-border bg-background"
+                <Input
                   placeholder="Nom"
                   value={form.name}
                   onChange={(e) => setForm((f) => ({ ...f, name: e.target.value }))}
                   required
                 />
-                <input
-                  className="w-full px-3 py-2 rounded border border-border bg-background"
+                <Input
                   placeholder="Email"
                   type="email"
                   value={form.email}
@@ -182,8 +296,7 @@ export function UsersPage() {
                   required
                 />
                 {!form.id && (
-                  <input
-                    className="w-full px-3 py-2 rounded border border-border bg-background"
+                  <Input
                     placeholder="Mot de passe"
                     type="password"
                     value={form.password}
@@ -191,14 +304,13 @@ export function UsersPage() {
                     required
                   />
                 )}
-                <select
-                  className="w-full px-3 py-2 rounded border border-border bg-background"
+                <Select
                   value={form.role}
                   onChange={(e) => setForm((f) => ({ ...f, role: e.target.value as "ADMIN" | "DEVELOPER" }))}
                 >
                   <option value="DEVELOPER">DEVELOPER</option>
                   <option value="ADMIN">ADMIN</option>
-                </select>
+                </Select>
                 <div className="flex justify-end gap-2 pt-2">
                   <Button type="button" variant="ghost" onClick={() => setFormOpen(false)}>
                     Annuler
