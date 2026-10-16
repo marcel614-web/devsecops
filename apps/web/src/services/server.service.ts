@@ -85,4 +85,9 @@ export const serverService = {
     api
       .post<ServerTestResponse>(`/api/servers/${id}/test`)
       .then((r) => r.data),
+
+  cleanupImages: (id: string) =>
+    api
+      .post<{ output: string }>(`/api/servers/${id}/cleanup-images`)
+      .then((r) => r.data),
 };

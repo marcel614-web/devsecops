@@ -18,6 +18,7 @@ export function AuditPage() {
   const { data, isLoading, isError, error, refetch, isFetching } = useQuery({
     queryKey: ["audit-logs", applied],
     queryFn: () => auditService.list({ pageSize: 50, search: applied || undefined }),
+    refetchInterval: 10_000,
   });
 
   const items = data?.items ?? [];

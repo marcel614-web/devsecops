@@ -18,14 +18,17 @@ export async function listAuditLogs(
     search?: string;
   },
 ) {
+  const where: Prisma.AuditLogWhereInput = {};
+
   if (actor.role !== Role.ADMIN) {
-    throw new ForbiddenError("Seul un administrateur peut consulter le journal d'audit");
+    // Un utilisateur non-admin ne voit que son propre historique.
+    where.userId = actor.id;
+  } else if (query.userId) {
+    where.userId = query.userId;
   }
 
-  const where: Prisma.AuditLogWhereInput = {};
   if (query.action) where.action = query.action;
   if (query.targetType) where.targetType = query.targetType;
-  if (query.userId) where.userId = query.userId;
   if (query.search) {
     where.OR = [
       { action: { contains: query.search, mode: "insensitive" } },

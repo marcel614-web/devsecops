@@ -7,7 +7,7 @@ import { auditListQuerySchema } from "./audit.schema";
 
 export const auditRouter = Router();
 
-auditRouter.use(requireAuth, requireRole("ADMIN"));
+auditRouter.use(requireAuth);
 
 auditRouter.get(
   "/",

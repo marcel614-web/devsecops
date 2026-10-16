@@ -12,6 +12,7 @@ import type {
   ServerListQuery,
   UpdateServerInput,
 } from "./servers.schema";
+import { runRemoteCommand } from "../deployments/ssh.util";
 
 export interface ActorContext {
   id: string;
@@ -342,4 +343,25 @@ export async function testServer(
     status: globalStatus,
     lastCheckedAt: now,
   };
+}
+
+export async function cleanupDockerImages(actor: ActorContext, serverId: string) {
+  await ensureServerAccess(actor, serverId);
+
+  const server = await prisma.deploymentServer.findUnique({
+    where: { id: serverId },
+  });
+  if (!server) throw new NotFoundError("Serveur introuvable");
+
+  const output = await runRemoteCommand(
+    server,
+    "docker image prune -af --filter 'label=devsecops.pipeline'",
+    5 * 60_000,
+  );
+
+  if (output.code !== 0) {
+    throw new Error(`Nettoyage échoué (code ${output.code}) : ${output.stderr.slice(0, 300)}`);
+  }
+
+  return { output: output.stdout + output.stderr };
 }

@@ -108,3 +108,17 @@ export async function testServer(
     next(err);
   }
 }
+
+export async function cleanupDockerImages(
+  req: Request,
+  res: Response,
+  next: NextFunction,
+): Promise<void> {
+  try {
+    const actor = actorFrom(req);
+    const result = await serversService.cleanupDockerImages(actor, req.params.id);
+    res.json(result);
+  } catch (err) {
+    next(err);
+  }
+}

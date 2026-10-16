@@ -51,3 +51,9 @@ serversRouter.post(
   validate({ params: serverIdParamSchema }),
   serversController.testServer,
 );
+
+serversRouter.post(
+  "/:id/cleanup-images",
+  validate({ params: serverIdParamSchema }),
+  serversController.cleanupDockerImages,
+);

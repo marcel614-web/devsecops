@@ -19,6 +19,7 @@ import { dashboardRouter } from "../modules/dashboard/dashboard.routes";
 import { deploymentsRouter } from "../modules/deployments/deployments.routes";
 import { serversRouter } from "../modules/servers/servers.routes";
 import { githubRouter } from "../modules/github/github.routes";
+import { notificationsRouter } from "../modules/notifications/notifications.routes";
 import { systemConfigRouter } from "../modules/system-config/system-config.routes";
 import { githubWebhook } from "../modules/webhooks/webhooks.controller";
 
@@ -79,6 +80,7 @@ app.use("/api/audit-logs", auditRouter);
   app.use("/api/dashboard", dashboardRouter);
   app.use("/api/servers", serversRouter);
   app.use("/api/github", githubRouter);
+app.use("/api/notifications", notificationsRouter);
   app.use("/api/system-config", systemConfigRouter);
 
   // ⚠️ Ordre important : sous-routes AVANT la route parente

@@ -30,6 +30,8 @@ import { CreateServerModal } from "./CreateServerModal";
 import { ServerTestResultPanel } from "./ServerTestResultPanel";
 import { timeAgo } from "@/lib/utils";
 import { getErrorMessage } from "@/services/api";
+import { serverService } from "@/services/server.service";
+import { useMutation, useQueryClient } from "@tanstack/react-query";
 
 interface TestResultCache {
   [serverId: string]: {
@@ -54,8 +56,14 @@ export function ServersPage() {
     pageSize: 50,
   });
 
+  const qc = useQueryClient();
   const deleteMutation = useDeleteServer();
   const testMutation = useTestServer();
+  const cleanupMutation = useMutation({
+    mutationFn: (id: string) => serverService.cleanupImages(id),
+    onSuccess: () => toast.show("success", "Images Docker inutilisées supprimées"),
+    onError: (err) => toast.show("error", getErrorMessage(err)),
+  });
 
   const handleDelete = async () => {
     if (!deleteTarget) return;
@@ -247,6 +255,16 @@ export function ServersPage() {
                         Tester la connexion
                       </>
                     )}
+                  </Button>
+
+                  <Button
+                    variant="ghost"
+                    size="sm"
+                    onClick={() => cleanupMutation.mutate(s.id)}
+                    disabled={cleanupMutation.isPending}
+                    title="Nettoyer les images Docker inutilisées"
+                  >
+                    <Trash2 className="w-3.5 h-3.5" />
                   </Button>
 
                   {testResult && (

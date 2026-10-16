@@ -1,16 +1,28 @@
 import { useState, useRef, useEffect } from "react";
 import { Bell } from "lucide-react";
+import { Link } from "react-router-dom";
+import { useQuery } from "@tanstack/react-query";
+import { notificationService, type AppNotification } from "@/services/notification.service";
+import { timeAgo } from "@/lib/utils";
 
-// ⚠️ PHASE 2 : données de démo. En Phase 4 on branchera l'API.
-const DEMO_NOTIFICATIONS = [
-  { id: "1", title: "Pipeline #142 terminé", time: "il y a 5 min", kind: "success" },
-  { id: "2", title: "Security Gate a bloqué le pipeline #141", time: "il y a 1 h", kind: "warning" },
-  { id: "3", title: "3 vulnérabilités HIGH détectées", time: "il y a 3 h", kind: "danger" },
-];
+const KIND_CLASS: Record<AppNotification["kind"], string> = {
+  success: "text-emerald-600",
+  warning: "text-amber-600",
+  danger: "text-red-600",
+  info: "text-slate-600",
+};
 
 export function NotificationCenter() {
   const [open, setOpen] = useState(false);
   const ref = useRef<HTMLDivElement>(null);
+
+  const { data } = useQuery({
+    queryKey: ["notifications"],
+    queryFn: notificationService.list,
+    refetchInterval: 30_000,
+  });
+
+  const items = data ?? [];
 
   useEffect(() => {
     const onClick = (e: MouseEvent) => {
@@ -28,7 +40,9 @@ export function NotificationCenter() {
         aria-label="Notifications"
       >
         <Bell className="w-4 h-4" />
-        <span className="absolute top-2 right-2 w-1.5 h-1.5 rounded-full bg-red-500" />
+        {items.length > 0 && (
+          <span className="absolute top-2 right-2 w-1.5 h-1.5 rounded-full bg-red-500" />
+        )}
       </button>
 
       {open && (
@@ -37,15 +51,25 @@ export function NotificationCenter() {
             <p className="font-medium text-sm">Notifications</p>
           </div>
           <div className="max-h-80 overflow-y-auto scrollbar-thin">
-            {DEMO_NOTIFICATIONS.map((n) => (
-              <div
-                key={n.id}
-                className="px-4 py-3 border-b border-border/60 last:border-0 hover:bg-slate-100 dark:hover:bg-slate-700/40"
-              >
-                <p className="text-sm">{n.title}</p>
-                <p className="text-xs text-muted mt-0.5">{n.time}</p>
-              </div>
-            ))}
+            {items.length === 0 ? (
+              <p className="px-4 py-3 text-sm text-muted">Aucune notification.</p>
+            ) : (
+              items.map((n) => (
+                <div
+                  key={n.id}
+                  className="px-4 py-3 border-b border-border/60 last:border-0 hover:bg-slate-100 dark:hover:bg-slate-700/40"
+                >
+                  {n.link ? (
+                    <Link to={n.link} onClick={() => setOpen(false)} className={`text-sm ${KIND_CLASS[n.kind]}`}>
+                      {n.title}
+                    </Link>
+                  ) : (
+                    <p className={`text-sm ${KIND_CLASS[n.kind]}`}>{n.title}</p>
+                  )}
+                  <p className="text-xs text-muted mt-0.5">{timeAgo(n.time)}</p>
+                </div>
+              ))
+            )}
           </div>
         </div>
       )}
