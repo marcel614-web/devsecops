@@ -11,6 +11,8 @@
     "dev:api": "npm run dev -w apps/api",
     "dev:web": "npm run dev -w apps/web",
     "dev:worker": "npm run dev -w apps/worker",
+    "ensure:redis": "node scripts/ensure-redis.mjs",
+    "redis:watch": "node scripts/ensure-redis.mjs --watch",
     "build": "npm run build --workspaces --if-present",
     "prisma:generate": "prisma generate",
     "prisma:migrate": "prisma migrate dev",

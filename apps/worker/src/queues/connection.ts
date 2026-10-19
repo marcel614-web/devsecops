@@ -14,8 +14,23 @@ export const redisConnection = new Redis({
   enableReadyCheck: false,
 });
 
-redisConnection.on("error", (err) => {
-  logger.error({ err: err.message }, "redis:error");
+// ioredis réessaie indéfiniment : on limite le bruit dans les logs
+// (une erreur toutes les 30 s) tout en indiquant comment corriger.
+let lastErrorAt = 0;
+
+redisConnection.on("error", (err: NodeJS.ErrnoException) => {
+  const now = Date.now();
+  if (now - lastErrorAt < 30_000) return;
+  lastErrorAt = now;
+
+  logger.error(
+    {
+      code: err.code ?? "inconnu",
+      host: env.REDIS_HOST,
+      port: env.REDIS_PORT,
+    },
+    "redis:connexion impossible — démarrez Redis/Memurai (npm run ensure:redis)",
+  );
 });
 
 redisConnection.on("ready", () => {

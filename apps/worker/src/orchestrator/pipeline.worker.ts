@@ -2,8 +2,18 @@
 import { Worker } from "bullmq";
 import { PIPELINE_QUEUE_NAME, type PipelineJobData } from "../queues/queues";
 import { redisConnection } from "../queues/connection";
+import { env } from "../config/env";
 import { logger } from "../utils/logger";
 import { runPipeline } from "./pipeline.engine";
+
+/** Message lisible même quand `err.message` est vide (erreurs réseau BullMQ). */
+function describeError(err: unknown): string {
+  if (err instanceof Error) {
+    const code = (err as NodeJS.ErrnoException).code;
+    return [err.name, code, err.message].filter(Boolean).join(": ") || "erreur inconnue";
+  }
+  return String(err);
+}
 
 export function startPipelineWorker(): Worker<PipelineJobData> {
   const worker = new Worker<PipelineJobData>(
@@ -30,16 +40,42 @@ export function startPipelineWorker(): Worker<PipelineJobData> {
   });
 
   worker.on("failed", (job, err) => {
-    logger.error({ jobId: job?.id, err: err.message }, "Job échoué");
+    logger.error({ jobId: job?.id, err: describeError(err) }, "Job échoué");
   });
 
+  // Une coupure Redis fait émettre une erreur toutes les ~2 s : on limite
+  // le bruit et on indique la cause réelle (le message est souvent vide).
+  let lastRedisErrorAt = 0;
+
   worker.on("error", (err) => {
+    const message = err.message ?? "";
+
     // Ignore les erreurs de lock (job retiré manuellement).
-    if (err.message.includes("Missing lock") || err.message.includes("could not renew lock")) {
-      logger.debug({ err: err.message }, "Job retiré — lock perdu (attendu)");
+    if (message.includes("Missing lock") || message.includes("could not renew lock")) {
+      logger.debug({ err: describeError(err) }, "Job retiré — lock perdu (attendu)");
       return;
     }
-    logger.error({ err: err.message }, "Worker erreur");
+
+    const code = (err as NodeJS.ErrnoException).code;
+    const isRedisIssue =
+      code === "ECONNREFUSED" ||
+      code === "ECONNRESET" ||
+      code === "ETIMEDOUT" ||
+      code === "EPIPE";
+
+    if (isRedisIssue) {
+      const now = Date.now();
+      if (now - lastRedisErrorAt < 30_000) return;
+      lastRedisErrorAt = now;
+
+      logger.error(
+        { code, host: env.REDIS_HOST, port: env.REDIS_PORT },
+        "Worker : connexion Redis perdue — vérifiez Redis/Memurai (npm run ensure:redis)",
+      );
+      return;
+    }
+
+    logger.error({ err: describeError(err) }, "Worker erreur");
   });
 
   worker.on("stalled", (jobId) => {
