@@ -174,9 +174,6 @@ export function CreateServerModal({ open, onClose, onCreated }: Props) {
                 {errors.privateKey.message}
               </p>
             )}
-            <p className="text-xs text-muted mt-1">
-              La clé est chiffrée en base et n'est jamais renvoyée au client.
-            </p>
           </div>
 
           {serverError && (
