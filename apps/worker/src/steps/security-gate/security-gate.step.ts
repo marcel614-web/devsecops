@@ -224,11 +224,17 @@ export async function securityGateStep(
       continue;
     }
 
-    if (step.status === StepStatus.FAILED) {
+    if (
+      step.status === StepStatus.FAILED ||
+      step.status === StepStatus.CANCELLED
+    ) {
       technicalFailures.push({
         category,
         step: step.name,
-        reason: "Le scanner a échoué",
+        reason:
+          step.status === StepStatus.CANCELLED
+            ? "Étape annulée ou non exécutée"
+            : "Le scanner a échoué",
       });
       continue;
     }
@@ -266,12 +272,31 @@ export async function securityGateStep(
         step: item.type,
         reason: "Étape non exécutée",
       });
-    } else if (step.status === StepStatus.FAILED) {
+    } else if (
+      step.status === StepStatus.FAILED ||
+      step.status === StepStatus.CANCELLED
+    ) {
       technicalFailures.push({
         category: item.category,
         step: step.name,
-        reason: "L'étape a échoué",
+        reason:
+          step.status === StepStatus.CANCELLED
+            ? "Étape annulée ou non exécutée"
+            : "L'étape a échoué",
       });
+    } else {
+      const data = (step.resultJson ?? {}) as {
+        skipped?: boolean;
+        technical?: boolean;
+        reason?: string;
+      };
+      if (data.skipped === true && data.technical === true) {
+        technicalFailures.push({
+          category: item.category,
+          step: step.name,
+          reason: data.reason ?? "Outil indisponible",
+        });
+      }
     }
   }
 
