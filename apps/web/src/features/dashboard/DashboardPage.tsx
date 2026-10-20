@@ -1,4 +1,4 @@
-import { Link } from "react-router-dom";
+import { Link, useNavigate } from "react-router-dom";
 import { FolderGit2, GitBranch, ShieldAlert, Server, CheckCircle2, XCircle, ShieldX, Activity, RefreshCw, TrendingUp, ArrowRight } from "lucide-react";
 import { ResponsiveContainer, PieChart, Pie, Cell, Tooltip, BarChart, Bar, XAxis, YAxis, CartesianGrid } from "recharts";
 import { PageHeader } from "@/components/layout/PageHeader";
@@ -57,6 +57,7 @@ function ChartTooltip({ active, payload }: { active?: boolean; payload?: Array<{
 }
 
 export function DashboardPage() {
+  const navigate = useNavigate();
   const { data, isLoading, isError, error, refetch, isRefetching } = useDashboardSummary();
 
   if (isLoading) {
@@ -226,11 +227,19 @@ export function DashboardPage() {
                     <th className="px-5 py-2.5 text-left font-medium">Statut</th>
                     <th className="hidden px-5 py-2.5 text-right font-medium sm:table-cell">Durée</th>
                     <th className="px-5 py-2.5 text-right font-medium">Lancé</th>
+                    <th className="w-10 px-3 py-2.5"><span className="sr-only">Ouvrir</span></th>
                   </tr>
                 </thead>
                 <tbody>
                   {recentPipelines.map((p) => (
-                    <tr key={p.id} className="border-b border-border/60 transition-colors last:border-0 hover:bg-slate-100 dark:hover:bg-slate-700/30">
+                    <tr
+                      key={p.id}
+                      className="group cursor-pointer border-b border-border/60 transition-colors last:border-0 hover:bg-slate-100 dark:hover:bg-slate-700/30"
+                      onClick={(e) => {
+                        if ((e.target as HTMLElement).closest("a,button")) return;
+                        navigate(`/projects/${p.project.id}/pipelines/${p.id}`);
+                      }}
+                    >
                       <td className="px-5 py-3">
                         <Link to={`/projects/${p.project.id}/pipelines/${p.id}`} className="font-medium text-primary-600 hover:underline dark:text-primary-400">{p.project.name}</Link>
                       </td>
@@ -239,6 +248,9 @@ export function DashboardPage() {
                       <td className="px-5 py-3"><StatusBadge status={p.status} /></td>
                       <td className="hidden px-5 py-3 text-right tabular-nums text-muted sm:table-cell">{formatDuration(p.durationMs)}</td>
                       <td className="whitespace-nowrap px-5 py-3 text-right text-muted">{timeAgo(p.createdAt)}</td>
+                      <td className="px-3 py-3 text-right text-muted">
+                        <ArrowRight className="h-4 w-4 transition-colors group-hover:text-primary-500" aria-hidden="true" />
+                      </td>
                     </tr>
                   ))}
                 </tbody>
