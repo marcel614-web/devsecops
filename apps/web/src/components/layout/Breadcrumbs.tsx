@@ -3,6 +3,7 @@ import { ChevronRight } from "lucide-react";
 
 const LABELS: Record<string, string> = {
   dashboard: "Tableau de bord",
+  notifications: "Notifications",
   projects: "Projets",
   repositories: "Repositories",
   pipelines: "Pipelines",

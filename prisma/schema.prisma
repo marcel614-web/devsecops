@@ -99,6 +99,13 @@ enum ServerAuthType {
   PASSWORD
 }
 
+enum NotificationKind {
+  SUCCESS
+  WARNING
+  DANGER
+  INFO
+}
+
 // ============================================================
 // USER & AUTH
 // ============================================================
@@ -119,6 +126,7 @@ model User {
   auditLogs           AuditLog[]
   securityGateExceptions SecurityGateException[]
   assignedVulnerabilities Vulnerability[]
+  notifications       Notification[]
 
   @@index([email])
   @@index([role])
@@ -611,4 +619,31 @@ model SystemConfig {
   updatedAt DateTime @updatedAt
 
   @@index([key])
+}
+
+// ============================================================
+// NOTIFICATIONS
+// ============================================================
+
+/// Notification persistée, propre à un utilisateur.
+/// `sourceKey` permet une synchronisation idempotente depuis les pipelines.
+model Notification {
+  id        String           @id @default(cuid())
+  userId    String
+  sourceKey String
+  kind      NotificationKind
+  title     String
+  message   String?
+  link      String?
+  readAt    DateTime?
+  deletedAt DateTime?
+  createdAt DateTime         @default(now())
+  updatedAt DateTime         @updatedAt
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@unique([userId, sourceKey])
+  @@index([userId, createdAt])
+  @@index([userId, readAt])
+  @@index([userId, deletedAt])
 }

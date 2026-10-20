@@ -606,6 +606,11 @@ export async function deletePipeline(
 
   await prisma.pipeline.delete({ where: { id: pipelineId } });
 
+  // Les notifications liées à ce pipeline ne doivent pas rester orphelines.
+  await prisma.notification.deleteMany({
+    where: { sourceKey: `pipeline:${pipelineId}` },
+  });
+
   await prisma.auditLog.create({
     data: {
       userId: actor.id,

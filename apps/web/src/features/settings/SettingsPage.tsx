@@ -45,8 +45,8 @@ const SETTINGS_ITEMS: SettingsItem[] = [
   {
     to: "/settings/notifications",
     icon: Bell,
-    title: "Notifications",
-    description: "Configurer les alertes email et in-app",
+    title: "Préférences de notifications",
+    description: "Préférences locales des alertes in-app",
   },
   {
     to: "/settings/appearance",

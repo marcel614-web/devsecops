@@ -33,7 +33,7 @@ export function NotificationsPage() {
 
   return (
     <div>
-      <PageHeader title="Notifications" description="Configurer les alertes" />
+      <PageHeader title="Préférences de notifications" description="Configurer les alertes" />
       <Card>
         <CardContent className="space-y-4 py-4">
           <label className="flex items-center gap-3">
@@ -61,6 +61,10 @@ export function NotificationsPage() {
             <span>Notifier en cas de déploiement réussi</span>
           </label>
           <Button onClick={save}>Enregistrer</Button>
+          <p className="text-xs text-muted">
+            Ces préférences sont enregistrées localement. La boîte de
+            notifications reste accessible depuis le menu latéral.
+          </p>
         </CardContent>
       </Card>
     </div>

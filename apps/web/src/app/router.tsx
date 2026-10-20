@@ -23,6 +23,7 @@ import { GithubSettingsPage } from "@/features/settings/GithubSettingsPage";
 import { ProfilePage } from "@/features/settings/ProfilePage";
 import { SecurityPage as SettingsSecurityPage } from "@/features/settings/SecurityPage";
 import { NotificationsPage } from "@/features/settings/NotificationsPage";
+import { NotificationsInboxPage } from "@/features/notifications/NotificationsInboxPage";
 import { AppearancePage } from "@/features/settings/AppearancePage";
 import { ServersDefaultPage } from "@/features/settings/ServersDefaultPage";
 import { NotFoundPage } from "@/features/errors/NotFoundPage";
@@ -76,6 +77,7 @@ export function AppRouter() {
 
         {/* Dashboard */}
         <Route path="dashboard" element={<DashboardPage />} />
+        <Route path="notifications" element={<NotificationsInboxPage />} />
 
         {/* Projets */}
         <Route path="projects" element={<ProjectsPage />} />
