@@ -149,7 +149,7 @@ export async function createProject(actor: ActorContext, input: CreateProjectInp
       data: {
         ownerId: actor.id,
         name: input.name,
-        description: input.description ?? null,
+        description: input.description?.trim() || null,
         provider: input.provider,
         repoFullName: input.repoFullName,
         repoId: input.repoId,
@@ -217,7 +217,9 @@ export async function updateProject(
     where: { id: projectId },
     data: {
       ...(input.name !== undefined ? { name: input.name } : {}),
-      ...(input.description !== undefined ? { description: input.description } : {}),
+      ...(input.description !== undefined
+        ? { description: input.description?.trim() || null }
+        : {}),
       ...(input.defaultBranch !== undefined ? { defaultBranch: input.defaultBranch } : {}),
       ...(input.technology !== undefined ? { technology: input.technology } : {}),
       ...(input.deploymentEnabled !== undefined

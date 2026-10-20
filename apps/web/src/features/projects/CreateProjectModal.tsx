@@ -81,7 +81,10 @@ export function CreateProjectModal({ open, onClose, onCreated }: Props) {
   const onSubmit = async (v: FormValues) => {
     setServerError(null);
     try {
-      await createMutation.mutateAsync({ ...v, description: v.description || null });
+      await createMutation.mutateAsync({
+        ...v,
+        description: v.description?.trim() || undefined,
+      });
       onCreated(v.name);
     } catch (err) {
       setServerError(getErrorMessage(err));
@@ -114,6 +117,7 @@ export function CreateProjectModal({ open, onClose, onCreated }: Props) {
           <div>
             <Label>Description</Label>
             <Input placeholder="Optionnel" {...register("description")} />
+            <Err m={errors.description?.message} />
           </div>
 
           <div className="space-y-3 rounded-lg border border-border p-4">
