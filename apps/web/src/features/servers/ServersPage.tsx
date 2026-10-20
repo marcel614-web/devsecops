@@ -3,6 +3,7 @@ import { useState } from "react";
 import {
   Server,
   Plus,
+  Pencil,
   Trash2,
   ShieldCheck,
   Activity,
@@ -27,10 +28,12 @@ import {
   useTestServer,
 } from "@/hooks/useServers";
 import { CreateServerModal } from "./CreateServerModal";
+import { EditServerModal } from "./EditServerModal";
 import { ServerTestResultPanel } from "./ServerTestResultPanel";
 import { timeAgo } from "@/lib/utils";
 import { getErrorMessage } from "@/services/api";
 import { serverService } from "@/services/server.service";
+import type { DeploymentServer } from "@/types/api";
 import { useMutation, useQueryClient } from "@tanstack/react-query";
 
 interface TestResultCache {
@@ -45,6 +48,7 @@ interface TestResultCache {
 export function ServersPage() {
   const [search, setSearch] = useState("");
   const [createOpen, setCreateOpen] = useState(false);
+  const [editTarget, setEditTarget] = useState<DeploymentServer | null>(null);
   const [deleteTarget, setDeleteTarget] = useState<{ id: string; name: string } | null>(null);
   const [testingId, setTestingId] = useState<string | null>(null);
   const [testResults, setTestResults] = useState<TestResultCache>({});
@@ -174,15 +178,24 @@ export function ServersPage() {
                       {s.host}:{s.sshPort}
                     </p>
                   </div>
-                  <button
-                    onClick={() =>
-                      setDeleteTarget({ id: s.id, name: s.name })
-                    }
-                    className="text-muted hover:text-red-500 shrink-0 p-1"
-                    title="Supprimer"
-                  >
-                    <Trash2 className="w-3.5 h-3.5" />
-                  </button>
+                  <div className="flex items-center gap-1 shrink-0">
+                    <button
+                      onClick={() => setEditTarget(s)}
+                      className="text-muted hover:text-primary-500 p-1"
+                      title="Modifier le serveur"
+                    >
+                      <Pencil className="w-3.5 h-3.5" />
+                    </button>
+                    <button
+                      onClick={() =>
+                        setDeleteTarget({ id: s.id, name: s.name })
+                      }
+                      className="text-muted hover:text-red-500 p-1"
+                      title="Supprimer"
+                    >
+                      <Trash2 className="w-3.5 h-3.5" />
+                    </button>
+                  </div>
                 </div>
 
                 <dl className="space-y-1.5 text-xs mb-3">
@@ -301,6 +314,27 @@ export function ServersPage() {
         onCreated={(name) => {
           setCreateOpen(false);
           toast.show("success", `Serveur "${name}" créé`);
+        }}
+      />
+
+      <EditServerModal
+        open={!!editTarget}
+        server={editTarget}
+        onClose={() => setEditTarget(null)}
+        onUpdated={(server, name, connectionChanged) => {
+          setEditTarget(null);
+          setTestResults((prev) => {
+            const next = { ...prev };
+            delete next[server.id];
+            return next;
+          });
+          if (expandedId === server.id) {
+            setExpandedId(null);
+          }
+          toast.show("success", `Serveur "${name}" mis à jour`);
+          if (connectionChanged) {
+            void handleTest(server.id, name);
+          }
         }}
       />
 

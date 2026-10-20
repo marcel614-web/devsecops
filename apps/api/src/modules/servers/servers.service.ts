@@ -69,16 +69,23 @@ export async function listServers(actor: ActorContext, query: ServerListQuery) {
 
   const skip = (query.page - 1) * query.pageSize;
 
-  const [items, total] = await prisma.$transaction([
+  const [rows, total] = await prisma.$transaction([
     prisma.deploymentServer.findMany({
       where,
-      select: PUBLIC_SELECT,
+      // La clé chiffrée n'est jamais renvoyée au client : on ne garde que
+      // le booléen hasPrivateKey dans la réponse.
+      select: { ...PUBLIC_SELECT, encryptedPrivateKey: true },
       orderBy: { createdAt: "desc" },
       skip,
       take: query.pageSize,
     }),
     prisma.deploymentServer.count({ where }),
   ]);
+
+  const items = rows.map(({ encryptedPrivateKey, ...server }) => ({
+    ...server,
+    hasPrivateKey: !!encryptedPrivateKey,
+  }));
 
   return {
     items,
@@ -191,12 +198,21 @@ export async function updateServer(
   if (input.username !== undefined) data.username = input.username;
   if (input.privateKey !== undefined) {
     data.encryptedPrivateKey = encryptString(input.privateKey);
-    // Nouvelle clé → statut à re-tester.
-    data.status = "unknown";
-    data.lastCheckedAt = null;
   }
   if (input.passphrase !== undefined) {
     data.encryptedPassphrase = encryptString(input.passphrase);
+  }
+
+  // Toute modification des paramètres de connexion invalide le dernier test.
+  const connectionChanged =
+    input.host !== undefined ||
+    input.sshPort !== undefined ||
+    input.username !== undefined ||
+    input.privateKey !== undefined ||
+    input.passphrase !== undefined;
+  if (connectionChanged) {
+    data.status = "unknown";
+    data.lastCheckedAt = null;
   }
 
   const updated = await prisma.deploymentServer.update({
@@ -213,6 +229,7 @@ export async function updateServer(
       targetId: serverId,
       metadataJson: {
         fields: Object.keys(input),
+        connectionReset: connectionChanged,
         newKeyFingerprint: input.privateKey ? fingerprint(input.privateKey) : null,
       },
     },
@@ -360,7 +377,7 @@ export async function cleanupDockerImages(actor: ActorContext, serverId: string)
   );
 
   if (output.code !== 0) {
-    throw new Error(`Nettoyage �chou� (code ${output.code}) : ${output.stderr.slice(0, 300)}`);
+    throw new Error(`Nettoyage �chou� (code ${output.code}) : ${output.stderr.slice(0, 300)}`);
   }
 
   return { output: output.stdout + output.stderr };
