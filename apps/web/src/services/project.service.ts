@@ -5,6 +5,9 @@ import type {
   Project,
   ProjectConfiguration,
   ProjectDetail,
+  SecurityGateException,
+  SecurityGateMode,
+  Severity,
   Technology,
 } from "@/types/api";
 
@@ -55,12 +58,33 @@ export interface UpdateProjectConfigInput {
   gitleaksEnabled?: boolean;
   semgrepEnabled?: boolean;
   scaEnabled?: boolean;
+  iacEnabled?: boolean;
   trivyEnabled?: boolean;
+  syftEnabled?: boolean;
   zapEnabled?: boolean;
+  cosignEnabled?: boolean;
   securityGateCritical?: number;
   securityGateHigh?: number;
   securityGateMedium?: number;
   securityGateLow?: number;
+  gateMode?: SecurityGateMode;
+  gateEnforcementAt?: string | null;
+  gateSecretsEnabled?: boolean;
+  gateSastEnabled?: boolean;
+  gateScaEnabled?: boolean;
+  gateIacEnabled?: boolean;
+  gateImageEnabled?: boolean;
+  gateDastEnabled?: boolean;
+  deploymentStrategy?: "direct" | "staging_then_production";
+  stagingPort?: number;
+  autoRollback?: boolean;
+}
+
+export interface CreateGateExceptionInput {
+  category: SecurityGateException["category"];
+  severity?: Severity | null;
+  reason: string;
+  expiresAt?: string | null;
 }
 
 // ============================================================
@@ -108,6 +132,27 @@ export const projectService = {
         data,
       )
       .then((r) => r.data.config),
+
+  // ----------------------------------------------------------
+  // Exceptions de Security Gate
+  // ----------------------------------------------------------
+  listGateExceptions: (id: string) =>
+    api
+      .get<{ exceptions: SecurityGateException[] }>(
+        `/api/projects/${id}/gate-exceptions`,
+      )
+      .then((r) => r.data.exceptions),
+
+  createGateException: (id: string, data: CreateGateExceptionInput) =>
+    api
+      .post<{ exception: SecurityGateException }>(
+        `/api/projects/${id}/gate-exceptions`,
+        data,
+      )
+      .then((r) => r.data.exception),
+
+  deleteGateException: (id: string, exceptionId: string) =>
+    api.delete(`/api/projects/${id}/gate-exceptions/${exceptionId}`),
 
   // ----------------------------------------------------------
   // Association repository GitHub

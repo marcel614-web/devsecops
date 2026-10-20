@@ -85,7 +85,7 @@ export class GitleaksScanner implements SecurityScanner {
       const normalized: NormalizedFinding[] = findings.map((f) => ({
         tool: "gitleaks",
         severity: this.mapSeverity(f),
-        filePath: f.File,
+        filePath: f.StartLine ? `${f.File}:${f.StartLine}` : f.File,
         description: f.Description ?? f.RuleID ?? "Secret détecté",
         reference: f.RuleID ? `gitleaks:${f.RuleID}` : undefined,
         raw: {

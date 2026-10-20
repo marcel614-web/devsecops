@@ -7,6 +7,7 @@ import {
   NotFoundError,
 } from "../../utils/errors";
 import type {
+  CreateGateExceptionInput,
   CreateProjectInput,
   ProjectListQuery,
   UpdateProjectConfigInput,
@@ -278,8 +279,40 @@ export async function updateProjectConfig(
       ...(input.gitleaksEnabled !== undefined ? { gitleaksEnabled: input.gitleaksEnabled } : {}),
       ...(input.semgrepEnabled !== undefined ? { semgrepEnabled: input.semgrepEnabled } : {}),
       ...(input.scaEnabled !== undefined ? { scaEnabled: input.scaEnabled } : {}),
+      ...(input.iacEnabled !== undefined ? { iacEnabled: input.iacEnabled } : {}),
       ...(input.trivyEnabled !== undefined ? { trivyEnabled: input.trivyEnabled } : {}),
+      ...(input.syftEnabled !== undefined ? { syftEnabled: input.syftEnabled } : {}),
       ...(input.zapEnabled !== undefined ? { zapEnabled: input.zapEnabled } : {}),
+      ...(input.cosignEnabled !== undefined ? { cosignEnabled: input.cosignEnabled } : {}),
+      ...(input.gateMode !== undefined ? { gateMode: input.gateMode } : {}),
+      ...(input.gateEnforcementAt !== undefined
+        ? { gateEnforcementAt: input.gateEnforcementAt }
+        : {}),
+      ...(input.gateSecretsEnabled !== undefined
+        ? { gateSecretsEnabled: input.gateSecretsEnabled }
+        : {}),
+      ...(input.gateSastEnabled !== undefined
+        ? { gateSastEnabled: input.gateSastEnabled }
+        : {}),
+      ...(input.gateScaEnabled !== undefined
+        ? { gateScaEnabled: input.gateScaEnabled }
+        : {}),
+      ...(input.gateIacEnabled !== undefined
+        ? { gateIacEnabled: input.gateIacEnabled }
+        : {}),
+      ...(input.gateImageEnabled !== undefined
+        ? { gateImageEnabled: input.gateImageEnabled }
+        : {}),
+      ...(input.gateDastEnabled !== undefined
+        ? { gateDastEnabled: input.gateDastEnabled }
+        : {}),
+      ...(input.deploymentStrategy !== undefined
+        ? { deploymentStrategy: input.deploymentStrategy }
+        : {}),
+      ...(input.stagingPort !== undefined ? { stagingPort: input.stagingPort } : {}),
+      ...(input.autoRollback !== undefined
+        ? { autoRollback: input.autoRollback }
+        : {}),
       ...(input.securityGateCritical !== undefined
         ? { securityGateCritical: input.securityGateCritical }
         : {}),
@@ -301,4 +334,89 @@ export async function updateProjectConfig(
   });
 
   return updated;
+}
+
+// ============================================================
+// EXCEPTIONS DE SECURITY GATE
+// ============================================================
+
+export async function listGateExceptions(
+  actor: ActorContext,
+  projectId: string,
+) {
+  await ensureProjectAccess(actor, projectId);
+
+  return prisma.securityGateException.findMany({
+    where: { projectId },
+    orderBy: { createdAt: "desc" },
+    include: {
+      createdBy: { select: { id: true, name: true, email: true } },
+    },
+  });
+}
+
+export async function createGateException(
+  actor: ActorContext,
+  projectId: string,
+  input: CreateGateExceptionInput,
+) {
+  await ensureProjectAccess(actor, projectId);
+
+  if (input.expiresAt && input.expiresAt.getTime() <= Date.now()) {
+    throw new ConflictError("La date d'expiration doit être dans le futur");
+  }
+
+  const exception = await prisma.securityGateException.create({
+    data: {
+      projectId,
+      category: input.category,
+      severity: input.severity ?? null,
+      reason: input.reason,
+      expiresAt: input.expiresAt ?? null,
+      createdById: actor.id,
+    },
+  });
+
+  await prisma.auditLog.create({
+    data: {
+      userId: actor.id,
+      action: "SECURITY_GATE_EXCEPTION_CREATED",
+      targetType: "SecurityGateException",
+      targetId: exception.id,
+      metadataJson: {
+        projectId,
+        category: exception.category,
+        severity: exception.severity,
+        expiresAt: exception.expiresAt?.toISOString() ?? null,
+        reason: exception.reason,
+      },
+    },
+  });
+
+  return exception;
+}
+
+export async function deleteGateException(
+  actor: ActorContext,
+  projectId: string,
+  exceptionId: string,
+) {
+  await ensureProjectAccess(actor, projectId);
+
+  const exception = await prisma.securityGateException.findFirst({
+    where: { id: exceptionId, projectId },
+  });
+  if (!exception) throw new NotFoundError("Exception introuvable");
+
+  await prisma.securityGateException.delete({ where: { id: exceptionId } });
+
+  await prisma.auditLog.create({
+    data: {
+      userId: actor.id,
+      action: "SECURITY_GATE_EXCEPTION_DELETED",
+      targetType: "SecurityGateException",
+      targetId: exceptionId,
+      metadataJson: { projectId, reason: exception.reason },
+    },
+  });
 }

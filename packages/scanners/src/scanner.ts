@@ -38,6 +38,8 @@ export interface ScanResult {
 
 export interface ScanContext {
   workspaceDir: string;
+  /** URL cible pour les scanners dynamiques (DAST). */
+  targetUrl?: string;
   onLog?: (
     level: "info" | "warn" | "error" | "debug",
     message: string,
@@ -46,6 +48,6 @@ export interface ScanContext {
 
 export interface SecurityScanner {
   readonly name: string;
-  isAvailable(): Promise<boolean>;
+  isAvailable(workspaceDir?: string): Promise<boolean>;
   scan(ctx: ScanContext): Promise<ScanResult>;
 }

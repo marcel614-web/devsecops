@@ -7,6 +7,7 @@ import { prisma } from "../../utils/prisma";
 import { pipelineQueue } from "../../queues/pipeline.queue";
 import * as installService from "../github/installations.service";
 import { getGithubConfigInternal } from "../system-config/system-config.service";
+import { buildDefaultSteps } from "../pipelines/pipeline.steps";
 
 // ============================================================
 // VÉRIFICATION SIGNATURE
@@ -109,6 +110,10 @@ export async function githubWebhook(
     switch (event) {
       case "push":
         await handlePush(payload, webhookRecord.id);
+        break;
+
+      case "pull_request":
+        await handlePullRequest(payload, webhookRecord.id);
         break;
 
       case "installation":
@@ -240,89 +245,12 @@ async function handlePush(payload: PushEvent, webhookRecordId: string) {
       });
 
       const config = project.config;
-      const steps: Array<{
-        name: string;
-        type: string;
-        order: number;
-        critical: boolean;
-      }> = [
-        { name: "Checkout", type: "CHECKOUT", order: 1, critical: true },
-        {
-          name: "Technology Detection",
-          type: "DETECTION",
-          order: 2,
-          critical: true,
-        },
-        {
-          name: "Install Dependencies",
-          type: "INSTALL_DEPS",
-          order: 3,
-          critical: true,
-        },
-        { name: "Tests", type: "TESTS", order: 4, critical: false },
-      ];
-      let order = 5;
-
-      if (config?.gitleaksEnabled) {
-        steps.push({
-          name: "Gitleaks",
-          type: "SECRET_SCAN",
-          order: order++,
-          critical: false,
-        });
+      if (!config) {
+        throw new Error(
+          `Configuration introuvable pour le projet ${project.id}`,
+        );
       }
-      if (config?.semgrepEnabled) {
-        steps.push({
-          name: "Semgrep",
-          type: "SAST",
-          order: order++,
-          critical: false,
-        });
-      }
-      if (config?.scaEnabled) {
-        steps.push({ name: "SCA", type: "SCA", order: order++, critical: false });
-      }
-
-      steps.push({
-        name: "Docker Build",
-        type: "DOCKER_BUILD",
-        order: order++,
-        critical: true,
-      });
-      steps.push({
-        name: "Trivy",
-        type: "IMAGE_SCAN",
-        order: order++,
-        critical: false,
-      });
-      steps.push({
-        name: "Security Gate",
-        type: "SECURITY_GATE",
-        order: order++,
-        critical: true,
-      });
-      steps.push({
-        name: "Deployment",
-        type: "DEPLOYMENT",
-        order: order++,
-        critical: false,
-      });
-
-      if (config?.zapEnabled) {
-        steps.push({
-          name: "OWASP ZAP",
-          type: "DAST",
-          order: order++,
-          critical: false,
-        });
-      }
-
-      steps.push({
-        name: "Final Report",
-        type: "REPORT",
-        order: order++,
-        critical: false,
-      });
+      const steps = buildDefaultSteps(config);
 
       await tx.pipelineStep.createMany({
         data: steps.map((s) => ({
@@ -367,6 +295,197 @@ async function handlePush(payload: PushEvent, webhookRecordId: string) {
     logger.info(
       { pipelineId: pipeline.id, projectId: project.id },
       "Pipeline déclenché par webhook",
+    );
+  }
+}
+
+// ============================================================
+// PULL_REQUEST HANDLER
+// ============================================================
+
+interface PullRequestEvent {
+  action: string;
+  number: number;
+  installation?: { id: number };
+  repository: {
+    id: number;
+    full_name: string;
+    default_branch: string;
+    owner: { login: string };
+  };
+  pull_request: {
+    number: number;
+    html_url: string;
+    title: string;
+    draft?: boolean;
+    state: string;
+    user: { login: string };
+    head: { sha: string; ref: string; repo: { full_name: string } | null };
+    base: { ref: string; repo: { full_name: string } };
+  };
+  sender: { login: string };
+}
+
+const PR_ACTIONS = new Set(["opened", "synchronize", "reopened", "ready_for_review"]);
+
+async function handlePullRequest(
+  payload: PullRequestEvent,
+  webhookRecordId: string,
+) {
+  if (!PR_ACTIONS.has(payload.action)) {
+    logger.debug(
+      { action: payload.action, pr: payload.number },
+      "Action pull_request ignorée",
+    );
+    return;
+  }
+
+  const repoId = String(payload.repository.id);
+  const pr = payload.pull_request;
+
+  if (pr.draft === true) {
+    logger.debug({ pr: payload.number }, "Pull request en brouillon — ignorée");
+    return;
+  }
+
+  const repo = await prisma.gitHubRepository.findFirst({
+    where: { repositoryId: repoId },
+    select: {
+      id: true,
+      fullName: true,
+      installation: { select: { revokedAt: true, suspendedAt: true } },
+    },
+  });
+
+  if (!repo) {
+    logger.debug({ repoId }, "Repository inconnu — pull_request ignoré");
+    return;
+  }
+  if (repo.installation.revokedAt || repo.installation.suspendedAt) {
+    logger.warn(
+      { repoId },
+      "Installation révoquée ou suspendue — pull_request ignoré",
+    );
+    return;
+  }
+
+  const projects = await prisma.project.findMany({
+    where: { githubRepositoryId: repo.id },
+    include: {
+      config: true,
+      owner: { select: { id: true } },
+    },
+  });
+
+  if (projects.length === 0) {
+    logger.debug({ repoId }, "Aucun projet lié — pull_request ignoré");
+    return;
+  }
+
+  for (const project of projects) {
+    const monitored = project.monitoredBranch ?? project.defaultBranch;
+
+    // On ne scanne que les PR qui ciblent la branche surveillée.
+    if (pr.base.ref !== monitored) {
+      logger.debug(
+        { projectId: project.id, base: pr.base.ref, monitored },
+        "PR ne cible pas la branche surveillée — ignorée",
+      );
+      continue;
+    }
+
+    if (!project.config) {
+      logger.warn(
+        { projectId: project.id },
+        "Configuration projet manquante — pull_request ignoré",
+      );
+      continue;
+    }
+
+    // Évite les doublons pour le même commit de tête.
+    const existing = await prisma.pipeline.findFirst({
+      where: {
+        projectId: project.id,
+        commitSha: pr.head.sha,
+        trigger: "pull_request",
+        status: { in: [PipelineStatus.QUEUED, PipelineStatus.RUNNING] },
+      },
+      select: { id: true },
+    });
+    if (existing) {
+      logger.debug(
+        { projectId: project.id, pipelineId: existing.id },
+        "Pipeline PR déjà en cours pour ce commit — ignoré",
+      );
+      continue;
+    }
+
+    const pipeline = await prisma.$transaction(async (tx) => {
+      const created = await tx.pipeline.create({
+        data: {
+          projectId: project.id,
+          commitSha: pr.head.sha,
+          branch: pr.head.ref,
+          baseBranch: pr.base.ref,
+          author: payload.sender.login,
+          trigger: "pull_request",
+          pullRequestNumber: payload.number,
+          pullRequestUrl: pr.html_url,
+          status: PipelineStatus.QUEUED,
+        },
+        select: { id: true },
+      });
+
+      const steps = buildDefaultSteps(project.config!);
+
+      await tx.pipelineStep.createMany({
+        data: steps.map((s) => ({
+          pipelineId: created.id,
+          name: s.name,
+          type: s.type,
+          order: s.order,
+          status: StepStatus.QUEUED,
+          resultJson: { critical: s.critical },
+        })),
+      });
+
+      await tx.auditLog.create({
+        data: {
+          userId: project.owner.id,
+          action: "PIPELINE_TRIGGERED_BY_PULL_REQUEST",
+          targetType: "Pipeline",
+          targetId: created.id,
+          metadataJson: {
+            repoFullName: repo.fullName,
+            pullRequestNumber: payload.number,
+            pullRequestUrl: pr.html_url,
+            headSha: pr.head.sha,
+            baseBranch: pr.base.ref,
+          },
+        },
+      });
+
+      return created;
+    });
+
+    await pipelineQueue.add(
+      "run",
+      { pipelineId: pipeline.id },
+      { jobId: pipeline.id },
+    );
+
+    await prisma.webhookEvent.update({
+      where: { id: webhookRecordId },
+      data: { projectId: project.id, pipelineId: pipeline.id },
+    });
+
+    logger.info(
+      {
+        pipelineId: pipeline.id,
+        projectId: project.id,
+        pr: payload.number,
+      },
+      "Pipeline déclenché par pull_request",
     );
   }
 }

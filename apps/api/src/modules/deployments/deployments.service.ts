@@ -14,7 +14,7 @@ async function loadDeployment(actor: ActorContext, id: string) {
   const deployment = await prisma.deployment.findUnique({
     where: { id },
     include: {
-      project: true,
+      project: { include: { config: true } },
       server: true,
     },
   });
@@ -46,23 +46,77 @@ export async function getDeployment(actor: ActorContext, id: string) {
   return loadDeployment(actor, id);
 }
 
-function remoteDir(username: string, projectId: string) {
-  return `/home/${username}/apps/${projectId}`;
+function remoteDir(
+  username: string,
+  projectId: string,
+  environment: string,
+): string {
+  const env = environment === "STAGING" ? "staging" : "production";
+  return `/home/${username}/apps/${projectId}/${env}`;
 }
 
-function appUrl(serverHost: string) {
-  return `http://${serverHost}:${EXTERNAL_PORT}`;
+function composeProjectName(projectId: string, environment: string): string {
+  const env = environment === "STAGING" ? "staging" : "production";
+  return `devsecops-${projectId}-${env}`.replace(/[^a-zA-Z0-9_-]/g, "-");
+}
+
+function externalPort(deployment: {
+  environment: string;
+  project: { config: { stagingPort: number } | null };
+}): number {
+  if (deployment.environment === "STAGING") {
+    return deployment.project.config?.stagingPort ?? 8081;
+  }
+  return EXTERNAL_PORT;
+}
+
+function appUrl(serverHost: string, port: number) {
+  return `http://${serverHost}:${port}`;
+}
+
+function deploymentUrl(
+  deployment: {
+    environment: string;
+    url: string | null;
+    stagingUrl: string | null;
+    productionUrl: string | null;
+    project: { config: { stagingPort: number } | null };
+  },
+  serverHost: string,
+): string {
+  const specific =
+    deployment.environment === "STAGING"
+      ? deployment.stagingUrl
+      : deployment.productionUrl;
+  return (
+    specific ??
+    deployment.url ??
+    appUrl(serverHost, externalPort(deployment))
+  );
+}
+
+function composeCommand(
+  deployment: {
+    environment: string;
+    projectId: string;
+  },
+  args: string,
+): string {
+  return `docker compose -p "${composeProjectName(
+    deployment.projectId,
+    deployment.environment,
+  )}" ${args}`;
 }
 
 export async function startDeployment(actor: ActorContext, id: string) {
   const deployment = await loadDeployment(actor, id);
   const server = deployment.server;
   const project = deployment.project;
-  const dir = remoteDir(server.username, project.id);
+  const dir = remoteDir(server.username, project.id, deployment.environment);
 
   const result = await runRemoteCommand(
     server,
-    `cd "${dir}" && docker compose up -d --remove-orphans`,
+    `cd "${dir}" && ${composeCommand(deployment, "up -d --remove-orphans")}`,
     5 * 60_000,
   );
 
@@ -72,7 +126,7 @@ export async function startDeployment(actor: ActorContext, id: string) {
     );
   }
 
-  const url = deployment.url ?? appUrl(server.host);
+  const url = deploymentUrl(deployment, server.host);
   await prisma.deployment.update({
     where: { id },
     data: { status: DeploymentStatus.RUNNING, url },
@@ -100,11 +154,11 @@ export async function stopDeployment(actor: ActorContext, id: string) {
   const deployment = await loadDeployment(actor, id);
   const server = deployment.server;
   const project = deployment.project;
-  const dir = remoteDir(server.username, project.id);
+  const dir = remoteDir(server.username, project.id, deployment.environment);
 
   const result = await runRemoteCommand(
     server,
-    `cd "${dir}" && docker compose stop`,
+    `cd "${dir}" && ${composeCommand(deployment, "stop")}`,
     3 * 60_000,
   );
 
@@ -126,11 +180,11 @@ export async function restartDeployment(actor: ActorContext, id: string) {
   const deployment = await loadDeployment(actor, id);
   const server = deployment.server;
   const project = deployment.project;
-  const dir = remoteDir(server.username, project.id);
+  const dir = remoteDir(server.username, project.id, deployment.environment);
 
   const result = await runRemoteCommand(
     server,
-    `cd "${dir}" && docker compose restart`,
+    `cd "${dir}" && ${composeCommand(deployment, "restart")}`,
     3 * 60_000,
   );
 
@@ -140,7 +194,7 @@ export async function restartDeployment(actor: ActorContext, id: string) {
     );
   }
 
-  const url = deployment.url ?? appUrl(server.host);
+  const url = deploymentUrl(deployment, server.host);
   await prisma.deployment.update({
     where: { id },
     data: { status: DeploymentStatus.SUCCESS, url },
@@ -153,11 +207,11 @@ export async function uninstallDeployment(actor: ActorContext, id: string) {
   const deployment = await loadDeployment(actor, id);
   const server = deployment.server;
   const project = deployment.project;
-  const dir = remoteDir(server.username, project.id);
+  const dir = remoteDir(server.username, project.id, deployment.environment);
 
   await runRemoteCommand(
     server,
-    `cd "${dir}" && docker compose down --remove-orphans`,
+    `cd "${dir}" && ${composeCommand(deployment, "down --remove-orphans")}`,
     5 * 60_000,
   );
 

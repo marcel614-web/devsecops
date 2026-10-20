@@ -146,14 +146,22 @@ export function GithubSettingsPage() {
           <div className="text-xs text-muted leading-relaxed">
             <p>
               <strong className="text-slate-700 dark:text-slate-200">
-                Déclenchement manuel activé.
+                Déclenchement automatique disponible.
               </strong>{" "}
-              Les pipelines sont lancés depuis l'interface, pas automatiquement
-              sur <code>git push</code>.
+              Les pipelines peuvent être lancés manuellement, ou
+              automatiquement sur <code>git push</code> et sur les pull
+              requests.
             </p>
             <p className="mt-1">
-              Le <strong>webhook secret</strong> est donc optionnel — laissez-le
-              vide si vous n'utilisez pas les déclenchements automatiques.
+              Dans les paramètres de la GitHub App, abonnez-la aux événements{" "}
+              <code>push</code> et <code>pull_request</code>. Le{" "}
+              <strong>webhook secret</strong> est requis pour les
+              déclenchements automatiques.
+            </p>
+            <p className="mt-1">
+              Les PR ne sont analysées que si elles ciblent la branche
+              surveillée du projet. Un check run est publié sur le commit de
+              tête à la fin du pipeline.
             </p>
           </div>
         </CardContent>

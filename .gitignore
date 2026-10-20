@@ -19,6 +19,10 @@ out/
 .vite/
 .turbo/
 *.tsbuildinfo
+# Artefacts de compilation émis par erreur dans les sources : ils
+# masquent les .ts au runtime (tsx résout le .js en premier).
+packages/*/src/**/*.js
+packages/*/src/**/*.js.map
 
 # ============================================================
 # Environnement / Secrets

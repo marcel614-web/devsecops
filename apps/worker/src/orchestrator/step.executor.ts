@@ -4,14 +4,20 @@ import { execFile } from "node:child_process";
 import { promisify } from "node:util";
 import { checkoutStep } from "../steps/checkout/checkout.step";
 import { detectionStep } from "../steps/detection/detection.step";
+import { installDepsStep } from "../steps/install-deps/install-deps.step";
 import { testsStep } from "../steps/tests/tests.step";
 import { gitleaksStep } from "../steps/security-scans/gitleaks.step";
 import { semgrepStep } from "../steps/security-scans/semgrep.step";
 import { scaStep } from "../steps/security-scans/sca.step";
+import { iacStep } from "../steps/iac/iac.step";
 import { dockerBuildStep } from "../steps/docker-build/docker-build.step";
+import { cosignStep } from "../steps/sign/cosign.step";
+import { syftStep } from "../steps/sbom/syft.step";
 import { trivyStep } from "../steps/image-scan/trivy.step";
 import { securityGateStep } from "../steps/security-gate/security-gate.step";
 import { deploymentStep } from "../steps/deployment/deployment.step";
+import { promotionStep } from "../steps/deployment/promotion.step";
+import { zapStep } from "../steps/dynamic-scan/zap.step";
 import { finalReportStep } from "../steps/report/final-report.step";
 
 export const execFileAsync = promisify(execFile);
@@ -34,6 +40,10 @@ export interface StepContext {
    * et abandonner si le retour est `true`.
    */
   isCancelled: () => Promise<boolean>;
+  /** Vrai si une étape critique a échoué avant l'étape courante. */
+  pipelineAborted?: boolean;
+  /** Vrai si le Security Gate a bloqué le pipeline. */
+  pipelineSecurityBlocked?: boolean;
 }
 
 export interface StepResult {
@@ -52,14 +62,20 @@ export type StepHandler = (
 const HANDLERS: Record<string, StepHandler> = {
   CHECKOUT: checkoutStep,
   DETECTION: detectionStep,
+  INSTALL_DEPS: installDepsStep,
   TESTS: testsStep,
   SECRET_SCAN: gitleaksStep,
   SAST: semgrepStep,
   SCA: scaStep,
+  IAC_SCAN: iacStep,
   DOCKER_BUILD: dockerBuildStep,
+  SIGN: cosignStep,
+  SBOM: syftStep,
   IMAGE_SCAN: trivyStep,
   SECURITY_GATE: securityGateStep,
   DEPLOYMENT: deploymentStep,
+  DAST: zapStep,
+  PROMOTE: promotionStep,
   REPORT: finalReportStep,
 };
 

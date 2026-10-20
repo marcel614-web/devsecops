@@ -1,4 +1,5 @@
 // apps/api/src/modules/pipelines/pipelines.service.ts
+import fs from "node:fs/promises";
 import { PipelineStatus, Prisma, Role, StepStatus } from "@prisma/client";
 import { prisma } from "../../utils/prisma";
 import {
@@ -8,6 +9,7 @@ import {
 } from "../../utils/errors";
 import { pipelineQueue } from "../../queues/pipeline.queue";
 import { redisConnection } from "../../queues/connection";
+import { buildDefaultSteps } from "./pipeline.steps";
 import type {
   PipelineListQuery,
   PipelineLogsQuery,
@@ -45,54 +47,6 @@ async function ensureProjectAccess(
     throw new ForbiddenError("Accès interdit à ce projet");
   }
   return project;
-}
-
-interface StepDef {
-  name: string;
-  type: string;
-  order: number;
-  critical: boolean;
-}
-
-function buildDefaultSteps(config: {
-  gitleaksEnabled: boolean;
-  semgrepEnabled: boolean;
-  scaEnabled: boolean;
-  trivyEnabled: boolean;
-  zapEnabled: boolean;
-}): StepDef[] {
-  const steps: StepDef[] = [
-    { name: "Checkout",             type: "CHECKOUT",     order: 1, critical: true  },
-    { name: "Technology Detection", type: "DETECTION",    order: 2, critical: true  },
-    { name: "Install Dependencies", type: "INSTALL_DEPS", order: 3, critical: true  },
-    { name: "Tests",                type: "TESTS",        order: 4, critical: false },
-  ];
-
-  let order = 5;
-
-  if (config.gitleaksEnabled) {
-    steps.push({ name: "Gitleaks", type: "SECRET_SCAN", order: order++, critical: false });
-  }
-  if (config.semgrepEnabled) {
-    steps.push({ name: "Semgrep", type: "SAST", order: order++, critical: false });
-  }
-  if (config.scaEnabled) {
-    steps.push({ name: "SCA", type: "SCA", order: order++, critical: false });
-  }
-
-  steps.push({ name: "Docker Build", type: "DOCKER_BUILD", order: order++, critical: true });
-  steps.push({ name: "Trivy", type: "IMAGE_SCAN", order: order++, critical: false });
-  steps.push({ name: "Security Gate", type: "SECURITY_GATE", order: order++, critical: true });
-
-  steps.push({ name: "Deployment", type: "DEPLOYMENT", order: order++, critical: false });
-
-  if (config.zapEnabled) {
-    steps.push({ name: "OWASP ZAP", type: "DAST", order: order++, critical: false });
-  }
-
-  steps.push({ name: "Final Report", type: "REPORT", order: order++, critical: false });
-
-  return steps;
 }
 
 // ============================================================
@@ -162,6 +116,7 @@ export async function getPipeline(
       gateResult: true,
       deployment: true,
       dockerImage: true,
+      sbom: true,
       _count: { select: { logs: true, scans: true } },
     },
   });
@@ -495,6 +450,48 @@ export async function getPipelineReport(
   return { report };
 }
 
+/**
+ * Lit le fichier HTML ou PDF d'un rapport et renvoie son contenu.
+ * Les fichiers sont générés par le worker dans REPORTS_DIR.
+ */
+export async function getPipelineReportFile(
+  actor: ActorContext,
+  projectId: string,
+  pipelineId: string,
+  format: "html" | "pdf",
+) {
+  await ensureProjectAccess(actor, projectId);
+
+  const report = await prisma.securityReport.findUnique({
+    where: { pipelineId },
+    select: { htmlPath: true, pdfPath: true },
+  });
+  if (!report) {
+    throw new NotFoundError("Aucun rapport disponible pour ce pipeline");
+  }
+
+  const filePath = format === "html" ? report.htmlPath : report.pdfPath;
+  if (!filePath) {
+    throw new NotFoundError(`Rapport ${format.toUpperCase()} non généré`);
+  }
+
+  let content: Buffer;
+  try {
+    content = await fs.readFile(filePath);
+  } catch {
+    throw new NotFoundError(
+      `Fichier de rapport ${format.toUpperCase()} introuvable sur le disque`,
+    );
+  }
+
+  return {
+    content,
+    filename: `rapport-${pipelineId}.${format}`,
+    contentType:
+      format === "html" ? "text/html; charset=utf-8" : "application/pdf",
+  };
+}
+
 // ============================================================
 // VULNÉRABILITÉS D'UN PROJET
 // ============================================================
@@ -600,7 +597,7 @@ export async function deletePipeline(
   if (!pipeline) throw new NotFoundError("Pipeline introuvable");
 
   if (pipeline.status === PipelineStatus.RUNNING) {
-    throw new ConflictError("Pipeline en cours � annulez-le avant de le supprimer");
+    throw new ConflictError("Pipeline en cours � annulez-le avant de le supprimer");
   }
 
   if (pipeline.status === PipelineStatus.QUEUED) {

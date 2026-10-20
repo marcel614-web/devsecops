@@ -5,10 +5,10 @@ import os from "node:os";
 import { execFileAsync } from "../../orchestrator/step.executor";
 import type { StepContext, StepResult } from "../../orchestrator/step.executor";
 
-const NPM_CACHE_DIR = path.join(
-  os.homedir(),
-  "AppData", "Local", "devsecops", "npm-cache",
-);
+const NPM_CACHE_DIR =
+  process.platform === "win32"
+    ? path.join(os.homedir(), "AppData", "Local", "devsecops", "npm-cache")
+    : path.join(os.homedir(), ".cache", "devsecops", "npm-cache");
 
 interface PackageJson {
   scripts?: Record<string, string>;
@@ -23,94 +23,45 @@ async function fileExists(p: string): Promise<boolean> {
   }
 }
 
+/**
+ * Exécute les tests du projet.
+ *
+ * L'installation des dépendances est désormais assurée par l'étape
+ * INSTALL_DEPS (handler dédié) : cette étape ne fait plus que les tests.
+ */
 export async function testsStep(
   _step: unknown,
   ctx: StepContext,
 ): Promise<StepResult> {
   const pkgPath = path.join(ctx.workspaceDir, "package.json");
-  const lockPath = path.join(ctx.workspaceDir, "package-lock.json");
-
-  await fs.mkdir(NPM_CACHE_DIR, { recursive: true });
 
   let pkg: PackageJson | null = null;
   try {
     const content = await fs.readFile(pkgPath, "utf8");
     pkg = JSON.parse(content) as PackageJson;
   } catch {
-    await ctx.log("warn", "Aucun package.json — étape Tests ignorée");
+    // Projet non-Node : on ne bloque pas le pipeline ici.
+    const hasComposer = await fileExists(
+      path.join(ctx.workspaceDir, "composer.json"),
+    );
+    const hasPython =
+      (await fileExists(path.join(ctx.workspaceDir, "requirements.txt"))) ||
+      (await fileExists(path.join(ctx.workspaceDir, "pyproject.toml")));
+
+    if (hasComposer || hasPython) {
+      await ctx.log(
+        "warn",
+        "Tests automatiques non configurés pour cette technologie — étape ignorée",
+      );
+    } else {
+      await ctx.log("warn", "Aucun package.json — étape Tests ignorée");
+    }
     return { success: true, exitCode: 0, data: { skipped: true } };
   }
 
   if (!pkg) {
     await ctx.log("warn", "package.json illisible — étape Tests ignorée");
     return { success: true, exitCode: 0, data: { skipped: true } };
-  }
-
-  const hasLockfile = await fileExists(lockPath);
-  const installArgs = hasLockfile
-    ? [
-        "ci",
-        "--no-audit",
-        "--no-fund",
-        "--ignore-scripts",
-        "--no-engine-strict",
-        "--prefer-offline",
-      ]
-    : [
-        "install",
-        "--no-audit",
-        "--no-fund",
-        "--ignore-scripts",
-        "--no-engine-strict",
-        "--prefer-offline",
-        "--legacy-peer-deps",
-      ];
-
-  await ctx.log(
-    "info",
-    `Installation (${hasLockfile ? "npm ci" : "npm install"} avec cache persistant)`,
-  );
-
-  const installStart = Date.now();
-  try {
-    await execFileAsync("npm", installArgs, {
-      cwd: ctx.workspaceDir,
-      timeout: 10 * 60_000,
-      shell: true,
-      env: {
-        ...process.env,
-        NPM_CONFIG_CACHE: NPM_CACHE_DIR,
-        NPM_CONFIG_PREFER_OFFLINE: "true",
-        NPM_CONFIG_AUDIT: "false",
-        NPM_CONFIG_FUND: "false",
-      },
-    });
-    const installMs = Date.now() - installStart;
-    await ctx.log(
-      "info",
-      `Dépendances installées en ${(installMs / 1000).toFixed(1)}s`,
-    );
-  } catch (err) {
-    const msg = err instanceof Error ? err.message : String(err);
-    const anyErr = err as { stdout?: string; stderr?: string; code?: number };
-
-    await ctx.log(
-      "error",
-      `Échec de npm (code ${anyErr.code ?? "?"}) : ${msg}`,
-    );
-    if (anyErr.stdout) {
-      const out = anyErr.stdout.trim().slice(-3000);
-      if (out) await ctx.log("error", `[npm stdout]\n${out}`);
-    }
-    if (anyErr.stderr) {
-      const errOut = anyErr.stderr.trim().slice(-3000);
-      if (errOut) await ctx.log("error", `[npm stderr]\n${errOut}`);
-    }
-    return {
-      success: false,
-      exitCode: anyErr.code ?? 1,
-      error: "npm install a échoué",
-    };
   }
 
   const testScript = pkg.scripts?.test;
@@ -124,6 +75,7 @@ export async function testsStep(
     return { success: true, exitCode: 0, data: { skipped: true } };
   }
 
+  await fs.mkdir(NPM_CACHE_DIR, { recursive: true });
   await ctx.log("info", "Exécution des tests (npm test --if-present)");
   const testStart = Date.now();
   try {

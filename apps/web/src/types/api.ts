@@ -16,8 +16,16 @@ export type PipelineStatus =
   | "CANCELLED";
 export type StepStatus = PipelineStatus;
 export type Severity = "CRITICAL" | "HIGH" | "MEDIUM" | "LOW" | "INFO";
-export type ScanType = "SECRET" | "SAST" | "SCA" | "IMAGE" | "DAST";
-export type SecurityGateStatus = "PASSED" | "FAILED" | "BLOCKED";
+export type ScanType = "SECRET" | "SAST" | "SCA" | "IMAGE" | "IAC" | "DAST";
+export type SecurityGateStatus = "PASSED" | "WARNING" | "FAILED" | "BLOCKED";
+export type SecurityGateMode = "WARNING" | "ENFORCEMENT";
+export type VulnerabilityStatus =
+  | "OPEN"
+  | "CONFIRMED"
+  | "FIXED"
+  | "FALSE_POSITIVE"
+  | "RISK_ACCEPTED"
+  | "DUPLICATE";
 export type DeploymentStatus =
   | "QUEUED"
   | "RUNNING"
@@ -97,14 +105,40 @@ export interface ProjectConfiguration {
   gitleaksEnabled: boolean;
   semgrepEnabled: boolean;
   scaEnabled: boolean;
+  iacEnabled: boolean;
   trivyEnabled: boolean;
+  syftEnabled: boolean;
   zapEnabled: boolean;
+  cosignEnabled: boolean;
   securityGateCritical: number;
   securityGateHigh: number;
   securityGateMedium: number;
   securityGateLow: number;
+  gateMode: SecurityGateMode;
+  gateEnforcementAt: string | null;
+  gateSecretsEnabled: boolean;
+  gateSastEnabled: boolean;
+  gateScaEnabled: boolean;
+  gateIacEnabled: boolean;
+  gateImageEnabled: boolean;
+  gateDastEnabled: boolean;
+  deploymentStrategy: "direct" | "staging_then_production";
+  stagingPort: number;
+  autoRollback: boolean;
   createdAt: string;
   updatedAt: string;
+}
+
+export interface SecurityGateException {
+  id: string;
+  projectId: string;
+  category: "ALL" | "SECRET" | "SAST" | "SCA" | "IMAGE" | "IAC" | "DAST";
+  severity: Severity | null;
+  reason: string;
+  createdById: string | null;
+  expiresAt: string | null;
+  createdAt: string;
+  createdBy?: { id: string; name: string; email: string } | null;
 }
 
 /**
@@ -136,6 +170,9 @@ export interface Pipeline {
   author: string;
   trigger: string;
   status: PipelineStatus;
+  pullRequestNumber: number | null;
+  pullRequestUrl: string | null;
+  baseBranch: string | null;
   startedAt: string | null;
   finishedAt: string | null;
   durationMs: number | null;
@@ -167,11 +204,15 @@ export interface SecurityGateResult {
   id: string;
   pipelineId: string;
   status: SecurityGateStatus;
+  mode: SecurityGateMode;
   rulesJson: {
     critical: number;
     high: number;
     medium: number;
     low: number;
+    mode?: SecurityGateMode;
+    categories?: Record<string, boolean>;
+    rawCounts?: Record<string, number>;
   };
   critical: number;
   high: number;
@@ -179,6 +220,18 @@ export interface SecurityGateResult {
   low: number;
   blocked: boolean;
   reason: string | null;
+  technicalFailures: Array<{
+    category: string;
+    step: string;
+    reason: string;
+  }> | null;
+  exceptionsApplied: Array<{
+    id: string;
+    category: string;
+    severity: string | null;
+    reason: string;
+    expiresAt: string | null;
+  }> | null;
   createdAt: string;
 }
 
@@ -189,6 +242,8 @@ export interface DockerImage {
   imageId: string | null;
   sizeBytes: string | null; // BigInt sérialisé en string par le backend
   registry: string | null;
+  signed: boolean;
+  signatureRef: string | null;
   createdAt: string;
 }
 
@@ -198,13 +253,43 @@ export interface Deployment {
   projectId: string;
   serverId: string;
   status: DeploymentStatus;
+  environment: string;
   imageTag: string | null;
   releaseVersion: string | null;
   url: string | null;
+  stagingUrl: string | null;
+  stagingStatus: DeploymentStatus | null;
+  productionUrl: string | null;
+  productionStatus: DeploymentStatus | null;
+  rollbackImageTag: string | null;
   startedAt: string | null;
   finishedAt: string | null;
   durationMs: number | null;
   error: string | null;
+  createdAt: string;
+}
+
+export interface SbomSummary {
+  packageCount: number;
+  packages: Array<{
+    name: string;
+    version: string | null;
+    type: string | null;
+    language: string | null;
+    purl: string | null;
+    license: string | null;
+  }>;
+  source: Record<string, unknown> | null;
+  descriptor: Record<string, unknown> | null;
+}
+
+export interface Sbom {
+  id: string;
+  pipelineId: string;
+  projectId: string;
+  format: string;
+  packageCount: number;
+  contentJson: SbomSummary;
   createdAt: string;
 }
 
@@ -218,6 +303,7 @@ export interface PipelineDetail extends Pipeline {
   gateResult: SecurityGateResult | null;
   dockerImage: DockerImage | null;
   deployment: Deployment | null;
+  sbom: Sbom | null;
 }
 
 // ============================================================
@@ -270,6 +356,7 @@ export interface SecurityScan {
 
 export interface Vulnerability {
   id: string;
+  fingerprint: string | null;
   tool: string;
   technology: string | null;
   severity: Severity;
@@ -279,13 +366,49 @@ export interface Vulnerability {
   fixedVersion: string | null;
   description: string | null;
   reference: string | null;
+  status: VulnerabilityStatus;
+  firstSeenAt: string;
+  lastSeenAt: string;
   detectedAt: string;
+  occurrences: number;
+  assignedTo: { id: string; name: string; email: string } | null;
+  notes: string | null;
+  dueDate: string | null;
   scan: {
     id: string;
     scanner: string;
     type: ScanType;
     pipelineId: string;
-  };
+    createdAt?: string;
+    pipeline?: {
+      commitSha: string;
+      branch: string;
+      status: PipelineStatus;
+    } | null;
+  } | null;
+  scans: Array<{
+    id: string;
+    scanner: string;
+    type: ScanType;
+    pipelineId: string;
+    createdAt: string;
+    pipeline?: {
+      commitSha: string;
+      branch: string;
+      status: PipelineStatus;
+    } | null;
+  }>;
+}
+
+export interface VulnerabilitySummary {
+  severityCounts: Record<Severity, number>;
+  statusCounts: Record<VulnerabilityStatus, number>;
+  toolCounts: Record<string, number>;
+  scanTypeCounts: Record<string, number>;
+  uniqueCount: number;
+  openCount: number;
+  occurrenceCount: number;
+  topFindings: Vulnerability[];
 }
 
 // ============================================================
@@ -393,6 +516,7 @@ export interface SecurityReportSummary {
   };
   gate: {
     status: SecurityGateStatus;
+    mode?: SecurityGateMode;
     blocked: boolean;
     reason: string | null;
     rules: {
@@ -405,9 +529,15 @@ export interface SecurityReportSummary {
   dockerImage: {
     imageTag: string;
     imageId: string | null;
+    signed?: boolean;
+  } | null;
+  sbom?: {
+    packageCount: number;
+    format: string;
   } | null;
   deployment: {
     status: DeploymentStatus;
+    environment?: string;
     url: string | null;
     releaseVersion: string | null;
   } | null;

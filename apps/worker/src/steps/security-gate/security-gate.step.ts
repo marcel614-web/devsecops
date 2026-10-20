@@ -1,7 +1,16 @@
 // apps/worker/src/steps/security-gate/security-gate.step.ts
-import { SecurityGateStatus } from "@prisma/client";
+import {
+  SecurityGateMode,
+  SecurityGateStatus,
+  StepStatus,
+  VulnerabilityStatus,
+} from "@prisma/client";
 import { prisma } from "../../utils/prisma";
 import type { StepContext, StepResult } from "../../orchestrator/step.executor";
+
+// ============================================================
+// TYPES
+// ============================================================
 
 interface GateRules {
   critical: number; // nombre max autorisé (0 = interdit)
@@ -10,66 +19,130 @@ interface GateRules {
   low: number; // -1 = illimité
 }
 
+interface SeverityCounts {
+  critical: number;
+  high: number;
+  medium: number;
+  low: number;
+  info: number;
+}
+
+interface TechnicalFailure {
+  category: string;
+  step: string;
+  reason: string;
+}
+
+interface AppliedException {
+  id: string;
+  category: string;
+  severity: string | null;
+  reason: string;
+  expiresAt: string | null;
+}
+
 interface GateEvaluation {
   status: SecurityGateStatus;
   blocked: boolean;
   reason: string | null;
-  counts: {
-    critical: number;
-    high: number;
-    medium: number;
-    low: number;
-    info: number;
-  };
+  counts: SeverityCounts;
+  rawCounts: SeverityCounts;
   rules: GateRules;
+  mode: SecurityGateMode;
+  technicalFailures: TechnicalFailure[];
+  exceptionsApplied: AppliedException[];
 }
 
-/**
- * Évalue les résultats de sécurité selon les seuils du projet.
- * Ne dépend d'aucun retour client — la décision est entièrement calculée ici.
- */
-function evaluate(
-  counts: GateEvaluation["counts"],
+const CATEGORIES = ["SECRET", "SAST", "SCA", "IMAGE", "IAC", "DAST"] as const;
+type GateCategory = (typeof CATEGORIES)[number];
+
+const STEP_TYPE_BY_CATEGORY: Record<GateCategory, string> = {
+  SECRET: "SECRET_SCAN",
+  SAST: "SAST",
+  SCA: "SCA",
+  IMAGE: "IMAGE_SCAN",
+  IAC: "IAC_SCAN",
+  DAST: "DAST",
+};
+
+const SEVERITY_KEYS = ["critical", "high", "medium", "low", "info"] as const;
+
+// ============================================================
+// ÉVALUATION
+// ============================================================
+
+function evaluateThresholds(
+  counts: SeverityCounts,
   rules: GateRules,
-): GateEvaluation {
-  let blocked = false;
-  const reasons: string[] = [];
+): string[] {
+  const violations: string[] = [];
 
   if (counts.critical > rules.critical) {
-    blocked = true;
-    reasons.push(
-      `CRITICAL: ${counts.critical} > seuil ${rules.critical}`,
-    );
+    violations.push(`CRITICAL: ${counts.critical} > seuil ${rules.critical}`);
   }
   if (counts.high > rules.high) {
-    blocked = true;
-    reasons.push(`HIGH: ${counts.high} > seuil ${rules.high}`);
+    violations.push(`HIGH: ${counts.high} > seuil ${rules.high}`);
   }
   if (counts.medium > rules.medium) {
-    blocked = true;
-    reasons.push(`MEDIUM: ${counts.medium} > seuil ${rules.medium}`);
+    violations.push(`MEDIUM: ${counts.medium} > seuil ${rules.medium}`);
   }
   if (rules.low >= 0 && counts.low > rules.low) {
-    blocked = true;
-    reasons.push(`LOW: ${counts.low} > seuil ${rules.low}`);
+    violations.push(`LOW: ${counts.low} > seuil ${rules.low}`);
   }
 
-  return {
-    status: blocked ? SecurityGateStatus.BLOCKED : SecurityGateStatus.PASSED,
-    blocked,
-    reason: blocked ? reasons.join(" | ") : null,
-    counts,
-    rules,
-  };
+  return violations;
 }
+
+function effectiveMode(
+  config: { gateMode: SecurityGateMode; gateEnforcementAt: Date | null },
+  now: Date,
+): SecurityGateMode {
+  if (!config.gateEnforcementAt) return config.gateMode;
+  // Une date future impose le mode avertissement jusqu'à échéance.
+  if (config.gateEnforcementAt.getTime() > now.getTime()) {
+    return SecurityGateMode.WARNING;
+  }
+  return SecurityGateMode.ENFORCEMENT;
+}
+
+function categoryEnabled(
+  config: {
+    gateSecretsEnabled: boolean;
+    gateSastEnabled: boolean;
+    gateScaEnabled: boolean;
+    gateImageEnabled: boolean;
+    gateIacEnabled: boolean;
+    gateDastEnabled: boolean;
+  },
+  category: GateCategory,
+): boolean {
+  switch (category) {
+    case "SECRET":
+      return config.gateSecretsEnabled;
+    case "SAST":
+      return config.gateSastEnabled;
+    case "SCA":
+      return config.gateScaEnabled;
+    case "IMAGE":
+      return config.gateImageEnabled;
+    case "IAC":
+      return config.gateIacEnabled;
+    case "DAST":
+      return config.gateDastEnabled;
+  }
+}
+
+// ============================================================
+// ÉTAPE
+// ============================================================
 
 export async function securityGateStep(
   _step: unknown,
   ctx: StepContext,
 ): Promise<StepResult> {
-  await ctx.log("info", "Security Gate : lecture des seuils du projet...");
+  await ctx.log("info", "Security Gate : lecture de la configuration du projet...");
 
-  // 1. Charge la config du projet.
+  // 1. Configuration.
   const config = await prisma.projectConfiguration.findUnique({
     where: { projectId: ctx.projectId },
   });
@@ -82,6 +155,8 @@ export async function securityGateStep(
     };
   }
 
+  const now = new Date();
+  const mode = effectiveMode(config, now);
   const rules: GateRules = {
     critical: config.securityGateCritical,
     high: config.securityGateHigh,
@@ -91,114 +166,381 @@ export async function securityGateStep(
 
   await ctx.log(
     "info",
+    `Mode : ${mode}` +
+      (config.gateEnforcementAt
+        ? ` (bascule prévue le ${config.gateEnforcementAt.toISOString()})`
+        : ""),
+  );
+  await ctx.log(
+    "info",
     `Seuils : critical=${rules.critical}, high=${rules.high}, ` +
       `medium=${rules.medium}, low=${rules.low < 0 ? "illimité" : rules.low}`,
   );
 
-  // 2. Agrège tous les scans du pipeline.
-  const scans = await prisma.securityScan.findMany({
-    where: { pipelineId: ctx.pipelineId },
-    select: {
-      scanner: true,
-      criticalCount: true,
-      highCount: true,
-      mediumCount: true,
-      lowCount: true,
-      infoCount: true,
-      status: true,
-    },
-  });
+  // 2. Scans et étapes du pipeline.
+  const [scans, steps, exceptions] = await Promise.all([
+    prisma.securityScan.findMany({
+      where: { pipelineId: ctx.pipelineId },
+      select: {
+        scanner: true,
+        type: true,
+        criticalCount: true,
+        highCount: true,
+        mediumCount: true,
+        lowCount: true,
+        infoCount: true,
+        status: true,
+      },
+    }),
+    prisma.pipelineStep.findMany({
+      where: { pipelineId: ctx.pipelineId },
+      select: { name: true, type: true, status: true, resultJson: true },
+    }),
+    prisma.securityGateException.findMany({
+      where: {
+        projectId: ctx.projectId,
+        OR: [{ expiresAt: null }, { expiresAt: { gt: now } }],
+      },
+      orderBy: { createdAt: "desc" },
+    }),
+  ]);
 
-  if (scans.length === 0) {
-    await ctx.log("warn", "Aucun scan trouvé — gate évalué sur compteurs vides");
+  // 3. Échecs techniques : un scanner en échec ou indisponible ne doit
+  //    jamais être interprété comme « 0 vulnérabilité ».
+  const technicalFailures: TechnicalFailure[] = [];
+
+  for (const category of CATEGORIES) {
+    if (!categoryEnabled(config, category)) continue;
+
+    const expectedStepType = STEP_TYPE_BY_CATEGORY[category];
+    const step = steps.find((s) => s.type === expectedStepType);
+
+    if (!step) {
+      technicalFailures.push({
+        category,
+        step: expectedStepType,
+        reason: "Étape non exécutée",
+      });
+      continue;
+    }
+
+    if (step.status === StepStatus.FAILED) {
+      technicalFailures.push({
+        category,
+        step: step.name,
+        reason: "Le scanner a échoué",
+      });
+      continue;
+    }
+
+    const data = (step.resultJson ?? {}) as {
+      skipped?: boolean;
+      technical?: boolean;
+      reason?: string;
+    };
+    if (data.skipped === true && data.technical === true) {
+      technicalFailures.push({
+        category,
+        step: step.name,
+        reason: data.reason ?? "Scanner indisponible",
+      });
+    }
   }
 
-  const counts = scans.reduce(
-    (acc, s) => ({
-      critical: acc.critical + s.criticalCount,
-      high: acc.high + s.highCount,
-      medium: acc.medium + s.mediumCount,
-      low: acc.low + s.lowCount,
-      info: acc.info + s.infoCount,
-    }),
-    { critical: 0, high: 0, medium: 0, low: 0, info: 0 },
-  );
+  // Supply chain : SBOM (Syft) et signature (Cosign).
+  const supplyChainSteps: Array<{
+    enabled: boolean;
+    type: string;
+    category: string;
+  }> = [
+    { enabled: config.syftEnabled, type: "SBOM", category: "SBOM" },
+    { enabled: config.cosignEnabled, type: "SIGN", category: "SIGN" },
+  ];
 
-  // Logs par scanner pour traçabilité.
+  for (const item of supplyChainSteps) {
+    if (!item.enabled) continue;
+    const step = steps.find((s) => s.type === item.type);
+    if (!step) {
+      technicalFailures.push({
+        category: item.category,
+        step: item.type,
+        reason: "Étape non exécutée",
+      });
+    } else if (step.status === StepStatus.FAILED) {
+      technicalFailures.push({
+        category: item.category,
+        step: step.name,
+        reason: "L'étape a échoué",
+      });
+    }
+  }
+
+  // Échecs persistés dans SecurityScan (Trivy, ZAP, etc.).
+  for (const scan of scans) {
+    if (scan.status === StepStatus.FAILED) {
+      const already = technicalFailures.some(
+        (f) => f.category === scan.type && f.reason === "Le scanner a échoué",
+      );
+      if (!already) {
+        technicalFailures.push({
+          category: scan.type,
+          step: scan.scanner,
+          reason: "Le scanner a échoué",
+        });
+      }
+    }
+  }
+
+  // 4. Compteurs + application des exceptions.
+  const rawCounts: SeverityCounts = {
+    critical: 0,
+    high: 0,
+    medium: 0,
+    low: 0,
+    info: 0,
+  };
+  const counts: SeverityCounts = {
+    critical: 0,
+    high: 0,
+    medium: 0,
+    low: 0,
+    info: 0,
+  };
+  const exceptionsApplied: AppliedException[] = [];
+
+  for (const scan of scans) {
+    const category = scan.type as GateCategory;
+    if (!CATEGORIES.includes(category)) continue;
+    if (!categoryEnabled(config, category)) continue;
+
+    const values: SeverityCounts = {
+      critical: scan.criticalCount,
+      high: scan.highCount,
+      medium: scan.mediumCount,
+      low: scan.lowCount,
+      info: scan.infoCount,
+    };
+
+    for (const key of SEVERITY_KEYS) {
+      rawCounts[key] += values[key];
+
+      const exception = exceptions.find(
+        (e) =>
+          (e.category === "ALL" || e.category === category) &&
+          (!e.severity || e.severity === key.toUpperCase()),
+      );
+
+      if (exception) {
+        if (!exceptionsApplied.some((a) => a.id === exception.id)) {
+          exceptionsApplied.push({
+            id: exception.id,
+            category: exception.category,
+            severity: exception.severity,
+            reason: exception.reason,
+            expiresAt: exception.expiresAt?.toISOString() ?? null,
+          });
+        }
+        continue; // finding excepté : non compté dans le gate
+      }
+
+      counts[key] += values[key];
+    }
+  }
+
+  // 4bis. Les findings marqués faux positif / risque accepté / doublon
+  //       ne doivent pas compter dans les seuils.
+  const accepted = await prisma.vulnerability.groupBy({
+    by: ["severity"],
+    where: {
+      scan: { pipelineId: ctx.pipelineId },
+      status: {
+        in: [
+          VulnerabilityStatus.FALSE_POSITIVE,
+          VulnerabilityStatus.RISK_ACCEPTED,
+          VulnerabilityStatus.DUPLICATE,
+        ],
+      },
+    },
+    _count: { _all: true },
+  });
+
+  for (const row of accepted) {
+    const key = row.severity.toLowerCase() as keyof SeverityCounts;
+    if (key in counts) {
+      counts[key] = Math.max(0, counts[key] - row._count._all);
+    }
+  }
+
+  // 5. Logs par scanner.
   for (const s of scans) {
     await ctx.log(
       "info",
-      `Scan ${s.scanner} : C=${s.criticalCount} H=${s.highCount} ` +
-        `M=${s.mediumCount} L=${s.lowCount} I=${s.infoCount}`,
+      `Scan ${s.scanner} (${s.type}) : C=${s.criticalCount} H=${s.highCount} ` +
+        `M=${s.mediumCount} L=${s.lowCount} I=${s.infoCount} [${s.status}]`,
     );
   }
-
   await ctx.log(
     "info",
-    `Totaux : critical=${counts.critical}, high=${counts.high}, ` +
-      `medium=${counts.medium}, low=${counts.low}`,
+    `Totaux retenus : critical=${counts.critical}, high=${counts.high}, ` +
+      `medium=${counts.medium}, low=${counts.low}` +
+      (exceptionsApplied.length > 0
+        ? ` — ${exceptionsApplied.length} exception(s) appliquée(s)`
+        : ""),
   );
 
-  // 3. Évalue.
-  const evaluation = evaluate(counts, rules);
+  // 6. Évaluation.
+  const violations = evaluateThresholds(counts, rules);
+  const hasIssues = violations.length > 0 || technicalFailures.length > 0;
 
-  // 4. Persiste le résultat du gate (upsert car pipelineId est unique).
+  let status: SecurityGateStatus;
+  let blocked = false;
+  const reasons: string[] = [];
+
+  if (!hasIssues) {
+    status = SecurityGateStatus.PASSED;
+  } else {
+    for (const v of violations) reasons.push(v);
+    for (const f of technicalFailures) {
+      reasons.push(`Échec technique ${f.category} (${f.step}) : ${f.reason}`);
+    }
+
+    if (mode === SecurityGateMode.ENFORCEMENT) {
+      status = SecurityGateStatus.BLOCKED;
+      blocked = true;
+    } else {
+      status = SecurityGateStatus.WARNING;
+      blocked = false;
+    }
+  }
+
+  const reason = reasons.length > 0 ? reasons.join(" | ") : null;
+
+  const evaluation: GateEvaluation = {
+    status,
+    blocked,
+    reason,
+    counts,
+    rawCounts,
+    rules,
+    mode,
+    technicalFailures,
+    exceptionsApplied,
+  };
+
+  // 7. Persistance.
   await prisma.securityGateResult.upsert({
     where: { pipelineId: ctx.pipelineId },
     create: {
       pipelineId: ctx.pipelineId,
       status: evaluation.status,
-      rulesJson: rules as unknown as object,
+      mode: evaluation.mode,
+      rulesJson: {
+        ...rules,
+        mode: evaluation.mode,
+        categories: {
+          SECRET: config.gateSecretsEnabled,
+          SAST: config.gateSastEnabled,
+          SCA: config.gateScaEnabled,
+          IMAGE: config.gateImageEnabled,
+          IAC: config.gateIacEnabled,
+          DAST: config.gateDastEnabled,
+        },
+        rawCounts: evaluation.rawCounts,
+      } as unknown as object,
       critical: counts.critical,
       high: counts.high,
       medium: counts.medium,
       low: counts.low,
       blocked: evaluation.blocked,
-      reason: evaluation.reason,
+      reason,
+      technicalFailures: technicalFailures as unknown as object,
+      exceptionsApplied: exceptionsApplied as unknown as object,
     },
     update: {
       status: evaluation.status,
-      rulesJson: rules as unknown as object,
+      mode: evaluation.mode,
+      rulesJson: {
+        ...rules,
+        mode: evaluation.mode,
+        categories: {
+          SECRET: config.gateSecretsEnabled,
+          SAST: config.gateSastEnabled,
+          SCA: config.gateScaEnabled,
+          IMAGE: config.gateImageEnabled,
+          IAC: config.gateIacEnabled,
+          DAST: config.gateDastEnabled,
+        },
+        rawCounts: evaluation.rawCounts,
+      } as unknown as object,
       critical: counts.critical,
       high: counts.high,
       medium: counts.medium,
       low: counts.low,
       blocked: evaluation.blocked,
-      reason: evaluation.reason,
+      reason,
+      technicalFailures: technicalFailures as unknown as object,
+      exceptionsApplied: exceptionsApplied as unknown as object,
     },
   });
 
-  // 5. Décision.
-  if (evaluation.blocked) {
+  // 8. Décision.
+  if (blocked) {
     await ctx.log(
       "error",
-      `Security Gate : DÉPLOIEMENT BLOQUÉ — ${evaluation.reason}`,
+      `Security Gate : DÉPLOIEMENT BLOQUÉ (${mode}) — ${reason}`,
     );
     return {
       success: false,
       exitCode: 1,
       blockDeployment: true,
-      error: evaluation.reason ?? "Seuils de sécurité dépassés",
+      error: reason ?? "Seuils de sécurité dépassés",
       data: {
         gate: "BLOCKED",
+        mode,
         counts,
+        rawCounts,
         rules,
-        reason: evaluation.reason,
+        technicalFailures,
+        exceptionsApplied,
+        reason,
       },
     };
   }
 
-  await ctx.log(
-    "info",
-    `Security Gate : PASSED — aucun seuil dépassé`,
-  );
+  if (status === SecurityGateStatus.WARNING) {
+    await ctx.log(
+      "warn",
+      `Security Gate : AVERTISSEMENT (${mode}) — ${reason}. ` +
+        "Le déploiement est autorisé (mode avertissement).",
+    );
+    return {
+      success: true,
+      exitCode: 0,
+      data: {
+        gate: "WARNING",
+        mode,
+        counts,
+        rawCounts,
+        rules,
+        technicalFailures,
+        exceptionsApplied,
+        reason,
+      },
+    };
+  }
+
+  await ctx.log("info", "Security Gate : PASSED — aucun seuil dépassé");
   return {
     success: true,
     exitCode: 0,
     data: {
       gate: "PASSED",
+      mode,
       counts,
+      rawCounts,
       rules,
+      technicalFailures: [],
+      exceptionsApplied,
     },
   };
 }

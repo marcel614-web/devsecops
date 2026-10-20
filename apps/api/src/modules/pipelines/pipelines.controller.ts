@@ -171,6 +171,35 @@ export async function getPipelineReport(
 }
 
 // ============================================================
+// REPORT FILE (HTML / PDF)
+// ============================================================
+
+export async function downloadPipelineReport(
+  req: Request,
+  res: Response,
+  next: NextFunction,
+): Promise<void> {
+  try {
+    const actor = actorFrom(req);
+    const format = req.params.format === "pdf" ? "pdf" : "html";
+    const file = await pipelinesService.getPipelineReportFile(
+      actor,
+      req.params.projectId,
+      req.params.id,
+      format,
+    );
+    res.setHeader("Content-Type", file.contentType);
+    res.setHeader(
+      "Content-Disposition",
+      `attachment; filename="${file.filename}"`,
+    );
+    res.send(file.content);
+  } catch (err) {
+    next(err);
+  }
+}
+
+// ============================================================
 // DELETE
 // ============================================================
 export async function deletePipeline(

@@ -6,6 +6,7 @@ import * as pipelinesController from "./pipelines.controller";
 import {
   pipelineListQuerySchema,
   pipelineLogsQuerySchema,
+  pipelineReportParamSchema,
   pipelineScansQuerySchema,
   projectIdParamSchema,
   projectPipelineParamSchema,
@@ -57,6 +58,12 @@ pipelinesRouter.get(
   "/:id/report",
   validate({ params: projectPipelineParamSchema }),
   pipelinesController.getPipelineReport,
+);
+
+pipelinesRouter.get(
+  "/:id/report/:format",
+  validate({ params: pipelineReportParamSchema }),
+  pipelinesController.downloadPipelineReport,
 );
 
 pipelinesRouter.post(

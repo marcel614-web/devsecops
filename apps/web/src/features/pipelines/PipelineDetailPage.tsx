@@ -1,8 +1,8 @@
 import { useEffect, useState } from "react";
 import { Link, useParams, useNavigate } from "react-router-dom";
-import { RefreshCw, XCircle, ExternalLink, GitBranch, GitCommit, User, Clock, Package, ChevronRight, Copy, Check, Timer, PlayCircle, Flag } from "lucide-react";
+import { RefreshCw, XCircle, ExternalLink, GitBranch, GitCommit, User, Clock, Package, ChevronRight, Copy, Check, Timer, PlayCircle, Flag, Download, FileText, GitPullRequest, Boxes, ShieldCheck, Rocket, Globe, RotateCcw } from "lucide-react";
 import { Button } from "@/components/ui/Button";
-import { Card, CardContent } from "@/components/ui/Card";
+import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/Card";
 import { StatusBadge } from "@/components/ui/Badge";
 import { EmptyState } from "@/components/feedback/EmptyState";
 import { ErrorState } from "@/components/feedback/ErrorState";
@@ -15,6 +15,7 @@ import { PipelineTimeline } from "@/components/security/PipelineTimeline";
 import { PipelineLogs } from "@/components/security/PipelineLogs";
 import { PipelineFailureBanner } from "@/components/security/PipelineFailureBanner";
 import { useCancelPipeline, usePipelineDetail, usePipelineScans } from "@/hooks/usePipeline";
+import { pipelineService } from "@/services/pipeline.service";
 import { getPipelineFailure } from "@/lib/pipelineFailure";
 import { getErrorMessage } from "@/services/api";
 import { formatBytes, formatDate, formatDuration, cn } from "@/lib/utils";
@@ -94,6 +95,27 @@ export function PipelineDetailPage() {
     }
   };
 
+  const downloadReport = async (format: "html" | "pdf") => {
+    if (!projectId) return;
+    try {
+      const blob = await pipelineService.downloadReport(
+        projectId,
+        pipeline.id,
+        format,
+      );
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement("a");
+      a.href = url;
+      a.download = `rapport-${pipeline.commitSha.slice(0, 8)}.${format}`;
+      document.body.appendChild(a);
+      a.click();
+      a.remove();
+      URL.revokeObjectURL(url);
+    } catch (err) {
+      toast.show("error", getErrorMessage(err));
+    }
+  };
+
   return (
     <div className="space-y-4">
 
@@ -108,6 +130,30 @@ export function PipelineDetailPage() {
           )}
         </div>
         <div className="flex shrink-0 items-center gap-2">
+          {!isRunning && pipeline.status !== "QUEUED" && (
+            <>
+              <Button
+                variant="ghost"
+                size="sm"
+                onClick={() => downloadReport("html")}
+                title="Télécharger le rapport HTML"
+                className="gap-1.5"
+              >
+                <FileText className="h-4 w-4" />
+                <span className="hidden md:inline">HTML</span>
+              </Button>
+              <Button
+                variant="ghost"
+                size="sm"
+                onClick={() => downloadReport("pdf")}
+                title="Télécharger le rapport PDF"
+                className="gap-1.5"
+              >
+                <Download className="h-4 w-4" />
+                <span className="hidden md:inline">PDF</span>
+              </Button>
+            </>
+          )}
           <Button variant="ghost" size="sm" onClick={() => refetch()} disabled={isFetching} title="Rafraîchir" className="gap-1.5">
             <RefreshCw className={cn("h-4 w-4", isFetching && "animate-spin")} />
             <span className="hidden md:inline">Rafraîchir</span>
@@ -144,6 +190,28 @@ export function PipelineDetailPage() {
           <Info icon={GitBranch} label="Branche" value={pipeline.branch} mono />
           <Info icon={User} label="Auteur" value={pipeline.author.slice(0, 16)} />
           <Info icon={Clock} label="Déclencheur" value={pipeline.trigger} />
+          {pipeline.pullRequestNumber && (
+            <Info
+              icon={GitPullRequest}
+              label="Pull request"
+              value={`#${pipeline.pullRequestNumber}${
+                pipeline.baseBranch ? ` → ${pipeline.baseBranch}` : ""
+              }`}
+              action={
+                pipeline.pullRequestUrl ? (
+                  <a
+                    href={pipeline.pullRequestUrl}
+                    target="_blank"
+                    rel="noopener noreferrer"
+                    className="text-muted hover:text-primary-500"
+                    aria-label="Ouvrir la pull request sur GitHub"
+                  >
+                    <ExternalLink className="h-3 w-3" />
+                  </a>
+                ) : undefined
+              }
+            />
+          )}
           <Info icon={PlayCircle} label="Démarrage" value={pipeline.startedAt ? formatDate(pipeline.startedAt) : "—"} />
           <Info icon={Flag} label="Fin" value={pipeline.finishedAt ? formatDate(pipeline.finishedAt) : "—"} />
           <Info icon={Timer} label="Durée" value={formatDuration(pipeline.durationMs)} />
@@ -158,6 +226,98 @@ export function PipelineDetailPage() {
         <SecurityGatePanel gate={pipeline.gateResult} />
         {scans && <ScanSummary scans={scans} />}
       </div>
+
+      {(pipeline.dockerImage || pipeline.sbom || pipeline.deployment) && (
+        <Card>
+          <CardHeader>
+            <CardTitle className="flex items-center gap-2">
+              <Boxes className="h-4 w-4" /> Supply chain & déploiement
+            </CardTitle>
+          </CardHeader>
+          <CardContent className="grid grid-cols-1 gap-4 sm:grid-cols-2 lg:grid-cols-4">
+            <Info
+              icon={Package}
+              label="Image Docker"
+              value={
+                pipeline.dockerImage
+                  ? pipeline.dockerImage.imageTag.split(":").pop() ?? "—"
+                  : "—"
+              }
+              mono
+            />
+            <Info
+              icon={ShieldCheck}
+              label="Signature Cosign"
+              value={
+                pipeline.dockerImage
+                  ? pipeline.dockerImage.signed
+                    ? "Signée"
+                    : "Non signée"
+                  : "—"
+              }
+            />
+            <Info
+              icon={Boxes}
+              label="SBOM (Syft)"
+              value={
+                pipeline.sbom
+                  ? `${pipeline.sbom.packageCount} paquet(s)`
+                  : "Non généré"
+              }
+            />
+            <Info
+              icon={Rocket}
+              label="Déploiement"
+              value={pipeline.deployment?.status ?? "—"}
+            />
+
+            {pipeline.deployment?.stagingUrl && (
+              <Info
+                icon={Globe}
+                label="Staging"
+                value={pipeline.deployment.stagingUrl}
+                action={
+                  <a
+                    href={pipeline.deployment.stagingUrl}
+                    target="_blank"
+                    rel="noopener noreferrer"
+                    className="text-muted hover:text-primary-500"
+                    aria-label="Ouvrir le staging"
+                  >
+                    <ExternalLink className="h-3 w-3" />
+                  </a>
+                }
+              />
+            )}
+            {pipeline.deployment?.productionUrl && (
+              <Info
+                icon={Globe}
+                label="Production"
+                value={pipeline.deployment.productionUrl}
+                action={
+                  <a
+                    href={pipeline.deployment.productionUrl}
+                    target="_blank"
+                    rel="noopener noreferrer"
+                    className="text-muted hover:text-primary-500"
+                    aria-label="Ouvrir la production"
+                  >
+                    <ExternalLink className="h-3 w-3" />
+                  </a>
+                }
+              />
+            )}
+            {pipeline.deployment?.rollbackImageTag && (
+              <Info
+                icon={RotateCcw}
+                label="Rollback"
+                value={pipeline.deployment.rollbackImageTag}
+                mono
+              />
+            )}
+          </CardContent>
+        </Card>
+      )}
 
       <div className="grid grid-cols-1 gap-4 lg:grid-cols-2">
         <PipelineTimeline

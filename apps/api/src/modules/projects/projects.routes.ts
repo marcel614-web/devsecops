@@ -4,7 +4,9 @@ import { requireAuth } from "../../middleware/auth";
 import { validate } from "../../middleware/validate";
 import * as projectsController from "./projects.controller";
 import {
+  createGateExceptionSchema,
   createProjectSchema,
+  gateExceptionParamSchema,
   projectIdParamSchema,
   projectListQuerySchema,
   updateProjectConfigSchema,
@@ -61,6 +63,27 @@ projectsRouter.patch(
   "/:id/config",
   validate({ params: projectIdParamSchema, body: updateProjectConfigSchema }),
   projectsController.updateProjectConfig,
+);
+
+// ------------------------------------------------------------
+// Exceptions de Security Gate
+// ------------------------------------------------------------
+projectsRouter.get(
+  "/:id/gate-exceptions",
+  validate({ params: projectIdParamSchema }),
+  projectsController.listGateExceptions,
+);
+
+projectsRouter.post(
+  "/:id/gate-exceptions",
+  validate({ params: projectIdParamSchema, body: createGateExceptionSchema }),
+  projectsController.createGateException,
+);
+
+projectsRouter.delete(
+  "/:id/gate-exceptions/:exceptionId",
+  validate({ params: gateExceptionParamSchema }),
+  projectsController.deleteGateException,
 );
 
 // ------------------------------------------------------------

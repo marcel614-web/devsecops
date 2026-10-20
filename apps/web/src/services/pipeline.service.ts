@@ -82,4 +82,16 @@ export const pipelineService = {
         `/api/projects/${projectId}/pipelines/${pipelineId}/report`,
       )
       .then((r) => r.data.report),
+
+  downloadReport: (
+    projectId: string,
+    pipelineId: string,
+    format: "html" | "pdf",
+  ) =>
+    api
+      .get<Blob>(
+        `/api/projects/${projectId}/pipelines/${pipelineId}/report/${format}`,
+        { responseType: "blob" },
+      )
+      .then((r) => r.data),
 };

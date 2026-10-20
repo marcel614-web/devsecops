@@ -1,5 +1,5 @@
 // apps/web/src/components/security/SecurityGatePanel.tsx
-import { ShieldCheck, ShieldAlert, Shield } from "lucide-react";
+import { AlertTriangle, ShieldCheck, ShieldAlert, Shield } from "lucide-react";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/Card";
 import { cn } from "@/lib/utils";
 import type { SecurityGateResult } from "@/types/api";
@@ -29,21 +29,29 @@ export function SecurityGatePanel({ gate }: { gate: SecurityGateResult | null })
           iconColor: "text-emerald-500",
           desc: "Aucun seuil dépassé",
         }
-      : gate.status === "BLOCKED"
+      : gate.status === "WARNING"
         ? {
-            Icon: ShieldAlert,
-            label: "BLOCKED",
-            tone: "border-red-500/40 bg-red-500/5",
-            iconColor: "text-red-500",
-            desc: "Déploiement bloqué",
+            Icon: AlertTriangle,
+            label: "WARNING",
+            tone: "border-amber-500/40 bg-amber-500/5",
+            iconColor: "text-amber-500",
+            desc: "Seuils dépassés — déploiement autorisé (mode avertissement)",
           }
-        : {
-            Icon: Shield,
-            label: gate.status,
-            tone: "border-border bg-surface",
-            iconColor: "text-muted",
-            desc: "",
-          };
+        : gate.status === "BLOCKED"
+          ? {
+              Icon: ShieldAlert,
+              label: "BLOCKED",
+              tone: "border-red-500/40 bg-red-500/5",
+              iconColor: "text-red-500",
+              desc: "Déploiement bloqué",
+            }
+          : {
+              Icon: Shield,
+              label: gate.status,
+              tone: "border-border bg-surface",
+              iconColor: "text-muted",
+              desc: "",
+            };
 
   const thresholds = [
     {
@@ -68,15 +76,23 @@ export function SecurityGatePanel({ gate }: { gate: SecurityGateResult | null })
     },
   ];
 
+  const technicalFailures = gate.technicalFailures ?? [];
+  const exceptions = gate.exceptionsApplied ?? [];
+
   return (
     <Card className={cn("border-2", config.tone)}>
       <CardHeader>
-        <div className="flex items-center justify-between">
+        <div className="flex items-center justify-between gap-2">
           <CardTitle>Security Gate</CardTitle>
-          <span className="flex items-center gap-1.5 text-sm font-bold">
-            <config.Icon className={cn("w-4 h-4", config.iconColor)} />
-            {config.label}
-          </span>
+          <div className="flex items-center gap-2">
+            <span className="rounded-md border border-border bg-surface px-1.5 py-0.5 text-[10px] font-semibold uppercase tracking-wide text-muted">
+              {gate.mode === "ENFORCEMENT" ? "Enforcement" : "Avertissement"}
+            </span>
+            <span className="flex items-center gap-1.5 text-sm font-bold">
+              <config.Icon className={cn("w-4 h-4", config.iconColor)} />
+              {config.label}
+            </span>
+          </div>
         </div>
       </CardHeader>
       <CardContent className="space-y-3">
@@ -107,6 +123,41 @@ export function SecurityGatePanel({ gate }: { gate: SecurityGateResult | null })
             );
           })}
         </div>
+
+        {technicalFailures.length > 0 && (
+          <div className="rounded border border-amber-500/30 bg-amber-500/10 p-2 text-xs text-amber-700 dark:text-amber-400">
+            <strong className="mb-0.5 block">
+              Échecs techniques ({technicalFailures.length})
+            </strong>
+            <ul className="space-y-0.5">
+              {technicalFailures.map((f, i) => (
+                <li key={`${f.step}-${i}`}>
+                  {f.category} · {f.step} : {f.reason}
+                </li>
+              ))}
+            </ul>
+          </div>
+        )}
+
+        {exceptions.length > 0 && (
+          <div className="rounded border border-sky-500/30 bg-sky-500/10 p-2 text-xs text-sky-700 dark:text-sky-400">
+            <strong className="mb-0.5 block">
+              Exceptions appliquées ({exceptions.length})
+            </strong>
+            <ul className="space-y-0.5">
+              {exceptions.map((e) => (
+                <li key={e.id}>
+                  {e.category}
+                  {e.severity ? ` · ${e.severity}` : " · toutes sévérités"} —{" "}
+                  {e.reason}
+                  {e.expiresAt
+                    ? ` (expire ${new Date(e.expiresAt).toLocaleDateString("fr-FR")})`
+                    : ""}
+                </li>
+              ))}
+            </ul>
+          </div>
+        )}
 
         {gate.reason && (
           <div className="text-xs text-red-600 dark:text-red-400 bg-red-500/10 border border-red-500/30 rounded p-2">

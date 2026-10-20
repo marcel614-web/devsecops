@@ -12,6 +12,10 @@ export const projectPipelineParamSchema = z.object({
   id: z.string().min(1),
 });
 
+export const pipelineReportParamSchema = projectPipelineParamSchema.extend({
+  format: z.enum(["html", "pdf"]),
+});
+
 export const pipelineListQuerySchema = z.object({
   page: z.coerce.number().int().positive().default(1),
   pageSize: z.coerce.number().int().positive().max(MAX_PAGE_SIZE).default(DEFAULT_PAGE_SIZE),
@@ -34,7 +38,7 @@ export const pipelineLogsQuerySchema = z.object({
 });
 
 export const pipelineScansQuerySchema = z.object({
-  type: z.enum(["SECRET", "SAST", "SCA", "IMAGE", "DAST"]).optional(),
+  type: z.enum(["SECRET", "SAST", "SCA", "IMAGE", "IAC", "DAST"]).optional(),
 });
 
 export const vulnerabilityListQuerySchema = z.object({

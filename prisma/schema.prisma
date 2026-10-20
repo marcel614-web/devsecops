@@ -61,13 +61,29 @@ enum ScanType {
   SAST
   SCA
   IMAGE
+  IAC
   DAST
 }
 
 enum SecurityGateStatus {
   PASSED
+  WARNING
   FAILED
   BLOCKED
+}
+
+enum SecurityGateMode {
+  WARNING
+  ENFORCEMENT
+}
+
+enum VulnerabilityStatus {
+  OPEN
+  CONFIRMED
+  FIXED
+  FALSE_POSITIVE
+  RISK_ACCEPTED
+  DUPLICATE
 }
 
 enum DeploymentStatus {
@@ -101,6 +117,8 @@ model User {
   githubInstallations GitHubInstallation[]
   servers             DeploymentServer[]
   auditLogs           AuditLog[]
+  securityGateExceptions SecurityGateException[]
+  assignedVulnerabilities Vulnerability[]
 
   @@index([email])
   @@index([role])
@@ -189,6 +207,8 @@ model Project {
   scans            SecurityScan[]
   deployments      Deployment[]
   reports          SecurityReport[]
+  securityGateExceptions SecurityGateException[]
+  sboms            Sbom[]
 
   @@unique([ownerId, repoFullName])
   @@index([ownerId])
@@ -203,12 +223,26 @@ model ProjectConfiguration {
   gitleaksEnabled      Boolean  @default(true)
   semgrepEnabled       Boolean  @default(true)
   scaEnabled           Boolean  @default(true)
+  iacEnabled           Boolean  @default(true)
   trivyEnabled         Boolean  @default(true)
+  syftEnabled          Boolean  @default(true)
   zapEnabled           Boolean  @default(true)
+  cosignEnabled        Boolean  @default(false)
   securityGateCritical Int      @default(0)
   securityGateHigh     Int      @default(2)
   securityGateMedium   Int      @default(10)
   securityGateLow      Int      @default(-1)
+  gateMode             SecurityGateMode @default(WARNING)
+  gateEnforcementAt    DateTime?
+  gateSecretsEnabled   Boolean  @default(true)
+  gateSastEnabled      Boolean  @default(true)
+  gateScaEnabled       Boolean  @default(true)
+  gateIacEnabled       Boolean  @default(true)
+  gateImageEnabled     Boolean  @default(true)
+  gateDastEnabled      Boolean  @default(true)
+  deploymentStrategy   String   @default("direct") // direct | staging_then_production
+  stagingPort          Int      @default(8081)
+  autoRollback         Boolean  @default(true)
   createdAt            DateTime @default(now())
   updatedAt            DateTime @updatedAt
 
@@ -227,6 +261,9 @@ model Pipeline {
   author     String
   trigger    String         @default("push")
   status     PipelineStatus @default(QUEUED)
+  pullRequestNumber Int?
+  pullRequestUrl    String?
+  baseBranch        String?
   startedAt  DateTime?
   finishedAt DateTime?
   durationMs Int?
@@ -241,6 +278,7 @@ model Pipeline {
   deployment  Deployment?
   report      SecurityReport?
   dockerImage DockerImage?
+  sbom        Sbom?
 
   @@index([projectId])
   @@index([status])
@@ -333,19 +371,33 @@ model Vulnerability {
   fixedVersion String?
   description  String?
   reference    String?
+  fingerprint  String?
+  status       VulnerabilityStatus @default(OPEN)
+  firstSeenAt  DateTime @default(now())
+  lastSeenAt   DateTime @default(now())
+  occurrences  Int      @default(1)
+  assignedToId String?
+  notes        String?
+  dueDate      DateTime?
   detectedAt   DateTime @default(now())
+  updatedAt    DateTime @updatedAt @default(now())
 
-  scan SecurityScan @relation(fields: [scanId], references: [id], onDelete: Cascade)
+  scan       SecurityScan @relation(fields: [scanId], references: [id], onDelete: Cascade)
+  assignedTo User?        @relation(fields: [assignedToId], references: [id], onDelete: SetNull)
 
   @@index([scanId])
   @@index([severity])
   @@index([tool])
+  @@index([fingerprint])
+  @@index([status])
+  @@index([assignedToId])
 }
 
 model SecurityGateResult {
   id         String             @id @default(cuid())
   pipelineId String             @unique
   status     SecurityGateStatus
+  mode       SecurityGateMode   @default(WARNING)
   rulesJson  Json
   critical   Int                @default(0)
   high       Int                @default(0)
@@ -353,6 +405,8 @@ model SecurityGateResult {
   low        Int                @default(0)
   blocked    Boolean            @default(false)
   reason     String?
+  technicalFailures Json?
+  exceptionsApplied Json?
   createdAt  DateTime           @default(now())
 
   pipeline Pipeline @relation(fields: [pipelineId], references: [id], onDelete: Cascade)
@@ -367,9 +421,44 @@ model DockerImage {
   imageId    String?
   sizeBytes  BigInt?
   registry   String?
+  signed     Boolean  @default(false)
+  signatureRef String?
   createdAt  DateTime @default(now())
 
   pipeline Pipeline @relation(fields: [pipelineId], references: [id], onDelete: Cascade)
+}
+
+model Sbom {
+  id           String   @id @default(cuid())
+  pipelineId   String   @unique
+  projectId    String
+  format       String   @default("syft-json")
+  packageCount Int      @default(0)
+  contentJson  Json
+  createdAt    DateTime @default(now())
+
+  pipeline Pipeline @relation(fields: [pipelineId], references: [id], onDelete: Cascade)
+  project  Project  @relation(fields: [projectId], references: [id], onDelete: Cascade)
+
+  @@index([projectId])
+}
+
+/// Exception de Security Gate : justifiée, limitée dans le temps et auditée.
+model SecurityGateException {
+  id          String   @id @default(cuid())
+  projectId   String
+  category    String   @default("ALL") // ALL | SECRET | SAST | SCA | IMAGE | IAC | DAST
+  severity    String?  // null = toutes les sévérités
+  reason      String
+  createdById String?
+  expiresAt   DateTime?
+  createdAt   DateTime @default(now())
+
+  project   Project @relation(fields: [projectId], references: [id], onDelete: Cascade)
+  createdBy User?   @relation(fields: [createdById], references: [id], onDelete: SetNull)
+
+  @@index([projectId])
+  @@index([expiresAt])
 }
 
 // ============================================================
@@ -405,9 +494,15 @@ model Deployment {
   projectId      String
   serverId       String
   status         DeploymentStatus @default(QUEUED)
+  environment    String           @default("PRODUCTION") // STAGING | PRODUCTION
   imageTag       String?
   releaseVersion String?
   url            String?
+  stagingUrl     String?
+  stagingStatus  DeploymentStatus?
+  productionUrl  String?
+  productionStatus DeploymentStatus?
+  rollbackImageTag String?
   startedAt      DateTime?
   finishedAt     DateTime?
   durationMs     Int?

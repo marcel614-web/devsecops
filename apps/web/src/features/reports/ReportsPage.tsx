@@ -20,6 +20,9 @@ import { ErrorState } from "@/components/feedback/ErrorState";
 import { Skeleton } from "@/components/ui/Skeleton";
 import { reportService } from "@/services/report.service";
 import { projectService } from "@/services/project.service";
+import { pipelineService } from "@/services/pipeline.service";
+import { getErrorMessage } from "@/services/api";
+import { useToast } from "@/components/feedback/Toast";
 import { formatDuration, timeAgo, cn } from "@/lib/utils";
 
 // ---------------------------------------------------------------------------
@@ -37,6 +40,7 @@ const SEVERITY_CHIPS = [
 // Page principale
 // ---------------------------------------------------------------------------
 export function ReportsPage() {
+  const toast = useToast();
   const [projectId, setProjectId] = useState("");
   const [q, setQ] = useState("");
   const [selectedId, setSelectedId] = useState<string | null>(null);
@@ -84,6 +88,30 @@ export function ReportsPage() {
     a.download = `report-${selectedId}.json`;
     a.click();
     URL.revokeObjectURL(url);
+  };
+
+  const downloadServerReport = async (
+    projectIdValue: string,
+    pipelineId: string,
+    format: "html" | "pdf",
+  ) => {
+    try {
+      const blob = await pipelineService.downloadReport(
+        projectIdValue,
+        pipelineId,
+        format,
+      );
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement("a");
+      a.href = url;
+      a.download = `rapport-${pipelineId}.${format}`;
+      document.body.appendChild(a);
+      a.click();
+      a.remove();
+      URL.revokeObjectURL(url);
+    } catch (err) {
+      toast.show("error", getErrorMessage(err));
+    }
   };
 
   return (
@@ -209,7 +237,7 @@ export function ReportsPage() {
                       Security Gate
                     </th>
                     <th className="px-4 py-2.5 text-left font-medium">Date</th>
-                    <th className="w-32 px-4 py-2.5 text-right font-medium">Actions</th>
+                    <th className="w-56 px-4 py-2.5 text-right font-medium">Actions</th>
                   </tr>
                 </thead>
                 <tbody>
@@ -279,20 +307,52 @@ export function ReportsPage() {
                           {timeAgo(r.createdAt)}
                         </td>
                         <td className="px-4 py-3 text-right">
-                          <Button
-                            size="sm"
-                            variant={isSelected ? "ghost" : "secondary"}
-                            onClick={() => setSelectedId(isSelected ? null : r.id)}
-                            className="gap-1.5"
-                          >
-                            {isSelected ? (
-                              <>
-                                <X className="h-3.5 w-3.5" /> Fermer
-                              </>
-                            ) : (
-                              "Voir"
-                            )}
-                          </Button>
+                          <div className="flex justify-end gap-1">
+                            <Button
+                              size="sm"
+                              variant="ghost"
+                              title="Télécharger le rapport HTML généré par le worker"
+                              onClick={() =>
+                                downloadServerReport(
+                                  r.projectId,
+                                  r.pipelineId,
+                                  "html",
+                                )
+                              }
+                            >
+                              HTML
+                            </Button>
+                            <Button
+                              size="sm"
+                              variant="ghost"
+                              title="Télécharger le rapport PDF généré par le worker"
+                              onClick={() =>
+                                downloadServerReport(
+                                  r.projectId,
+                                  r.pipelineId,
+                                  "pdf",
+                                )
+                              }
+                            >
+                              PDF
+                            </Button>
+                            <Button
+                              size="sm"
+                              variant={isSelected ? "ghost" : "secondary"}
+                              onClick={() =>
+                                setSelectedId(isSelected ? null : r.id)
+                              }
+                              className="gap-1.5"
+                            >
+                              {isSelected ? (
+                                <>
+                                  <X className="h-3.5 w-3.5" /> Fermer
+                                </>
+                              ) : (
+                                "Voir"
+                              )}
+                            </Button>
+                          </div>
                         </td>
                       </tr>
                     );
@@ -310,6 +370,13 @@ export function ReportsPage() {
           detail={detail as any}
           onClose={() => setSelectedId(null)}
           onDownloadJson={downloadJson}
+          onDownloadServer={(format) =>
+            downloadServerReport(
+              (detail as any).projectId,
+              (detail as any).pipelineId,
+              format,
+            )
+          }
         />
       )}
     </div>
@@ -323,10 +390,12 @@ function ReportDetailView({
   detail,
   onClose,
   onDownloadJson,
+  onDownloadServer,
 }: {
   detail: any;
   onClose: () => void;
   onDownloadJson: () => void;
+  onDownloadServer: (format: "html" | "pdf") => void;
 }) {
   const s = detail?.summaryJson ?? detail ?? {};
   const [showRaw, setShowRaw] = useState(false);
@@ -410,6 +479,28 @@ function ReportDetailView({
             <Button size="sm" variant="secondary" onClick={downloadHtml} className="gap-1.5">
               <Download className="h-3.5 w-3.5" /> HTML
             </Button>
+            {detail?.htmlPath && (
+              <Button
+                size="sm"
+                variant="secondary"
+                onClick={() => onDownloadServer("html")}
+                className="gap-1.5"
+                title="Rapport HTML généré par le worker"
+              >
+                <Download className="h-3.5 w-3.5" /> HTML serveur
+              </Button>
+            )}
+            {detail?.pdfPath && (
+              <Button
+                size="sm"
+                variant="secondary"
+                onClick={() => onDownloadServer("pdf")}
+                className="gap-1.5"
+                title="Rapport PDF généré par le worker"
+              >
+                <Download className="h-3.5 w-3.5" /> PDF serveur
+              </Button>
+            )}
             <Button size="sm" variant="secondary" onClick={printReport} className="gap-1.5">
               <Printer className="h-3.5 w-3.5" /> Imprimer / PDF
             </Button>

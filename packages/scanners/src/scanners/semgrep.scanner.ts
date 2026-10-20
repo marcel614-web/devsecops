@@ -52,6 +52,9 @@ export class SemgrepScanner implements SecurityScanner {
   async scan(ctx: ScanContext): Promise<ScanResult> {
     const started = Date.now();
     const logs: string[] = [];
+    logs.push(
+      "[info] Semgrep : analyse du workspace (node_modules/vendor exclus)",
+    );
 
     try {
       const { stdout, stderr } = await execFileAsync(
@@ -60,8 +63,17 @@ export class SemgrepScanner implements SecurityScanner {
           "--config=auto",
           "--json",
           "--quiet",
-          "--no-git-ignore",
           "--timeout", "60",
+          // Le workspace contient les dépendances installées par
+          // INSTALL_DEPS : sans ces exclusions, Semgrep analyse des
+          // milliers de fichiers de node_modules et échoue par timeout.
+          "--exclude=**/node_modules/**",
+          "--exclude=**/vendor/**",
+          "--exclude=**/.git/**",
+          "--exclude=**/dist/**",
+          "--exclude=**/build/**",
+          "--exclude=**/coverage/**",
+          "--exclude=**/.next/**",
           ctx.workspaceDir,
         ],
         {
@@ -85,7 +97,7 @@ export class SemgrepScanner implements SecurityScanner {
       const normalized: NormalizedFinding[] = results.map((r) => ({
         tool: "semgrep",
         severity: this.mapSeverity(r.extra?.severity),
-        filePath: r.path,
+        filePath: r.start?.line ? `${r.path}:${r.start.line}` : r.path,
         description: r.extra?.message ?? r.check_id,
         reference: r.extra?.metadata?.references?.[0] ?? r.check_id,
         raw: {
@@ -125,7 +137,7 @@ export class SemgrepScanner implements SecurityScanner {
           const normalized: NormalizedFinding[] = results.map((r) => ({
             tool: "semgrep",
             severity: this.mapSeverity(r.extra?.severity),
-            filePath: r.path,
+            filePath: r.start?.line ? `${r.path}:${r.start.line}` : r.path,
             description: r.extra?.message ?? r.check_id,
             reference: r.extra?.metadata?.references?.[0] ?? r.check_id,
           }));

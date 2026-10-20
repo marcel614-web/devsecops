@@ -1,6 +1,11 @@
 // apps/worker/src/steps/report/final-report.step.ts
 import { prisma } from "../../utils/prisma";
 import type { StepContext, StepResult } from "../../orchestrator/step.executor";
+import {
+  writeReportFiles,
+  type ReportSummary,
+  type ReportTopFinding,
+} from "./report.generator";
 
 interface ScanSummary {
   scanner: string;
@@ -11,15 +16,6 @@ interface ScanSummary {
   low: number;
   info: number;
   durationMs: number | null;
-}
-
-interface TopFinding {
-  tool: string;
-  severity: string;
-  packageName: string | null;
-  filePath: string | null;
-  description: string | null;
-  reference: string | null;
 }
 
 const SEVERITY_ORDER: Record<string, number> = {
@@ -46,6 +42,7 @@ export async function finalReportStep(
       gateResult: true,
       dockerImage: true,
       deployment: true,
+      sbom: true,
     },
   });
   if (!pipeline) {
@@ -104,7 +101,7 @@ export async function finalReportStep(
     },
   });
 
-  const topFindings: TopFinding[] = allVulns
+  const topFindings: ReportTopFinding[] = allVulns
     .sort((a, b) => {
       const sa = SEVERITY_ORDER[a.severity] ?? 99;
       const sb = SEVERITY_ORDER[b.severity] ?? 99;
@@ -112,14 +109,24 @@ export async function finalReportStep(
     })
     .slice(0, 20);
 
-  // 5. Durée totale du pipeline.
-  const durationMs =
-    pipeline.startedAt && pipeline.finishedAt
-      ? pipeline.finishedAt.getTime() - pipeline.startedAt.getTime()
-      : null;
+  // 5. Durée totale du pipeline (le rapport est généré avant que le
+  //    moteur ne positionne finishedAt : on utilise l'instant courant).
+  const finishedAt = pipeline.finishedAt ?? new Date();
+  const durationMs = pipeline.startedAt
+    ? finishedAt.getTime() - pipeline.startedAt.getTime()
+    : null;
+
+  // Statut final estimé : le moteur met à jour le pipeline juste après
+  // cette étape, mais le rapport doit refléter la réalité.
+  const reportStatus =
+    ctx.pipelineSecurityBlocked || pipeline.gateResult?.blocked
+      ? "SECURITY_BLOCKED"
+      : ctx.pipelineAborted
+        ? "FAILED"
+        : "SUCCESS";
 
   // 6. Construit le résumé JSON.
-  const summary = {
+  const summary: ReportSummary = {
     generatedAt: new Date().toISOString(),
     project: {
       id: pipeline.project.id,
@@ -133,16 +140,18 @@ export async function finalReportStep(
       branch: pipeline.branch,
       author: pipeline.author,
       trigger: pipeline.trigger,
-      status: pipeline.status,
+      status: reportStatus,
       startedAt: pipeline.startedAt?.toISOString() ?? null,
-      finishedAt: pipeline.finishedAt?.toISOString() ?? null,
+      finishedAt: finishedAt.toISOString(),
       durationMs,
+      pullRequestNumber: pipeline.pullRequestNumber,
     },
     scans: scanSummaries,
     totals,
     gate: pipeline.gateResult
       ? {
           status: pipeline.gateResult.status,
+          mode: pipeline.gateResult.mode,
           blocked: pipeline.gateResult.blocked,
           reason: pipeline.gateResult.reason,
           rules: pipeline.gateResult.rulesJson,
@@ -152,11 +161,19 @@ export async function finalReportStep(
       ? {
           imageTag: pipeline.dockerImage.imageTag,
           imageId: pipeline.dockerImage.imageId,
+          signed: pipeline.dockerImage.signed,
+        }
+      : null,
+    sbom: pipeline.sbom
+      ? {
+          packageCount: pipeline.sbom.packageCount,
+          format: pipeline.sbom.format,
         }
       : null,
     deployment: pipeline.deployment
       ? {
           status: pipeline.deployment.status,
+          environment: pipeline.deployment.environment,
           url: pipeline.deployment.url,
           releaseVersion: pipeline.deployment.releaseVersion,
         }
@@ -165,16 +182,34 @@ export async function finalReportStep(
     vulnerabilityCount: allVulns.length,
   };
 
-  // 7. Upsert du rapport.
+  // 7. Génère les fichiers HTML et PDF.
+  let htmlPath: string | null = null;
+  let pdfPath: string | null = null;
+  try {
+    const files = await writeReportFiles(summary, ctx.pipelineId);
+    htmlPath = files.htmlPath;
+    pdfPath = files.pdfPath;
+    await ctx.log("info", `Rapport HTML : ${htmlPath}`);
+    await ctx.log("info", `Rapport PDF : ${pdfPath}`);
+  } catch (err) {
+    const msg = err instanceof Error ? err.message : String(err);
+    await ctx.log("warn", `Génération des fichiers de rapport échouée : ${msg}`);
+  }
+
+  // 8. Upsert du rapport.
   await prisma.securityReport.upsert({
     where: { pipelineId: ctx.pipelineId },
     create: {
       pipelineId: ctx.pipelineId,
       projectId: pipeline.project.id,
       summaryJson: summary as unknown as object,
+      htmlPath,
+      pdfPath,
     },
     update: {
       summaryJson: summary as unknown as object,
+      htmlPath,
+      pdfPath,
     },
   });
 
@@ -198,6 +233,8 @@ export async function finalReportStep(
     exitCode: 0,
     data: {
       report: "generated",
+      htmlPath,
+      pdfPath,
       scanners: scanSummaries.length,
       vulnerabilities: allVulns.length,
       totals,

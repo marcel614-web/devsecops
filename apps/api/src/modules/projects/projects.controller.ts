@@ -4,6 +4,7 @@ import { BadRequestError, UnauthorizedError } from "../../utils/errors";
 import * as projectsService from "./projects.service";
 import * as repoService from "../github/repositories.service";
 import type {
+  CreateGateExceptionInput,
   CreateProjectInput,
   ProjectListQuery,
   UpdateProjectConfigInput,
@@ -122,6 +123,64 @@ export async function updateProjectConfig(
       req.body as UpdateProjectConfigInput,
     );
     res.json({ config });
+  } catch (err) {
+    next(err);
+  }
+}
+
+// ------------------------------------------------------------
+// GET /api/projects/:id/gate-exceptions
+// POST /api/projects/:id/gate-exceptions
+// DELETE /api/projects/:id/gate-exceptions/:exceptionId
+// ------------------------------------------------------------
+export async function listGateExceptions(
+  req: Request,
+  res: Response,
+  next: NextFunction,
+): Promise<void> {
+  try {
+    const actor = actorFrom(req);
+    const exceptions = await projectsService.listGateExceptions(
+      actor,
+      req.params.id,
+    );
+    res.json({ exceptions });
+  } catch (err) {
+    next(err);
+  }
+}
+
+export async function createGateException(
+  req: Request,
+  res: Response,
+  next: NextFunction,
+): Promise<void> {
+  try {
+    const actor = actorFrom(req);
+    const exception = await projectsService.createGateException(
+      actor,
+      req.params.id,
+      req.body as CreateGateExceptionInput,
+    );
+    res.status(201).json({ exception });
+  } catch (err) {
+    next(err);
+  }
+}
+
+export async function deleteGateException(
+  req: Request,
+  res: Response,
+  next: NextFunction,
+): Promise<void> {
+  try {
+    const actor = actorFrom(req);
+    await projectsService.deleteGateException(
+      actor,
+      req.params.id,
+      req.params.exceptionId,
+    );
+    res.status(204).end();
   } catch (err) {
     next(err);
   }

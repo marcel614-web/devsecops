@@ -13,8 +13,12 @@ export async function semgrepStep(
   await ctx.log("info", "Vérification de la disponibilité de Semgrep...");
 
   if (!(await scanner.isAvailable())) {
-    await ctx.log("warn", "Semgrep non installé — étape ignorée");
-    return { success: true, exitCode: 0, data: { skipped: true, reason: "semgrep not found" } };
+    await ctx.log("warn", "Semgrep non installé — étape ignorée (échec technique signalé au Security Gate)");
+    return {
+      success: true,
+      exitCode: 0,
+      data: { skipped: true, technical: true, reason: "semgrep not found" },
+    };
   }
 
   await ctx.log("info", "Exécution de Semgrep (analyse statique)...");

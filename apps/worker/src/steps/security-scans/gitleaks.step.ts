@@ -13,8 +13,12 @@ export async function gitleaksStep(
   await ctx.log("info", "Vérification de la disponibilité de Gitleaks...");
 
   if (!(await scanner.isAvailable())) {
-    await ctx.log("warn", "Gitleaks non installé — étape ignorée");
-    return { success: true, exitCode: 0, data: { skipped: true, reason: "gitleaks not found" } };
+    await ctx.log("warn", "Gitleaks non installé — étape ignorée (échec technique signalé au Security Gate)");
+    return {
+      success: true,
+      exitCode: 0,
+      data: { skipped: true, technical: true, reason: "gitleaks not found" },
+    };
   }
 
   await ctx.log("info", "Exécution de Gitleaks (recherche de secrets)...");

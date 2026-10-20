@@ -1,6 +1,7 @@
 import { useMemo, useState } from "react";
+import { Link } from "react-router-dom";
 import { useQuery } from "@tanstack/react-query";
-import { ShieldCheck } from "lucide-react";
+import { ArrowUpRight, ShieldCheck } from "lucide-react";
 import { Card, CardContent } from "@/components/ui/Card";
 import { SeverityBadge } from "@/components/ui/Badge";
 import { EmptyState } from "@/components/feedback/EmptyState";
@@ -84,24 +85,32 @@ export function ProjectVulnerabilitiesTab({ projectId }: { projectId: string }) 
         <CardContent className="p-0">
           <div className="flex flex-wrap items-center justify-between gap-3 border-b border-border p-4">
             <p className="text-sm text-muted tabular-nums">
-              {items.length} résultat{items.length > 1 ? "s" : ""}
+              {items.length} findings uniques
               {(sev || tool) && (
                 <button type="button" className="ml-3 text-primary-500 hover:underline" onClick={() => { setSev(null); setTool(""); }}>
                   Réinitialiser les filtres
                 </button>
               )}
             </p>
-            {tools.length > 1 && (
-              <select
-                value={tool}
-                onChange={(e) => setTool(e.target.value)}
-                aria-label="Filtrer par outil"
-                className="rounded-md border border-border bg-surface px-2.5 py-1.5 text-sm"
+            <div className="flex items-center gap-2">
+              {tools.length > 1 && (
+                <select
+                  value={tool}
+                  onChange={(e) => setTool(e.target.value)}
+                  aria-label="Filtrer par outil"
+                  className="rounded-md border border-border bg-surface px-2.5 py-1.5 text-sm"
+                >
+                  <option value="">Tous les outils</option>
+                  {tools.map((t) => <option key={t} value={t}>{t}</option>)}
+                </select>
+              )}
+              <Link
+                to={`/vulnerabilities?projectId=${projectId}`}
+                className="inline-flex items-center gap-1 rounded-md border border-border px-2.5 py-1.5 text-sm hover:bg-slate-50 dark:hover:bg-slate-800/40"
               >
-                <option value="">Tous les outils</option>
-                {tools.map((t) => <option key={t} value={t}>{t}</option>)}
-              </select>
-            )}
+                Gérer <ArrowUpRight className="h-3.5 w-3.5" />
+              </Link>
+            </div>
           </div>
 
           {items.length === 0 ? (
@@ -119,7 +128,9 @@ export function ProjectVulnerabilitiesTab({ projectId }: { projectId: string }) 
                     <th className="px-4 py-2.5 text-left font-medium">Outil</th>
                     <th className="px-4 py-2.5 text-left font-medium">Package / fichier</th>
                     <th className="px-4 py-2.5 text-left font-medium">Description</th>
-                    <th className="px-4 py-2.5 text-right font-medium">Détecté</th>
+                    <th className="px-4 py-2.5 text-left font-medium">Statut</th>
+                    <th className="px-4 py-2.5 text-right font-medium">Occ.</th>
+                    <th className="px-4 py-2.5 text-right font-medium">Dernière détection</th>
                   </tr>
                 </thead>
                 <tbody>
@@ -139,6 +150,20 @@ export function ProjectVulnerabilitiesTab({ projectId }: { projectId: string }) 
                             <span className="block truncate" title={v.description ?? ""}>{v.description}</span>
                           )}
                         </td>
+                        <td className="whitespace-nowrap px-4 py-3 text-xs">
+                          {v.status === "FIXED"
+                            ? "Corrigée"
+                            : v.status === "FALSE_POSITIVE"
+                              ? "Faux positif"
+                              : v.status === "RISK_ACCEPTED"
+                                ? "Risque accepté"
+                                : v.status === "DUPLICATE"
+                                  ? "Doublon"
+                                  : v.status === "CONFIRMED"
+                                    ? "Confirmée"
+                                    : "Ouverte"}
+                        </td>
+                        <td className="whitespace-nowrap px-4 py-3 text-right text-xs tabular-nums">×{v.occurrences}</td>
                         <td className="whitespace-nowrap px-4 py-3 text-right text-xs text-muted">{timeAgo(v.detectedAt)}</td>
                       </tr>
                     );

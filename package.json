@@ -17,7 +17,8 @@
     "prisma:generate": "prisma generate",
     "prisma:migrate": "prisma migrate dev",
     "prisma:studio": "prisma studio",
-    "db:seed": "tsx prisma/seed.ts"
+    "db:seed": "tsx prisma/seed.ts",
+    "db:backfill-fingerprints": "node scripts/backfill-fingerprints.mjs"
   },
   "devDependencies": {
     "prisma": "^5.20.0",

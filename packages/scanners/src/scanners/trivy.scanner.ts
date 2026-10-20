@@ -30,11 +30,28 @@ interface TrivyVulnerability {
   PrimaryURL?: string;
 }
 
+interface TrivyMisconfiguration {
+  ID?: string;
+  AVDID?: string;
+  Title?: string;
+  Description?: string;
+  Message?: string;
+  Severity?: string;
+  Resolution?: string;
+  References?: string[];
+  PrimaryURL?: string;
+  CauseMetadata?: {
+    StartLine?: number;
+    EndLine?: number;
+  };
+}
+
 interface TrivyResult {
   Target?: string;
   Class?: string;
   Type?: string;
   Vulnerabilities?: TrivyVulnerability[];
+  Misconfigurations?: TrivyMisconfiguration[];
 }
 
 interface TrivyOutput {
@@ -157,10 +174,124 @@ export class TrivyScanner implements SecurityScanner {
     }
   }
 
-  async scan(_ctx: ScanContext): Promise<ScanResult> {
-    throw new Error(
-      "TrivyScanner.scan() n'est pas supporté — utilisez scanImage({ imageTag })",
+  /**
+   * Scan de configuration / Infrastructure as Code.
+   * `trivy config` analyse Dockerfile, Kubernetes, Terraform, etc.
+   */
+  async scanConfig(ctx: ScanContext): Promise<ScanResult> {
+    const started = Date.now();
+    const logs: string[] = [];
+    const reportPath = path.join(
+      os.tmpdir(),
+      `trivy-config-${crypto.randomUUID()}.json`,
     );
+
+    try {
+      await execFileAsync(
+        TRIVY_BIN,
+        [
+          "config",
+          "--format",
+          "json",
+          "--output",
+          reportPath,
+          "--severity",
+          "CRITICAL,HIGH,MEDIUM,LOW",
+          "--quiet",
+          "--skip-dirs",
+          "node_modules",
+          "--skip-dirs",
+          "vendor",
+          "--skip-dirs",
+          ".git",
+          "--skip-dirs",
+          "dist",
+          "--skip-dirs",
+          "build",
+          "--skip-dirs",
+          "coverage",
+          ctx.workspaceDir,
+        ],
+        {
+          timeout: 10 * 60_000,
+          maxBuffer: 100 * 1024 * 1024,
+          shell: true,
+        },
+      );
+
+      let parsed: TrivyOutput = {};
+      try {
+        const content = await fs.readFile(reportPath, "utf8");
+        if (content.trim().length > 0) {
+          parsed = JSON.parse(content) as TrivyOutput;
+        }
+      } catch {
+        logs.push("[warn] Impossible de lire le rapport Trivy config JSON");
+      }
+
+      const findings: NormalizedFinding[] = [];
+      for (const r of parsed.Results ?? []) {
+        for (const m of r.Misconfigurations ?? []) {
+          const line = m.CauseMetadata?.StartLine;
+          findings.push({
+            tool: "trivy-config",
+            technology: "IAC",
+            severity: this.mapSeverity(m.Severity),
+            filePath: line ? `${r.Target}:${line}` : r.Target,
+            description:
+              m.Title ?? m.Message ?? m.Description ?? m.ID ?? "Mauvaise configuration",
+            reference: m.PrimaryURL ?? m.ID ?? m.AVDID,
+            raw: {
+              target: r.Target,
+              id: m.ID,
+              avdId: m.AVDID,
+              resolution: m.Resolution,
+              references: m.References,
+              startLine: m.CauseMetadata?.StartLine,
+              endLine: m.CauseMetadata?.EndLine,
+            },
+          });
+        }
+      }
+
+      const severityCounts = this.countSeverities(findings);
+      logs.push(
+        `[info] Trivy config : ${findings.length} mauvaise(s) configuration(s) — ` +
+          `critical=${severityCounts.critical}, high=${severityCounts.high}, ` +
+          `medium=${severityCounts.medium}, low=${severityCounts.low}`,
+      );
+
+      return {
+        scanner: "trivy-config",
+        status: "SUCCESS",
+        durationMs: Date.now() - started,
+        exitCode: 0,
+        vulnerabilityCount: findings.length,
+        severityCounts,
+        findings,
+        logs,
+      };
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : String(err);
+      logs.push(`[error] Échec de Trivy config : ${msg}`);
+      return {
+        scanner: "trivy-config",
+        status: "FAILED",
+        durationMs: Date.now() - started,
+        exitCode: null,
+        vulnerabilityCount: 0,
+        severityCounts: { critical: 0, high: 0, medium: 0, low: 0, info: 0 },
+        findings: [],
+        logs,
+        error: msg,
+      };
+    } finally {
+      await fs.rm(reportPath, { force: true }).catch(() => undefined);
+    }
+  }
+
+  async scan(ctx: ScanContext): Promise<ScanResult> {
+    return this.scanConfig(ctx);
   }
 
   private mapSeverity(s: string | undefined): ScannerSeverity {

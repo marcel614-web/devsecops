@@ -16,8 +16,32 @@ import {
   isPipelineCancelled,
   clearPipelineCancellation,
 } from "../utils/cancellation";
+import { postPullRequestCheck } from "../services/github-checks.service";
 
 const WORKSPACES_ROOT = path.join(os.tmpdir(), "devsecops-workspaces");
+
+/**
+ * Si une promotion est sautée (gate bloquant, annulation ou échec
+ * critique en amont), le déploiement de staging ne doit pas rester
+ * éternellement en RUNNING dans l'interface.
+ */
+async function markPromotionSkipped(
+  pipelineId: string,
+  reason: string,
+): Promise<void> {
+  await prisma.deployment.updateMany({
+    where: {
+      pipelineId,
+      environment: "STAGING",
+      stagingStatus: "SUCCESS",
+    },
+    data: {
+      status: "FAILED",
+      finishedAt: new Date(),
+      error: reason,
+    },
+  });
+}
 
 export async function runPipeline(pipelineId: string): Promise<void> {
   logger.info({ pipelineId }, "Démarrage du pipeline");
@@ -31,6 +55,12 @@ export async function runPipeline(pipelineId: string): Promise<void> {
           repoFullName: true,
           defaultBranch: true,
           ownerId: true,
+          githubRepository: {
+            select: {
+              fullName: true,
+              installation: { select: { installationId: true } },
+            },
+          },
         },
       },
       steps: { orderBy: { order: "asc" } },
@@ -82,12 +112,24 @@ export async function runPipeline(pipelineId: string): Promise<void> {
     }
 
     // ------------------------------------------------------------
-    // 1. Échec critique ou annulation → on saute TOUT
+    // 1. Échec critique ou annulation → on saute TOUT, sauf le rapport
+    //    final si le pipeline n'a pas été annulé (traçabilité).
     // ------------------------------------------------------------
-    if (aborted && !securityBlocked) {
+    const isReportStep = step.type === "REPORT";
+    if (
+      aborted &&
+      !securityBlocked &&
+      !(isReportStep && !cancelled)
+    ) {
       await markStepFinished(step.id, StepStatus.CANCELLED, {
         error: abortReason ?? "Pipeline interrompu",
       });
+      if (step.type === "PROMOTE") {
+        await markPromotionSkipped(
+          pipelineId,
+          abortReason ?? "Pipeline interrompu avant la promotion",
+        );
+      }
       await logStep(
         pipelineId,
         step.id,
@@ -105,6 +147,12 @@ export async function runPipeline(pipelineId: string): Promise<void> {
       await markStepFinished(step.id, StepStatus.CANCELLED, {
         error: "Déploiement bloqué par le Security Gate",
       });
+      if (step.type === "PROMOTE") {
+        await markPromotionSkipped(
+          pipelineId,
+          "Promotion bloquée par le Security Gate",
+        );
+      }
       await logStep(
         pipelineId,
         step.id,
@@ -130,6 +178,8 @@ export async function runPipeline(pipelineId: string): Promise<void> {
       branch: pipeline.branch,
       log: (level, message) => logStep(pipelineId, step.id, level, message),
       isCancelled: () => isPipelineCancelled(pipelineId),
+      pipelineAborted: aborted,
+      pipelineSecurityBlocked: securityBlocked,
     };
 
     let result;
@@ -265,6 +315,36 @@ export async function runPipeline(pipelineId: string): Promise<void> {
       `Pipeline terminé : ${finalStatus}`,
     );
     logger.info({ pipelineId, finalStatus }, "Pipeline terminé");
+  }
+
+  // ------------------------------------------------------------
+  // Check run GitHub pour les pull requests
+  // ------------------------------------------------------------
+  const finalForCheck =
+    current?.status === PipelineStatus.CANCELLED
+      ? PipelineStatus.CANCELLED
+      : finalStatus;
+
+  if (
+    pipeline.trigger === "pull_request" &&
+    pipeline.project.githubRepository?.installation?.installationId
+  ) {
+    const gate = await prisma.securityGateResult.findUnique({
+      where: { pipelineId },
+      select: { status: true, reason: true },
+    });
+
+    await postPullRequestCheck({
+      installationId:
+        pipeline.project.githubRepository.installation.installationId,
+      repoFullName: pipeline.project.githubRepository.fullName,
+      headSha: pipeline.commitSha,
+      pipelineId,
+      status: finalForCheck,
+      gateStatus: gate?.status ?? null,
+      gateReason: gate?.reason ?? null,
+      pullRequestNumber: pipeline.pullRequestNumber,
+    });
   }
 
   // Nettoyage du flag Redis à la fin, quelle que soit l'issue.
