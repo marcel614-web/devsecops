@@ -96,6 +96,8 @@ export class TrivyScanner implements SecurityScanner {
           "--output", reportPath,
           "--severity", "CRITICAL,HIGH,MEDIUM,LOW",
           "--skip-db-update",
+          "--skip-java-db-update",
+          "--skip-version-check",
           "--no-progress",
           "--quiet",
           opts.imageTag,
@@ -191,6 +193,9 @@ export class TrivyScanner implements SecurityScanner {
         TRIVY_BIN,
         [
           "config",
+          "--cache-dir", TRIVY_CACHE_DIR,
+          "--skip-check-update",
+          "--skip-version-check",
           "--format",
           "json",
           "--output",

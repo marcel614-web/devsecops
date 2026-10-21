@@ -15,8 +15,16 @@ import type {
 // CONFIGURATION TRIVY
 // ============================================================
 
-// Volume Docker persistant contenant la DB Trivy pré-téléchargée
-const TRIVY_VOLUME = "trivy-cache";
+// Volume Docker persistant contenant la DB Trivy pré-téléchargée.
+// Structure attendue : <volume>/trivy/db/{trivy.db,metadata.json}
+const TRIVY_VOLUME =
+  process.env.TRIVY_VM_CACHE_VOLUME?.trim() || "trivy-cache";
+// Image Trivy exécutée sur la VM.
+const TRIVY_IMAGE =
+  process.env.TRIVY_VM_IMAGE?.trim() || "aquasec/trivy:latest";
+// Le cache Trivy est monté sur /root/.cache ; Trivy utilise /root/.cache/trivy.
+const TRIVY_CACHE_MOUNT = "/root/.cache";
+const TRIVY_DB_DIR = "/root/.cache/trivy/db";
 // Timeout du scan complet
 const TRIVY_SCAN_TIMEOUT_MS = 15 * 60_000;
 
@@ -154,14 +162,14 @@ export async function trivyStep(
     // 5. Vérifie la présence de l'image Trivy (pull si absent)
     await ctx.log("info", "Vérification de l'image Trivy sur la VM...");
     const imageCheck = await ssh.exec(
-      `docker image inspect aquasec/trivy:latest >/dev/null 2>&1 && echo OK || echo MISSING`,
+      `docker image inspect ${TRIVY_IMAGE} >/dev/null 2>&1 && echo OK || echo MISSING`,
       15_000,
     );
 
     if (imageCheck.stdout.includes("MISSING")) {
       await ctx.log("info", "Téléchargement de l'image Trivy...");
       const pullCode = await ssh.execStream(
-        `docker pull aquasec/trivy:latest`,
+        `docker pull ${TRIVY_IMAGE}`,
         (chunk, stream) => {
           const line = chunk.trim();
           if (line && stream === "stderr") {
@@ -175,33 +183,42 @@ export async function trivyStep(
       }
     }
 
-    // 6. Vérifie que la DB Trivy est présente dans le volume
-    await ctx.log("info", "Vérification du cache Trivy...");
+    // 6. Vérifie que la DB Trivy est présente dans le volume.
+    //    On refuse de lancer le scan sans DB : sinon Trivy tenterait un
+    //    téléchargement réseau et échouerait avec un timeout.
+    await ctx.log("info", "Vérification de la base Trivy locale...");
     const dbCheck = await ssh.exec(
-      `docker run --rm -v ${TRIVY_VOLUME}:/root/.cache/ aquasec/trivy:latest filesystem --help >/dev/null 2>&1 && echo CACHE_OK || echo CACHE_MISSING`,
+      `docker run --rm -v ${TRIVY_VOLUME}:${TRIVY_CACHE_MOUNT} --entrypoint sh ${TRIVY_IMAGE} ` +
+        `-c 'test -s ${TRIVY_DB_DIR}/trivy.db && test -s ${TRIVY_DB_DIR}/metadata.json && echo CACHE_OK || echo CACHE_MISSING'`,
       2 * 60_000,
     );
 
-    // On ne bloque pas si le cache est vide : Trivy tentera de le télécharger/mettre à jour
-    if (dbCheck.stdout.includes("CACHE_OK")) {
-      await ctx.log("info", "Cache Trivy présent — Trivy réutilisera/mettra la DB à jour si nécessaire");
-    } else {
-      await ctx.log(
-        "warn",
-        "Cache Trivy absent/manquant — Trivy téléchargera/mettra à jour la DB pendant le scan",
+    if (!dbCheck.stdout.includes("CACHE_OK")) {
+      throw new Error(
+        `Base de vulnérabilités Trivy absente sur la VM (volume ${TRIVY_VOLUME}). ` +
+          `Placez trivy.db et metadata.json dans ${TRIVY_DB_DIR} du volume, ` +
+          "ou exécutez la préparation du cache Trivy.",
       );
     }
 
-    // 7. Scan Trivy avec le volume de cache
+    await ctx.log(
+      "info",
+      "Base Trivy locale détectée — mise à jour réseau désactivée pour ce scan",
+    );
+
+    // 7. Scan Trivy avec le volume de cache, sans aucun téléchargement.
     await ctx.log("info", `Scan Trivy de l'image ${image.imageTag}...`);
     const trivyStart = Date.now();
 
     const scanCmd = [
       "docker run --rm",
       "-v /var/run/docker.sock:/var/run/docker.sock",
-      `-v ${TRIVY_VOLUME}:/root/.cache/`,
-      "aquasec/trivy:latest",
+      `-v ${TRIVY_VOLUME}:${TRIVY_CACHE_MOUNT}`,
+      TRIVY_IMAGE,
       "image",
+      "--skip-db-update",
+      "--skip-java-db-update",
+      "--skip-version-check",
       "--format json",
       "--quiet",
       "--no-progress",
