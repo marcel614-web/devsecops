@@ -37,8 +37,27 @@ interface AppliedException {
   id: string;
   category: string;
   severity: string | null;
+  fingerprint: string | null;
   reason: string;
   expiresAt: string | null;
+}
+
+interface GateVulnerability {
+  id: string;
+  severity: string;
+  fingerprint: string | null;
+  reference: string | null;
+  status: VulnerabilityStatus;
+  scan: { type: string; scanner: string };
+}
+
+interface GateException {
+  id: string;
+  category: string;
+  severity: string | null;
+  fingerprint: string | null;
+  reason: string;
+  expiresAt: Date | null;
 }
 
 interface GateEvaluation {
@@ -132,6 +151,42 @@ function categoryEnabled(
   }
 }
 
+/** Compteurs de sévérité vides. */
+export function emptySeverityCounts(): SeverityCounts {
+  return { critical: 0, high: 0, medium: 0, low: 0, info: 0 };
+}
+
+/**
+ * Vrai si une exception cible CE finding.
+ *
+ * Une exception sans `fingerprint` est volontairement ignorée : c'était le
+ * bug historique. Une exception « SCA + CRITICAL » supprimait sinon tous
+ * les findings CRITICAL de la catégorie, y compris des CVE non concernées.
+ */
+export function exceptionMatchesFinding(
+  exception: Pick<
+    GateException,
+    "category" | "severity" | "fingerprint"
+  >,
+  finding: Pick<GateVulnerability, "severity" | "fingerprint" | "reference">,
+  category: GateCategory,
+): boolean {
+  if (!exception.fingerprint || exception.fingerprint.trim() === "") {
+    return false;
+  }
+  if (exception.category !== "ALL" && exception.category !== category) {
+    return false;
+  }
+  if (exception.severity && exception.severity !== finding.severity) {
+    return false;
+  }
+
+  const target = exception.fingerprint.trim().toLowerCase();
+  return [finding.fingerprint, finding.reference].some(
+    (value) => value?.trim().toLowerCase() === target,
+  );
+}
+
 // ============================================================
 // ÉTAPE
 // ============================================================
@@ -177,8 +232,10 @@ export async function securityGateStep(
       `medium=${rules.medium}, low=${rules.low < 0 ? "illimité" : rules.low}`,
   );
 
-  // 2. Scans et étapes du pipeline.
-  const [scans, steps, exceptions] = await Promise.all([
+  // 2. Scans, étapes, exceptions et findings du pipeline.
+  //    Les findings individuels sont nécessaires pour appliquer une
+  //    exception à un CVE précis, sans masquer tout le bucket de sévérité.
+  const [scans, steps, exceptions, vulnerabilities] = await Promise.all([
     prisma.securityScan.findMany({
       where: { pipelineId: ctx.pipelineId },
       select: {
@@ -202,6 +259,17 @@ export async function securityGateStep(
         OR: [{ expiresAt: null }, { expiresAt: { gt: now } }],
       },
       orderBy: { createdAt: "desc" },
+    }),
+    prisma.vulnerability.findMany({
+      where: { scan: { pipelineId: ctx.pipelineId } },
+      select: {
+        id: true,
+        severity: true,
+        fingerprint: true,
+        reference: true,
+        status: true,
+        scan: { select: { type: true, scanner: true } },
+      },
     }),
   ]);
 
@@ -316,22 +384,73 @@ export async function securityGateStep(
     }
   }
 
-  // 4. Compteurs + application des exceptions.
-  const rawCounts: SeverityCounts = {
-    critical: 0,
-    high: 0,
-    medium: 0,
-    low: 0,
-    info: 0,
-  };
-  const counts: SeverityCounts = {
-    critical: 0,
-    high: 0,
-    medium: 0,
-    low: 0,
-    info: 0,
-  };
+  // 4. Compteurs + application des exceptions finding par finding.
+  //
+  // On ne retire plus un bucket entier dès qu'une exception
+  // « catégorie + sévérité » existe. On compte uniquement les findings
+  // dont le fingerprint/reference correspond à l'exception.
+  const rawCounts = emptySeverityCounts();
+  const counts = emptySeverityCounts();
   const exceptionsApplied: AppliedException[] = [];
+  const acceptedStatuses = new Set<VulnerabilityStatus>([
+    VulnerabilityStatus.FALSE_POSITIVE,
+    VulnerabilityStatus.RISK_ACCEPTED,
+    VulnerabilityStatus.DUPLICATE,
+  ]);
+
+  const broadExceptions = exceptions.filter(
+    (e) => !e.fingerprint || e.fingerprint.trim() === "",
+  );
+  if (broadExceptions.length > 0) {
+    await ctx.log(
+      "warn",
+      `${broadExceptions.length} exception(s) sans fingerprint ignorée(s) : ` +
+        "une exception doit cibler un CVE, une règle ou une empreinte précise.",
+    );
+  }
+
+  // Clé = type de scan + scanner, pour ne pas déduire deux fois le même
+  // finding quand plusieurs scanners alimentent la même catégorie.
+  const scanKey = (type: string, scanner: string): string =>
+    `${type}|${scanner}`;
+  const excludedByScan = new Map<string, SeverityCounts>();
+
+  for (const vuln of vulnerabilities as GateVulnerability[]) {
+    const category = vuln.scan.type as GateCategory;
+    if (!CATEGORIES.includes(category)) continue;
+    if (!categoryEnabled(config, category)) continue;
+
+    const key = vuln.severity.toLowerCase() as keyof SeverityCounts;
+    if (!(key in rawCounts)) continue;
+
+    const accepted = acceptedStatuses.has(vuln.status);
+    const exception = exceptions.find((e) =>
+      exceptionMatchesFinding(e, vuln, category),
+    );
+
+    // Ni faux positif/risque accepté, ni exception ciblée : le finding
+    // reste compté.
+    if (!accepted && !exception) continue;
+
+    const bucket = excludedByScan.get(scanKey(vuln.scan.type, vuln.scan.scanner)) ??
+      emptySeverityCounts();
+    bucket[key] += 1;
+    excludedByScan.set(
+      scanKey(vuln.scan.type, vuln.scan.scanner),
+      bucket,
+    );
+
+    if (exception && !exceptionsApplied.some((a) => a.id === exception.id)) {
+      exceptionsApplied.push({
+        id: exception.id,
+        category: exception.category,
+        severity: exception.severity,
+        fingerprint: exception.fingerprint,
+        reason: exception.reason,
+        expiresAt: exception.expiresAt?.toISOString() ?? null,
+      });
+    }
+  }
 
   for (const scan of scans) {
     const category = scan.type as GateCategory;
@@ -345,54 +464,13 @@ export async function securityGateStep(
       low: scan.lowCount,
       info: scan.infoCount,
     };
+    const excluded =
+      excludedByScan.get(scanKey(scan.type, scan.scanner)) ??
+      emptySeverityCounts();
 
     for (const key of SEVERITY_KEYS) {
       rawCounts[key] += values[key];
-
-      const exception = exceptions.find(
-        (e) =>
-          (e.category === "ALL" || e.category === category) &&
-          (!e.severity || e.severity === key.toUpperCase()),
-      );
-
-      if (exception) {
-        if (!exceptionsApplied.some((a) => a.id === exception.id)) {
-          exceptionsApplied.push({
-            id: exception.id,
-            category: exception.category,
-            severity: exception.severity,
-            reason: exception.reason,
-            expiresAt: exception.expiresAt?.toISOString() ?? null,
-          });
-        }
-        continue; // finding excepté : non compté dans le gate
-      }
-
-      counts[key] += values[key];
-    }
-  }
-
-  // 4bis. Les findings marqués faux positif / risque accepté / doublon
-  //       ne doivent pas compter dans les seuils.
-  const accepted = await prisma.vulnerability.groupBy({
-    by: ["severity"],
-    where: {
-      scan: { pipelineId: ctx.pipelineId },
-      status: {
-        in: [
-          VulnerabilityStatus.FALSE_POSITIVE,
-          VulnerabilityStatus.RISK_ACCEPTED,
-          VulnerabilityStatus.DUPLICATE,
-        ],
-      },
-    },
-    _count: { _all: true },
-  });
-
-  for (const row of accepted) {
-    const key = row.severity.toLowerCase() as keyof SeverityCounts;
-    if (key in counts) {
-      counts[key] = Math.max(0, counts[key] - row._count._all);
+      counts[key] += Math.max(0, values[key] - excluded[key]);
     }
   }
 

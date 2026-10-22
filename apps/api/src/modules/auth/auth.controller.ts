@@ -50,10 +50,13 @@ export async function register(
 ): Promise<void> {
   try {
     const result = await authService.registerUser(req.body, auditCtx(req));
-    setAuthCookies(res, result.tokens.accessToken, result.tokens.refreshToken);
+    // Aucun cookie et aucun accessToken : le compte est inactif jusqu'à
+    // validation par un administrateur.
     res.status(201).json({
       user: result.user,
-      accessToken: result.tokens.accessToken,
+      isActive: result.isActive,
+      message:
+        "Compte créé. Un administrateur doit l'activer avant que vous puissiez vous connecter.",
     });
   } catch (err) {
     next(err);

@@ -27,6 +27,12 @@ serversRouter.post(
 );
 
 serversRouter.get(
+  "/:id/resources",
+  validate({ params: serverIdParamSchema }),
+  serversController.getServerResources,
+);
+
+serversRouter.get(
   "/:id",
   validate({ params: serverIdParamSchema }),
   serversController.getServer,

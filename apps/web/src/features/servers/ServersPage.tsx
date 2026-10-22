@@ -7,6 +7,7 @@ import {
   Trash2,
   ShieldCheck,
   Activity,
+  Gauge,
   Loader2,
   CheckCircle2,
   XCircle,
@@ -30,9 +31,10 @@ import {
 import { CreateServerModal } from "./CreateServerModal";
 import { EditServerModal } from "./EditServerModal";
 import { ServerTestResultPanel } from "./ServerTestResultPanel";
+import { ServerResourcesPanel } from "./ServerResourcesPanel";
 import { timeAgo } from "@/lib/utils";
 import { getErrorMessage } from "@/services/api";
-import { serverService } from "@/services/server.service";
+import { serverService, type ServerResources } from "@/services/server.service";
 import type { DeploymentServer } from "@/types/api";
 import { useMutation, useQueryClient } from "@tanstack/react-query";
 
@@ -53,6 +55,12 @@ export function ServersPage() {
   const [testingId, setTestingId] = useState<string | null>(null);
   const [testResults, setTestResults] = useState<TestResultCache>({});
   const [expandedId, setExpandedId] = useState<string | null>(null);
+  const [resourcesByServer, setResourcesByServer] = useState<
+    Record<string, ServerResources>
+  >({});
+  const [resourcesExpandedId, setResourcesExpandedId] = useState<string | null>(
+    null,
+  );
   const toast = useToast();
 
   const { data, isLoading, isError, error, refetch } = useServers({
@@ -65,7 +73,25 @@ export function ServersPage() {
   const testMutation = useTestServer();
   const cleanupMutation = useMutation({
     mutationFn: (id: string) => serverService.cleanupImages(id),
-    onSuccess: () => toast.show("success", "Images Docker inutilisées supprimées"),
+    onSuccess: (_result, id) => {
+      toast.show("success", "Images Docker inutilisées supprimées");
+      // Les compteurs Docker affichés ne sont plus à jour.
+      setResourcesByServer((prev) => {
+        const next = { ...prev };
+        delete next[id];
+        return next;
+      });
+      setResourcesExpandedId((current) => (current === id ? null : current));
+    },
+    onError: (err) => toast.show("error", getErrorMessage(err)),
+  });
+
+  const resourcesMutation = useMutation({
+    mutationFn: (id: string) => serverService.getResources(id),
+    onSuccess: (result, id) => {
+      setResourcesByServer((prev) => ({ ...prev, [id]: result }));
+      setResourcesExpandedId(id);
+    },
     onError: (err) => toast.show("error", getErrorMessage(err)),
   });
 
@@ -100,6 +126,14 @@ export function ServersPage() {
     } finally {
       setTestingId(null);
     }
+  };
+
+  const handleResources = (id: string) => {
+    if (resourcesExpandedId === id) {
+      setResourcesExpandedId(null);
+      return;
+    }
+    resourcesMutation.mutate(id);
   };
 
   return (
@@ -164,6 +198,10 @@ export function ServersPage() {
             const isTesting = testingId === s.id;
             const testResult = testResults[s.id];
             const isExpanded = expandedId === s.id;
+            const isResourcesExpanded = resourcesExpandedId === s.id;
+            const resources = resourcesByServer[s.id];
+            const isLoadingResources =
+              resourcesMutation.isPending && resourcesMutation.variables === s.id;
             const isStatusOk = s.status === "ok";
             const isStatusFailed = s.status === "failed";
 
@@ -298,9 +336,45 @@ export function ServersPage() {
                   )}
                 </div>
 
+                <Button
+                  variant="ghost"
+                  size="sm"
+                  onClick={() => handleResources(s.id)}
+                  disabled={isLoadingResources}
+                  className="mt-2 w-full justify-start text-xs"
+                  aria-expanded={isResourcesExpanded}
+                  title={
+                    isResourcesExpanded
+                      ? "Masquer les ressources système"
+                      : "Voir les ressources système (CPU, RAM, disque, Docker)"
+                  }
+                >
+                  {isLoadingResources ? (
+                    <Loader2 className="w-3.5 h-3.5 animate-spin" />
+                  ) : (
+                    <Gauge className="w-3.5 h-3.5" />
+                  )}
+                  {isResourcesExpanded
+                    ? "Masquer les ressources"
+                    : "Ressources système"}
+                  {isResourcesExpanded ? (
+                    <ChevronUp className="ml-auto w-3.5 h-3.5" />
+                  ) : (
+                    <ChevronDown className="ml-auto w-3.5 h-3.5" />
+                  )}
+                </Button>
+
                 {/* Panneau de résultat */}
                 {testResult && isExpanded && (
                   <ServerTestResultPanel result={testResult} />
+                )}
+
+                {resources && isResourcesExpanded && (
+                  <ServerResourcesPanel
+                    resources={resources}
+                    refreshing={isLoadingResources}
+                    onRefresh={() => resourcesMutation.mutate(s.id)}
+                  />
                 )}
               </Card>
             );
@@ -328,8 +402,16 @@ export function ServersPage() {
             delete next[server.id];
             return next;
           });
+          setResourcesByServer((prev) => {
+            const next = { ...prev };
+            delete next[server.id];
+            return next;
+          });
           if (expandedId === server.id) {
             setExpandedId(null);
+          }
+          if (resourcesExpandedId === server.id) {
+            setResourcesExpandedId(null);
           }
           toast.show("success", `Serveur "${name}" mis à jour`);
           if (connectionChanged) {

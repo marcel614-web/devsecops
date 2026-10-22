@@ -44,6 +44,20 @@ export const pipelineService = {
       )
       .then((r) => r.data.pipeline),
 
+  rerun: (projectId: string, pipelineId: string) =>
+    api
+      .post<{ pipeline: Pipeline }>(
+        `/api/projects/${projectId}/pipelines/${pipelineId}/rerun`,
+      )
+      .then((r) => r.data.pipeline),
+
+  resume: (projectId: string, pipelineId: string) =>
+    api
+      .post<{ pipeline: Pipeline }>(
+        `/api/projects/${projectId}/pipelines/${pipelineId}/resume`,
+      )
+      .then((r) => r.data.pipeline),
+
   cancel: (projectId: string, pipelineId: string) =>
     api.post(`/api/projects/${projectId}/pipelines/${pipelineId}/cancel`),
 

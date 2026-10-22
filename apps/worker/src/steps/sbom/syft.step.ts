@@ -3,18 +3,15 @@ import { prisma } from "../../utils/prisma";
 import { decryptString } from "../../utils/crypto";
 import { SshRunner } from "../../runners/ssh.runner";
 import { parseSyftReport, type SyftReport } from "@devsecops/scanners";
+import { shellQuote } from "@devsecops/shared";
 import type { StepContext, StepResult } from "../../orchestrator/step.executor";
 
 const SYFT_IMAGE = process.env.SYFT_IMAGE ?? "anchore/syft:latest";
 const SYFT_TIMEOUT_MS = 15 * 60_000;
 
-function shellQuote(value: string): string {
-  return `"${value.replace(/"/g, '\\"')}"`;
-}
-
 /**
- * Génère un SBOM (Software Bill of Materials) de l'image Docker
- * avec Syft, exécuté sur la VM de déploiement.
+ * GÃ©nÃ¨re un SBOM (Software Bill of Materials) de l'image Docker
+ * avec Syft, exÃ©cutÃ© sur la VM de dÃ©ploiement.
  */
 export async function syftStep(
   _step: unknown,
@@ -26,11 +23,11 @@ export async function syftStep(
   });
 
   if (!image) {
-    await ctx.log("warn", "Aucune image Docker — génération du SBOM ignorée");
+    await ctx.log("warn", "Aucune image Docker â€” gÃ©nÃ©ration du SBOM ignorÃ©e");
     return {
       success: true,
       exitCode: 0,
-      data: { skipped: true, reason: "no docker image" },
+      data: { skipped: true, technical: true, reason: "no docker image" },
     };
   }
 
@@ -40,7 +37,7 @@ export async function syftStep(
   });
 
   if (!project?.server) {
-    await ctx.log("warn", "Aucun serveur associé — SBOM ignoré");
+    await ctx.log("warn", "Aucun serveur associÃ© â€” SBOM ignorÃ©");
     return {
       success: true,
       exitCode: 0,
@@ -53,7 +50,7 @@ export async function syftStep(
     return {
       success: false,
       exitCode: 1,
-      error: "Clé SSH du serveur manquante",
+      error: "ClÃ© SSH du serveur manquante",
     };
   }
 
@@ -64,7 +61,7 @@ export async function syftStep(
     return {
       success: false,
       exitCode: 1,
-      error: "Impossible de déchiffrer la clé SSH",
+      error: "Impossible de dÃ©chiffrer la clÃ© SSH",
     };
   }
   const passphrase = server.encryptedPassphrase
@@ -75,7 +72,7 @@ export async function syftStep(
   const started = Date.now();
 
   try {
-    await ctx.log("info", "Connexion SSH pour la génération du SBOM...");
+    await ctx.log("info", "Connexion SSH pour la gÃ©nÃ©ration du SBOM...");
     await ssh.connect({
       host: server.host,
       port: server.sshPort,
@@ -89,7 +86,7 @@ export async function syftStep(
       20_000,
     );
     if (imageCheck.stdout.includes("MISSING")) {
-      await ctx.log("info", "Téléchargement de l'image Syft...");
+      await ctx.log("info", "TÃ©lÃ©chargement de l'image Syft...");
       const pullCode = await ssh.execStream(
         `docker pull ${shellQuote(SYFT_IMAGE)}`,
         (chunk, stream) => {
@@ -101,11 +98,11 @@ export async function syftStep(
         10 * 60_000,
       );
       if (pullCode !== 0) {
-        throw new Error("Impossible de télécharger l'image Syft");
+        throw new Error("Impossible de tÃ©lÃ©charger l'image Syft");
       }
     }
 
-    await ctx.log("info", `Génération du SBOM Syft pour ${image.imageTag}...`);
+    await ctx.log("info", `GÃ©nÃ©ration du SBOM Syft pour ${image.imageTag}...`);
     const command = [
       "docker run --rm",
       "-v /var/run/docker.sock:/var/run/docker.sock",
@@ -118,7 +115,7 @@ export async function syftStep(
     const result = await ssh.exec(command, SYFT_TIMEOUT_MS);
     if (result.code !== 0) {
       throw new Error(
-        `Syft a échoué (code ${result.code}) : ${result.stderr.slice(0, 500)}`,
+        `Syft a Ã©chouÃ© (code ${result.code}) : ${result.stderr.slice(0, 500)}`,
       );
     }
     if (!result.stdout.trim()) {
@@ -152,7 +149,7 @@ export async function syftStep(
 
     await ctx.log(
       "info",
-      `SBOM généré : ${summary.packageCount} paquet(s) en ${(
+      `SBOM gÃ©nÃ©rÃ© : ${summary.packageCount} paquet(s) en ${(
         (Date.now() - started) /
         1000
       ).toFixed(1)}s`,
@@ -169,7 +166,7 @@ export async function syftStep(
     };
   } catch (err) {
     const msg = err instanceof Error ? err.message : String(err);
-    await ctx.log("error", `Échec de Syft : ${msg}`);
+    await ctx.log("error", `Ã‰chec de Syft : ${msg}`);
     return { success: false, exitCode: 1, error: msg };
   } finally {
     await ssh.disconnect().catch(() => undefined);

@@ -24,10 +24,35 @@ export const pipelineListQuerySchema = z.object({
 });
 
 export const runPipelineSchema = z.object({
-  commitSha: z.string().trim().min(1).max(100).optional(),
+  // Le SHA est utilisé pour construire le tag Docker, qui part dans une
+  // commande shell sur la VM de déploiement : on n'accepte qu'un SHA Git
+  // hexadécimal. Sans cette contrainte, un utilisateur DEVELOPER pouvait
+  // exécuter des commandes arbitraires sur le serveur de production.
+  commitSha: z
+    .string()
+    .trim()
+    .regex(
+      /^[0-9a-f]{7,40}$/i,
+      "Le commit SHA doit être hexadécimal (7 à 40 caractères)",
+    )
+    .optional(),
   branch: z.string().trim().min(1).max(120).optional(),
   author: z.string().trim().min(1).max(200).optional(),
   trigger: z.string().trim().min(1).max(50).optional(),
+  // Contexte pull request conservé lors d'une relance.
+  pullRequestNumber: z.number().int().positive().optional(),
+  // `z.url()` accepte `javascript:` (URL valide) : on impose HTTPS.
+  // `.refine()` renvoie un ZodEffects : il doit être le dernier appel.
+  pullRequestUrl: z
+    .string()
+    .trim()
+    .url()
+    .max(500)
+    .refine((u) => u.startsWith("https://"), {
+      message: "L'URL de pull request doit être en HTTPS",
+    })
+    .optional(),
+  baseBranch: z.string().trim().min(1).max(120).optional(),
 });
 
 export const pipelineLogsQuerySchema = z.object({

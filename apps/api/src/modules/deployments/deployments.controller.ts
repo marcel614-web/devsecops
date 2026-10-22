@@ -17,6 +17,27 @@ export async function listDeployments(req: Request, res: Response, next: NextFun
   }
 }
 
+export async function listProjectDeployments(
+  req: Request,
+  res: Response,
+  next: NextFunction,
+) {
+  try {
+    const actor = actorFrom(req);
+    const result = await deploymentsService.listProjectDeployments(
+      actor,
+      req.params.id,
+      {
+        page: Number(req.query.page ?? 1),
+        pageSize: Number(req.query.pageSize ?? 20),
+      },
+    );
+    res.json(result);
+  } catch (err) {
+    next(err);
+  }
+}
+
 export async function getDeployment(req: Request, res: Response, next: NextFunction) {
   try {
     const actor = actorFrom(req);

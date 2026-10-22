@@ -1,7 +1,7 @@
 // apps/worker/src/orchestrator/pipeline.engine.ts
 import path from "node:path";
 import os from "node:os";
-import { PipelineStatus, StepStatus } from "@prisma/client";
+import { PipelineStatus, ScanType, StepStatus } from "@prisma/client";
 import { prisma } from "../utils/prisma";
 import { logger } from "../utils/logger";
 import { logStep } from "./pipeline.logger";
@@ -17,8 +17,53 @@ import {
   clearPipelineCancellation,
 } from "../utils/cancellation";
 import { postPullRequestCheck } from "../services/github-checks.service";
+import { cleanupPipelineArtifacts } from "./pipeline.cleanup";
+import {
+  restoreScanTriage,
+  snapshotAndClearScan,
+  type TriageSnapshot,
+} from "./scan-triage";
 
 const WORKSPACES_ROOT = path.join(os.tmpdir(), "devsecops-workspaces");
+
+/**
+ * Une étape de scan peut être reprise après un échec. Dans ce cas, son
+ * ancien résultat ne doit pas rester en base : sinon le Security Gate et
+ * le rapport final compteraient à la fois l'ancien échec et le nouveau
+ * résultat.
+ */
+const SCAN_TYPE_BY_STEP: Partial<Record<string, ScanType>> = {
+  SECRET_SCAN: ScanType.SECRET,
+  SAST: ScanType.SAST,
+  SCA: ScanType.SCA,
+  IAC_SCAN: ScanType.IAC,
+  IMAGE_SCAN: ScanType.IMAGE,
+  DAST: ScanType.DAST,
+};
+
+async function clearPreviousScanResult(
+  pipelineId: string,
+  step: { id: string; name: string; type: string },
+): Promise<TriageSnapshot[]> {
+  const scanType = SCAN_TYPE_BY_STEP[step.type];
+  if (!scanType) return [];
+
+  // On sauvegarde le triage AVANT la suppression : le deleteMany cascade
+  // sur les Vulnerability et détruirait sinon les faux positifs, notes et
+  // assignations.
+  const snapshots = await snapshotAndClearScan(pipelineId, scanType);
+
+  if (snapshots.length > 0) {
+    await logStep(
+      pipelineId,
+      step.id,
+      "info",
+      `Reprise : triage sauvegardé pour ${snapshots.length} finding(s) — ancien résultat ${step.name} supprimé`,
+    );
+  }
+
+  return snapshots;
+}
 
 /**
  * Si une promotion est sautée (gate bloquant, annulation ou échec
@@ -43,7 +88,7 @@ async function markPromotionSkipped(
   });
 }
 
-export async function runPipeline(pipelineId: string): Promise<void> {
+async function runPipelineInternal(pipelineId: string): Promise<void> {
   logger.info({ pipelineId }, "Démarrage du pipeline");
 
   const pipeline = await prisma.pipeline.findUnique({
@@ -75,6 +120,7 @@ export async function runPipeline(pipelineId: string): Promise<void> {
   if (pipeline.status === PipelineStatus.CANCELLED) {
     logger.warn({ pipelineId }, "Pipeline déjà annulé, rien à faire");
     await clearPipelineCancellation(pipelineId);
+    await cleanupPipelineArtifacts(pipelineId, pipeline.project.id);
     return;
   }
 
@@ -86,6 +132,21 @@ export async function runPipeline(pipelineId: string): Promise<void> {
     "info",
     `Repository : ${pipeline.project.repoFullName} — branche ${pipeline.branch}`,
   );
+
+  const firstPending = pipeline.steps.find(
+    (step) => step.status !== StepStatus.SUCCESS,
+  );
+  const hasCompletedSteps = pipeline.steps.some(
+    (step) => step.status === StepStatus.SUCCESS,
+  );
+  if (firstPending && hasCompletedSteps) {
+    await logStep(
+      pipelineId,
+      null,
+      "info",
+      `Reprise du pipeline à l'étape ${firstPending.order} : ${firstPending.name}`,
+    );
+  }
 
   const workspaceDir = path.join(WORKSPACES_ROOT, pipelineId);
 
@@ -109,6 +170,14 @@ export async function runPipeline(pipelineId: string): Promise<void> {
         "warn",
         "Annulation détectée — arrêt du pipeline",
       );
+    }
+
+    // ------------------------------------------------------------
+    // 0bis. Étape déjà réussie avant une reprise : on la conserve telle
+    //       quelle et on passe directement à la suivante.
+    // ------------------------------------------------------------
+    if (step.status === StepStatus.SUCCESS) {
+      continue;
     }
 
     // ------------------------------------------------------------
@@ -183,12 +252,48 @@ export async function runPipeline(pipelineId: string): Promise<void> {
     };
 
     let result;
+    let triageSnapshot: TriageSnapshot[] = [];
     try {
+      // En cas de reprise, on remplace l'ancien résultat de scan de cette
+      // étape avant de relancer le scanner. Le triage est sauvegardé pour
+      // être réappliqué aux nouveaux findings.
+      triageSnapshot = await clearPreviousScanResult(pipelineId, step);
       result = await executeStep(step, ctx);
     } catch (err) {
       const msg = err instanceof Error ? err.message : String(err);
       await logStep(pipelineId, step.id, "error", `Exception : ${msg}`);
       result = { success: false, exitCode: 1, error: msg };
+    }
+
+    // Réapplique le triage (faux positif, assignation, notes…) sur les
+    // findings du nouveau scan. Sans cela, une reprise « nettoie » le
+    // travail de l'équipe sécurité.
+    if (
+      result.success &&
+      triageSnapshot.length > 0 &&
+      SCAN_TYPE_BY_STEP[step.type]
+    ) {
+      try {
+        const restored = await restoreScanTriage(
+          pipelineId,
+          SCAN_TYPE_BY_STEP[step.type]!,
+          triageSnapshot,
+        );
+        await logStep(
+          pipelineId,
+          step.id,
+          "info",
+          `Reprise : triage restauré sur ${restored} finding(s)`,
+        );
+      } catch (err) {
+        const msg = err instanceof Error ? err.message : String(err);
+        await logStep(
+          pipelineId,
+          step.id,
+          "warn",
+          `Reprise : impossible de restaurer le triage — ${msg}`,
+        );
+      }
     }
 
     // ------------------------------------------------------------
@@ -349,4 +454,76 @@ export async function runPipeline(pipelineId: string): Promise<void> {
 
   // Nettoyage du flag Redis à la fin, quelle que soit l'issue.
   await clearPipelineCancellation(pipelineId);
+
+  // ------------------------------------------------------------
+  // Nettoyage des artefacts Docker (images obsolètes, cache de build,
+  // stack de staging démonté). Sans cette étape, chaque build laissait
+  // ~270 Mo d'image sur la VM et le disque saturait.
+  // ------------------------------------------------------------
+  await cleanupPipelineArtifacts(pipelineId, pipeline.project.id);
+}
+
+/**
+ * Point d'entrée BullMQ.
+ *
+ * `runPipelineInternal` ne protège que l'exécution d'une étape
+ * (`try/catch` autour de `executeStep`). Une erreur dans le chargement du
+ * pipeline, la mise à jour des statuts, le check GitHub ou le nettoyage
+ * pouvait laisser le pipeline en RUNNING pour toujours.
+ *
+ * On ajoute donc une barrière globale : en cas d'exception non gérée, le
+ * pipeline est marqué FAILED (s'il était encore actif), un log est écrit et
+ * les artefacts sont nettoyés. L'erreur est ensuite relancée pour que
+ * BullMQ marque le job comme failed.
+ */
+export async function runPipeline(pipelineId: string): Promise<void> {
+  try {
+    await runPipelineInternal(pipelineId);
+  } catch (err) {
+    const message = err instanceof Error ? err.message : String(err);
+    logger.error(
+      { pipelineId, err: message },
+      "Pipeline interrompu par une exception non gérée",
+    );
+
+    try {
+      const current = await prisma.pipeline.findUnique({
+        where: { id: pipelineId },
+        select: { status: true, projectId: true },
+      });
+
+      if (!current) {
+        throw err;
+      }
+
+      if (
+        current.status === PipelineStatus.QUEUED ||
+        current.status === PipelineStatus.RUNNING
+      ) {
+        await logStep(
+          pipelineId,
+          null,
+          "error",
+          `Erreur interne non gérée : ${message}`,
+        );
+        await markPipelineFinished(pipelineId, PipelineStatus.FAILED);
+      }
+
+      await clearPipelineCancellation(pipelineId);
+      await cleanupPipelineArtifacts(pipelineId, current.projectId);
+    } catch (cleanupErr) {
+      logger.error(
+        {
+          pipelineId,
+          err:
+            cleanupErr instanceof Error
+              ? cleanupErr.message
+              : String(cleanupErr),
+        },
+        "Impossible de finaliser/nettoyer le pipeline après l'erreur",
+      );
+    }
+
+    throw err;
+  }
 }

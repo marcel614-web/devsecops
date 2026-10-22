@@ -1,10 +1,9 @@
 // packages/scanners/src/scanners/gitleaks.scanner.ts
-import { execFile } from "node:child_process";
-import { promisify } from "node:util";
 import fs from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import crypto from "node:crypto";
+import { execTool } from "@devsecops/shared";
 import type {
   ScanContext,
   ScanResult,
@@ -13,7 +12,6 @@ import type {
   ScannerSeverity,
 } from "../scanner";
 
-const execFileAsync = promisify(execFile);
 
 const GITLEAKS_BIN = process.env.GITLEAKS_BIN?.trim() || "gitleaks";
 
@@ -32,9 +30,8 @@ export class GitleaksScanner implements SecurityScanner {
 
   async isAvailable(): Promise<boolean> {
     try {
-      await execFileAsync(GITLEAKS_BIN, ["version"], {
+      await execTool(GITLEAKS_BIN, ["version"], {
         timeout: 15_000,
-        shell: true,
       });
       return true;
     } catch {
@@ -52,7 +49,7 @@ export class GitleaksScanner implements SecurityScanner {
     );
 
     try {
-      const { stdout, stderr } = await execFileAsync(
+      const { stdout, stderr } = await execTool(
         GITLEAKS_BIN,
         [
           "dir",
@@ -65,7 +62,6 @@ export class GitleaksScanner implements SecurityScanner {
         {
           timeout: 5 * 60_000,
           maxBuffer: 20 * 1024 * 1024,
-          shell: true,
         },
       );
 
@@ -86,7 +82,7 @@ export class GitleaksScanner implements SecurityScanner {
         tool: "gitleaks",
         severity: this.mapSeverity(f),
         filePath: f.StartLine ? `${f.File}:${f.StartLine}` : f.File,
-        description: f.Description ?? f.RuleID ?? "Secret détecté",
+        description: f.Description ?? f.RuleID ?? "Secret dÃƒÂ©tectÃƒÂ©",
         reference: f.RuleID ? `gitleaks:${f.RuleID}` : undefined,
         raw: {
           ruleId: f.RuleID,
@@ -97,7 +93,7 @@ export class GitleaksScanner implements SecurityScanner {
 
       const severityCounts = this.countSeverities(normalized);
       logs.push(
-        `[info] ${normalized.length} secret(s) détecté(s) : ` +
+        `[info] ${normalized.length} secret(s) dÃƒÂ©tectÃƒÂ©(s) : ` +
           `critical=${severityCounts.critical}, high=${severityCounts.high}, ` +
           `medium=${severityCounts.medium}, low=${severityCounts.low}`,
       );
@@ -114,7 +110,7 @@ export class GitleaksScanner implements SecurityScanner {
       };
     } catch (err) {
       const msg = err instanceof Error ? err.message : String(err);
-      logs.push(`[error] Échec de Gitleaks : ${msg}`);
+      logs.push(`[error] Ãƒâ€°chec de Gitleaks : ${msg}`);
       return {
         scanner: this.name,
         status: "FAILED",

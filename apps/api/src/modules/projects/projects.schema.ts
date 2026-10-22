@@ -76,7 +76,8 @@ export const updateProjectConfigSchema = z
     deploymentStrategy: z
       .enum(["direct", "staging_then_production"])
       .optional(),
-    stagingPort: z.number().int().min(1).max(65535).optional(),
+    stagingPort: z.number().int().min(1).max(65535).nullable().optional(),
+    productionPort: z.number().int().min(1).max(65535).nullable().optional(),
     autoRollback: z.boolean().optional(),
   })
   .refine((d) => Object.keys(d).length > 0, {
@@ -88,6 +89,8 @@ export const createGateExceptionSchema = z.object({
     .enum(["ALL", "SECRET", "SAST", "SCA", "IMAGE", "IAC", "DAST"])
     .default("ALL"),
   severity: z.nativeEnum(Severity).nullable().optional(),
+  // Cible obligatoire : CVE, GHSA, règle ou empreinte du finding.
+  fingerprint: z.string().trim().min(1).max(300),
   reason: z.string().trim().min(1).max(1000),
   expiresAt: z.coerce.date().nullable().optional(),
 });

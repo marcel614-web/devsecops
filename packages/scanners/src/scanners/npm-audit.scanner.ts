@@ -1,6 +1,5 @@
 // packages/scanners/src/scanners/npm-audit.scanner.ts
-import { execFile } from "node:child_process";
-import { promisify } from "node:util";
+import { execTool } from "@devsecops/shared";
 import type {
   ScanContext,
   ScanResult,
@@ -9,7 +8,6 @@ import type {
   ScannerSeverity,
 } from "../scanner";
 
-const execFileAsync = promisify(execFile);
 
 interface NpmAuditAdvisory {
   source?: number;
@@ -55,7 +53,7 @@ export class NpmAuditScanner implements SecurityScanner {
 
   async isAvailable(): Promise<boolean> {
     try {
-      await execFileAsync("npm", ["--version"], { timeout: 30_000, shell: true });
+      await execTool("npm", ["--version"], { timeout: 30_000 });
       return true;
     } catch {
       return false;
@@ -67,18 +65,17 @@ export class NpmAuditScanner implements SecurityScanner {
     const logs: string[] = [];
 
     try {
-      // npm audit retourne code 1 dès qu'il trouve des vulnérabilités.
+      // npm audit retourne code 1 dÃƒÂ¨s qu'il trouve des vulnÃƒÂ©rabilitÃƒÂ©s.
       // On capture stdout/stderr dans le catch aussi.
       let stdout = "";
       try {
-        const result = await execFileAsync(
+        const result = await execTool(
           "npm",
           ["audit", "--json", "--audit-level=none"],
           {
             cwd: ctx.workspaceDir,
             timeout: 3 * 60_000,
             maxBuffer: 30 * 1024 * 1024,
-            shell: true,
           },
         );
         stdout = result.stdout;
@@ -86,7 +83,7 @@ export class NpmAuditScanner implements SecurityScanner {
         const anyErr = err as { stdout?: string };
         stdout = anyErr.stdout ?? "";
         if (!stdout) throw err;
-        logs.push("[info] npm audit a retourné un code non nul (findings détectés)");
+        logs.push("[info] npm audit a retournÃƒÂ© un code non nul (findings dÃƒÂ©tectÃƒÂ©s)");
       }
 
       let parsed: NpmAuditOutput = {};
@@ -127,7 +124,7 @@ export class NpmAuditScanner implements SecurityScanner {
           packageName: pkgName,
           version: vuln.range,
           fixedVersion: fixVersion,
-          description: advisory?.title ?? `Vulnérabilité dans ${pkgName}`,
+          description: advisory?.title ?? `VulnÃƒÂ©rabilitÃƒÂ© dans ${pkgName}`,
           reference: advisory?.url,
           raw: {
             isDirect: vuln.isDirect,
@@ -139,7 +136,7 @@ export class NpmAuditScanner implements SecurityScanner {
 
       const severityCounts = this.countSeverities(findings);
       logs.push(
-        `[info] ${findings.length} vulnérabilité(s) npm : ` +
+        `[info] ${findings.length} vulnÃƒÂ©rabilitÃƒÂ©(s) npm : ` +
           `critical=${severityCounts.critical}, high=${severityCounts.high}, ` +
           `medium=${severityCounts.medium}, low=${severityCounts.low}`,
       );
@@ -156,7 +153,7 @@ export class NpmAuditScanner implements SecurityScanner {
       };
     } catch (err) {
       const msg = err instanceof Error ? err.message : String(err);
-      logs.push(`[error] Échec de npm audit : ${msg}`);
+      logs.push(`[error] Ãƒâ€°chec de npm audit : ${msg}`);
       return {
         scanner: this.name,
         status: "FAILED",

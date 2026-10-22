@@ -6,10 +6,10 @@ import { SshRunner } from "../../runners/ssh.runner";
 import type { StepContext, StepResult } from "../../orchestrator/step.executor";
 import {
   APP_PORT_BY_TECH,
-  PRODUCTION_PORT,
   deployCompose,
   stopLegacyDeployment,
 } from "./deploy.helper";
+import { resolveProjectPorts, type ProjectPorts } from "./ports";
 
 /**
  * Promotion staging → production.
@@ -108,6 +108,21 @@ export async function promotionStep(
   const appPort = APP_PORT_BY_TECH[project.technology] ?? 80;
   const remoteDir = `/home/${server.username}/apps/${project.id}/production`;
 
+  let ports: ProjectPorts;
+  try {
+    ports = await resolveProjectPorts(project.id, server.id);
+  } catch (err) {
+    const msg = err instanceof Error ? err.message : String(err);
+    await ctx.log("error", `Allocation des ports échouée : ${msg}`);
+    return { success: false, exitCode: 1, error: msg };
+  }
+  const productionPort = ports.productionPort;
+
+  await ctx.log(
+    "info",
+    `Port de production alloué : ${productionPort} (staging ${ports.stagingPort})`,
+  );
+
   let privateKey: string;
   try {
     privateKey = decryptString(server.encryptedPrivateKey);
@@ -154,7 +169,7 @@ export async function promotionStep(
     );
 
     let deployError: string | null = null;
-    let productionUrl = `http://${server.host}:${PRODUCTION_PORT}`;
+    let productionUrl = `http://${server.host}:${productionPort}`;
 
     try {
       const result = await deployCompose({
@@ -163,7 +178,7 @@ export async function promotionStep(
         remoteDir,
         imageTag: image.imageTag,
         appPort,
-        externalPort: PRODUCTION_PORT,
+        externalPort: productionPort,
         environment: "PRODUCTION",
         serverHost: server.host,
       });
@@ -247,7 +262,7 @@ export async function promotionStep(
           remoteDir,
           imageTag: previous.imageTag!,
           appPort,
-          externalPort: PRODUCTION_PORT,
+          externalPort: productionPort,
           environment: "PRODUCTION",
           serverHost: server.host,
         });

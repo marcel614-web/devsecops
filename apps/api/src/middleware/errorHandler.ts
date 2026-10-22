@@ -27,6 +27,12 @@ export function errorHandler(
 ): void {
   const requestId = res.locals.requestId as string | undefined;
 
+  // 0. La réponse a déjà commencé : on ne peut plus écrire un corps.
+  if (res.headersSent) {
+    res.end();
+    return;
+  }
+
   // 1. Erreurs contrôlées (AppError et sous-classes)
   if (err instanceof AppError) {
     logError("Erreur applicative", err, {
@@ -47,7 +53,19 @@ export function errorHandler(
     return;
   }
 
-  // 2. Erreurs Zod non capturées par validate()
+  // 2. JSON malformé : c'est une erreur du client, pas une panne serveur.
+  if (err instanceof SyntaxError && "body" in err) {
+    res.status(400).json({
+      error: {
+        code: "INVALID_JSON",
+        message: "Corps de requête JSON invalide",
+        requestId,
+      },
+    });
+    return;
+  }
+
+  // 3. Erreurs Zod non capturées par validate()
   if (err instanceof ZodError) {
     res.status(400).json({
       error: {
@@ -63,7 +81,7 @@ export function errorHandler(
     return;
   }
 
-  // 3. Erreurs Prisma connues
+  // 4. Erreurs Prisma connues
   if (err instanceof Prisma.PrismaClientKnownRequestError) {
     if (err.code === "P2002") {
       res.status(409).json({
@@ -87,7 +105,7 @@ export function errorHandler(
     }
   }
 
-  // 4. Erreur inconnue : on masque tout
+  // 5. Erreur inconnue : on masque tout
   logError("Erreur interne non gérée", err, {
     path: req.path,
     method: req.method,

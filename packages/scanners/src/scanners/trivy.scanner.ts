@@ -1,10 +1,9 @@
 // packages/scanners/src/scanners/trivy.scanner.ts
-import { execFile } from "node:child_process";
-import { promisify } from "node:util";
 import fs from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import crypto from "node:crypto";
+import { execTool } from "@devsecops/shared";
 import type {
   ScanContext,
   ScanResult,
@@ -13,7 +12,6 @@ import type {
   ScannerSeverity,
 } from "../scanner";
 
-const execFileAsync = promisify(execFile);
 
 const TRIVY_BIN = process.env.TRIVY_BIN?.trim() || "trivy";
 const TRIVY_CACHE_DIR =
@@ -68,9 +66,8 @@ export class TrivyScanner implements SecurityScanner {
 
   async isAvailable(): Promise<boolean> {
     try {
-      await execFileAsync(TRIVY_BIN, ["--version"], {
+      await execTool(TRIVY_BIN, ["--version"], {
         timeout: 30_000,
-        shell: true,
       });
       return true;
     } catch {
@@ -87,7 +84,7 @@ export class TrivyScanner implements SecurityScanner {
     );
 
     try {
-      await execFileAsync(
+      await execTool(
         TRIVY_BIN,
         [
           "image",
@@ -105,7 +102,6 @@ export class TrivyScanner implements SecurityScanner {
         {
           timeout: 15 * 60_000,
           maxBuffer: 100 * 1024 * 1024,
-          shell: true,
         },
       );
 
@@ -142,7 +138,7 @@ export class TrivyScanner implements SecurityScanner {
 
       const severityCounts = this.countSeverities(findings);
       logs.push(
-        `[info] Trivy : ${findings.length} vulnérabilité(s) — ` +
+        `[info] Trivy : ${findings.length} vulnÃƒÂ©rabilitÃƒÂ©(s) Ã¢â‚¬â€ ` +
           `critical=${severityCounts.critical}, high=${severityCounts.high}, ` +
           `medium=${severityCounts.medium}, low=${severityCounts.low}`,
       );
@@ -159,7 +155,7 @@ export class TrivyScanner implements SecurityScanner {
       };
     } catch (err) {
       const msg = err instanceof Error ? err.message : String(err);
-      logs.push(`[error] Échec de Trivy : ${msg}`);
+      logs.push(`[error] Ãƒâ€°chec de Trivy : ${msg}`);
       return {
         scanner: this.name,
         status: "FAILED",
@@ -189,7 +185,7 @@ export class TrivyScanner implements SecurityScanner {
     );
 
     try {
-      await execFileAsync(
+      await execTool(
         TRIVY_BIN,
         [
           "config",
@@ -220,7 +216,6 @@ export class TrivyScanner implements SecurityScanner {
         {
           timeout: 10 * 60_000,
           maxBuffer: 100 * 1024 * 1024,
-          shell: true,
         },
       );
 
@@ -261,7 +256,7 @@ export class TrivyScanner implements SecurityScanner {
 
       const severityCounts = this.countSeverities(findings);
       logs.push(
-        `[info] Trivy config : ${findings.length} mauvaise(s) configuration(s) — ` +
+        `[info] Trivy config : ${findings.length} mauvaise(s) configuration(s) Ã¢â‚¬â€ ` +
           `critical=${severityCounts.critical}, high=${severityCounts.high}, ` +
           `medium=${severityCounts.medium}, low=${severityCounts.low}`,
       );
@@ -278,7 +273,7 @@ export class TrivyScanner implements SecurityScanner {
       };
     } catch (err) {
       const msg = err instanceof Error ? err.message : String(err);
-      logs.push(`[error] Échec de Trivy config : ${msg}`);
+      logs.push(`[error] Ãƒâ€°chec de Trivy config : ${msg}`);
       return {
         scanner: "trivy-config",
         status: "FAILED",

@@ -10,9 +10,6 @@ export const APP_PORT_BY_TECH: Record<string, number> = {
   UNKNOWN: 80,
 };
 
-// Port de production sur la VM (évite le conflit avec Nginx système).
-export const PRODUCTION_PORT = 8080;
-
 export interface DeployComposeOptions {
   ssh: SshRunner;
   ctx: StepContext;
@@ -195,7 +192,7 @@ export async function deployCompose(
     );
 
     httpCode = health.stdout.trim();
-    if (/^[1-5]\d\d$/.test(httpCode)) {
+    if (isHealthyHttpCode(httpCode)) {
       await ctx.log("info", `Healthcheck OK (HTTP ${httpCode})`);
       return { url: appUrl, httpCode, healthy: true };
     }
@@ -208,4 +205,19 @@ export async function deployCompose(
 
   await ctx.log("error", `Healthcheck échoué après 6 tentatives (${httpCode})`);
   return { url: appUrl, httpCode, healthy: false };
+}
+
+/**
+ * Détermine si un code HTTP atteste que l'application répond correctement.
+ *
+ * ATTENTION — correction d'un bug : la version précédente acceptait
+ * `/^[1-5]\d\d$/`, donc un **502, 503 ou 500** (typiquement "l'application
+ * derrière nginx est morte") était considéré comme un déploiement réussi.
+ * On n'accepte plus que 2xx et 3xx.
+ */
+export function isHealthyHttpCode(code: string): boolean {
+  const trimmed = code.trim();
+  if (!/^\d{3}$/.test(trimmed)) return false;
+  const status = Number(trimmed);
+  return status >= 200 && status < 400;
 }

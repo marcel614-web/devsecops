@@ -1,5 +1,5 @@
 import { useState } from "react";
-import { Link, useNavigate } from "react-router-dom";
+import { Link } from "react-router-dom";
 import { Eye, EyeOff, User, Mail, Lock, ShieldCheck } from "lucide-react";
 import { useForm } from "react-hook-form";
 import { zodResolver } from "@hookform/resolvers/zod";
@@ -9,7 +9,6 @@ import { Input } from "@/components/ui/Input";
 import { Card } from "@/components/ui/Card";
 import { authService } from "@/services/auth.service";
 import { getErrorMessage } from "@/services/api";
-import { useAuthStore } from "@/stores/authStore";
 
 const passwordSchema = z
   .string()
@@ -35,10 +34,9 @@ const schema = z
 type FormValues = z.infer<typeof schema>;
 
 export function RegisterPage() {
-  const navigate = useNavigate();
-  const { setUser } = useAuthStore();
   const [showPassword, setShowPassword] = useState(false);
   const [serverError, setServerError] = useState<string | null>(null);
+  const [success, setSuccess] = useState<string | null>(null);
 
   const {
     register,
@@ -48,11 +46,14 @@ export function RegisterPage() {
 
   const onSubmit = async (values: FormValues) => {
     setServerError(null);
+    setSuccess(null);
     try {
-      const res = await authService.register(values.email, values.password, values.name);
-      localStorage.setItem("accessToken", res.accessToken);
-      setUser(res.user);
-      navigate("/dashboard", { replace: true });
+      const res = await authService.register(
+        values.email,
+        values.password,
+        values.name,
+      );
+      setSuccess(res.message);
     } catch (err) {
       setServerError(getErrorMessage(err));
     }
@@ -126,6 +127,17 @@ export function RegisterPage() {
               {serverError && (
                 <div className="rounded-lg border border-red-500/30 bg-red-500/10 px-3 py-2 text-sm text-red-500">
                   {serverError}
+                </div>
+              )}
+
+              {success && (
+                <div className="rounded-lg border border-emerald-500/30 bg-emerald-500/10 px-3 py-2 text-sm text-emerald-700 dark:text-emerald-400">
+                  {success}
+                  <div className="mt-2">
+                    <Link to="/login" className="font-medium underline">
+                      Aller à la connexion
+                    </Link>
+                  </div>
                 </div>
               )}
 

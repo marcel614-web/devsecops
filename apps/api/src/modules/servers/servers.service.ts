@@ -13,6 +13,10 @@ import type {
   UpdateServerInput,
 } from "./servers.schema";
 import { runRemoteCommand } from "../deployments/ssh.util";
+import {
+  collectServerResources,
+  type ServerResources,
+} from "./server-resources.service";
 
 export interface ActorContext {
   id: string;
@@ -381,4 +385,29 @@ export async function cleanupDockerImages(actor: ActorContext, serverId: string)
   }
 
   return { output: output.stdout + output.stderr };
+}
+
+/**
+ * Relève les ressources système du serveur via SSH : CPU, mémoire, disque,
+ * uptime et état des conteneurs Docker. Aucune donnée n'est persistée.
+ */
+export async function getServerResources(
+  actor: ActorContext,
+  serverId: string,
+): Promise<ServerResources> {
+  await ensureServerAccess(actor, serverId);
+
+  const server = await prisma.deploymentServer.findUnique({
+    where: { id: serverId },
+    select: {
+      host: true,
+      sshPort: true,
+      username: true,
+      encryptedPrivateKey: true,
+      encryptedPassphrase: true,
+    },
+  });
+  if (!server) throw new NotFoundError("Serveur introuvable");
+
+  return collectServerResources(server);
 }

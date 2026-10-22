@@ -1,9 +1,8 @@
 // packages/scanners/src/scanners/zap.scanner.ts
-import { execFile } from "node:child_process";
-import { promisify } from "node:util";
 import fs from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
+import { execTool } from "@devsecops/shared";
 import type {
   ScanContext,
   ScanResult,
@@ -12,7 +11,6 @@ import type {
   ScannerSeverity,
 } from "../scanner";
 
-const execFileAsync = promisify(execFile);
 
 const ZAP_IMAGE =
   process.env.ZAP_IMAGE ?? "ghcr.io/zaproxy/zaproxy:stable";
@@ -82,8 +80,8 @@ function stripHtml(value: string | undefined): string | undefined {
 }
 
 /**
- * Transforme un rapport JSON ZAP en ScanResult normalisé.
- * Exporté séparément pour être réutilisé par le worker (scan via SSH).
+ * Transforme un rapport JSON ZAP en ScanResult normalisÃƒÂ©.
+ * ExportÃƒÂ© sÃƒÂ©parÃƒÂ©ment pour ÃƒÂªtre rÃƒÂ©utilisÃƒÂ© par le worker (scan via SSH).
  */
 export function parseZapReport(
   report: ZapReport,
@@ -144,7 +142,7 @@ export function parseZapReport(
     severityCounts,
     findings,
     logs: [
-      `[info] ZAP : ${findings.length} alerte(s) — ` +
+      `[info] ZAP : ${findings.length} alerte(s) Ã¢â‚¬â€ ` +
         `critical=${severityCounts.critical}, high=${severityCounts.high}, ` +
         `medium=${severityCounts.medium}, low=${severityCounts.low}`,
     ],
@@ -158,9 +156,9 @@ export function parseZapReport(
 /**
  * Scanner DAST ZAP.
  *
- * Le worker exécute ZAP sur la VM de déploiement via SSH (voir
- * `apps/worker/src/steps/dynamic-scan/zap.step.ts`) et réutilise
- * `parseZapReport`. Cette classe permet aussi une exécution locale
+ * Le worker exÃƒÂ©cute ZAP sur la VM de dÃƒÂ©ploiement via SSH (voir
+ * `apps/worker/src/steps/dynamic-scan/zap.step.ts`) et rÃƒÂ©utilise
+ * `parseZapReport`. Cette classe permet aussi une exÃƒÂ©cution locale
  * lorsque Docker ou zap-baseline.py est disponible sur la machine.
  */
 export class ZapScanner implements SecurityScanner {
@@ -168,16 +166,14 @@ export class ZapScanner implements SecurityScanner {
 
   async isAvailable(): Promise<boolean> {
     try {
-      await execFileAsync("docker", ["--version"], {
+      await execTool("docker", ["--version"], {
         timeout: 30_000,
-        shell: true,
       });
       return true;
     } catch {
       try {
-        await execFileAsync(ZAP_BASELINE_BIN, ["-h"], {
+        await execTool(ZAP_BASELINE_BIN, ["-h"], {
           timeout: 30_000,
-          shell: true,
         });
         return true;
       } catch {
@@ -214,7 +210,6 @@ export class ZapScanner implements SecurityScanner {
         reportPath,
         "-I",
       ];
-      let shell = true;
 
       if (!(await this.hasBaselineBinary())) {
         command = "docker";
@@ -231,15 +226,13 @@ export class ZapScanner implements SecurityScanner {
           "/zap/wrk/report.json",
           "-I",
         ];
-        shell = false;
       }
 
       let exitCode = 0;
       try {
-        const result = await execFileAsync(command, args, {
+        const result = await execTool(command, args, {
           timeout: 15 * 60_000,
           maxBuffer: 50 * 1024 * 1024,
-          shell,
         });
         exitCode = 0;
         if (result.stdout) {
@@ -251,7 +244,7 @@ export class ZapScanner implements SecurityScanner {
         // ZAP baseline : 1 = alertes, 2 = erreur technique.
         if (exitCode === 2) {
           throw new Error(
-            `ZAP a échoué (code 2) : ${(anyErr.stderr ?? "").slice(0, 1000)}`,
+            `ZAP a ÃƒÂ©chouÃƒÂ© (code 2) : ${(anyErr.stderr ?? "").slice(0, 1000)}`,
           );
         }
       }
@@ -279,9 +272,8 @@ export class ZapScanner implements SecurityScanner {
 
   private async hasBaselineBinary(): Promise<boolean> {
     try {
-      await execFileAsync(ZAP_BASELINE_BIN, ["-h"], {
+      await execTool(ZAP_BASELINE_BIN, ["-h"], {
         timeout: 15_000,
-        shell: true,
       });
       return true;
     } catch {

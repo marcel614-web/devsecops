@@ -1,7 +1,7 @@
 import { useMemo, useState } from "react";
 import { useSearchParams, Link, useNavigate } from "react-router-dom";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
-import { GitBranch, RefreshCw, Trash2, Search } from "lucide-react";
+import { GitBranch, RefreshCw, RotateCcw, Trash2, Search, PlayCircle } from "lucide-react";
 import { PageHeader } from "@/components/layout/PageHeader";
 import { Card, CardContent } from "@/components/ui/Card";
 import { Button } from "@/components/ui/Button";
@@ -56,6 +56,37 @@ export function PipelinesPage() {
       qc.invalidateQueries({ queryKey: ["global-pipelines"] });
       qc.invalidateQueries({ queryKey: ["project-pipelines"] });
       setDeleteTarget(null);
+    },
+    onError: (err) => toast.show("error", getErrorMessage(err)),
+  });
+
+  const rerunMutation = useMutation({
+    mutationFn: (t: { projectId: string; pipelineId: string }) =>
+      pipelineService.rerun(t.projectId, t.pipelineId),
+    onSuccess: (p, t) => {
+      toast.show("success", `Pipeline relancé : ${p.id.slice(0, 8)}`);
+      qc.invalidateQueries({ queryKey: ["global-pipelines"] });
+      qc.invalidateQueries({ queryKey: ["project-pipelines", t.projectId] });
+      qc.invalidateQueries({ queryKey: ["dashboard", "summary"] });
+      navigate(`/projects/${t.projectId}/pipelines/${p.id}`);
+    },
+    onError: (err) => toast.show("error", getErrorMessage(err)),
+  });
+
+  const resumeMutation = useMutation({
+    mutationFn: (t: { projectId: string; pipelineId: string; stepName?: string }) =>
+      pipelineService.resume(t.projectId, t.pipelineId),
+    onSuccess: (p, t) => {
+      toast.show(
+        "success",
+        t.stepName
+          ? `Pipeline repris à l'étape « ${t.stepName} »`
+          : `Pipeline repris : ${p.id.slice(0, 8)}`,
+      );
+      qc.invalidateQueries({ queryKey: ["global-pipelines"] });
+      qc.invalidateQueries({ queryKey: ["project-pipelines", t.projectId] });
+      qc.invalidateQueries({ queryKey: ["dashboard", "summary"] });
+      navigate(`/projects/${t.projectId}/pipelines/${p.id}`);
     },
     onError: (err) => toast.show("error", getErrorMessage(err)),
   });
@@ -217,18 +248,54 @@ export function PipelinesPage() {
                         <td className="px-4 py-3 text-right tabular-nums text-muted">{formatDuration(p.durationMs)}</td>
                         <td className="whitespace-nowrap px-4 py-3 text-right text-muted">{timeAgo(p.createdAt)}</td>
                         <td className="px-4 py-3 text-right">
-                          <button
-                            type="button"
-                            className="rounded-md p-1.5 text-muted hover:bg-red-500/10 hover:text-red-500 focus-visible:ring-2 focus-visible:ring-red-500"
-                            title="Supprimer ce pipeline"
-                            aria-label={`Supprimer le pipeline ${p.commitSha.slice(0, 7)}`}
-                            onClick={(e) => {
-                              e.stopPropagation();
-                              setDeleteTarget({ projectId: effectiveProjectId, pipelineId: p.id, commitSha: p.commitSha });
-                            }}
-                          >
-                            <Trash2 className="h-4 w-4" />
-                          </button>
+                          <div className="inline-flex items-center gap-1">
+                            {p.steps?.[0] && p.status !== "QUEUED" && p.status !== "RUNNING" && (
+                              <button
+                                type="button"
+                                className="rounded-md p-1.5 text-muted hover:bg-primary-500/10 hover:text-primary-500 focus-visible:ring-2 focus-visible:ring-primary-500 disabled:cursor-not-allowed disabled:opacity-50"
+                                title={`Reprendre à l'étape « ${p.steps[0].name} »`}
+                                aria-label={`Reprendre le pipeline ${p.commitSha.slice(0, 7)} à l'étape ${p.steps[0].name}`}
+                                disabled={resumeMutation.isPending && resumeMutation.variables?.pipelineId === p.id}
+                                onClick={(e) => {
+                                  e.stopPropagation();
+                                  resumeMutation.mutate({
+                                    projectId: effectiveProjectId,
+                                    pipelineId: p.id,
+                                    stepName: p.steps?.[0]?.name,
+                                  });
+                                }}
+                              >
+                                <PlayCircle className={cn("h-4 w-4", resumeMutation.isPending && resumeMutation.variables?.pipelineId === p.id && "animate-spin")} />
+                              </button>
+                            )}
+                            {(p.status === "FAILED" || p.status === "SECURITY_BLOCKED") && (
+                              <button
+                                type="button"
+                                className="rounded-md p-1.5 text-muted hover:bg-primary-500/10 hover:text-primary-500 focus-visible:ring-2 focus-visible:ring-primary-500 disabled:cursor-not-allowed disabled:opacity-50"
+                                title="Tout relancer depuis le début"
+                                aria-label={`Relancer le pipeline ${p.commitSha.slice(0, 7)} depuis le début`}
+                                disabled={rerunMutation.isPending && rerunMutation.variables?.pipelineId === p.id}
+                                onClick={(e) => {
+                                  e.stopPropagation();
+                                  rerunMutation.mutate({ projectId: effectiveProjectId, pipelineId: p.id });
+                                }}
+                              >
+                                <RotateCcw className={cn("h-4 w-4", rerunMutation.isPending && rerunMutation.variables?.pipelineId === p.id && "animate-spin")} />
+                              </button>
+                            )}
+                            <button
+                              type="button"
+                              className="rounded-md p-1.5 text-muted hover:bg-red-500/10 hover:text-red-500 focus-visible:ring-2 focus-visible:ring-red-500"
+                              title="Supprimer ce pipeline"
+                              aria-label={`Supprimer le pipeline ${p.commitSha.slice(0, 7)}`}
+                              onClick={(e) => {
+                                e.stopPropagation();
+                                setDeleteTarget({ projectId: effectiveProjectId, pipelineId: p.id, commitSha: p.commitSha });
+                              }}
+                            >
+                              <Trash2 className="h-4 w-4" />
+                            </button>
+                          </div>
                         </td>
                       </tr>
                     ))}

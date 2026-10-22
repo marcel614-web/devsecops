@@ -6,18 +6,22 @@ import { SshRunner } from "../../runners/ssh.runner";
 import type { StepContext, StepResult } from "../../orchestrator/step.executor";
 import {
   APP_PORT_BY_TECH,
-  PRODUCTION_PORT,
   deployCompose,
   stopLegacyDeployment,
 } from "./deploy.helper";
+import { resolveProjectPorts, type ProjectPorts } from "./ports";
 
 /**
  * Étape de déploiement.
  *
- * - stratégie `direct` : déploie directement en production (port 8080) ;
+ * - stratégie `direct` : déploie directement en production sur le port
+ *   de production du projet (alloué automatiquement si nécessaire) ;
  * - stratégie `staging_then_production` : déploie d'abord sur le port
- *   de staging (8081 par défaut). La promotion en production est faite
- *   par l'étape PROMOTE, après le DAST et le second Security Gate.
+ *   de staging du projet. La promotion en production est faite par
+ *   l'étape PROMOTE, après le DAST et le second Security Gate.
+ *
+ * Les ports sont uniques par serveur : plusieurs projets peuvent ainsi
+ * être exposés simultanément sur la même VM.
  */
 export async function deploymentStep(
   _step: unknown,
@@ -78,9 +82,19 @@ export async function deploymentStep(
   const environment: "STAGING" | "PRODUCTION" = stagingStrategy
     ? "STAGING"
     : "PRODUCTION";
+
+  let ports: ProjectPorts;
+  try {
+    ports = await resolveProjectPorts(project.id, server.id);
+  } catch (err) {
+    const msg = err instanceof Error ? err.message : String(err);
+    await ctx.log("error", `Allocation des ports échouée : ${msg}`);
+    return { success: false, exitCode: 1, error: msg };
+  }
+
   const externalPort = stagingStrategy
-    ? (project.config?.stagingPort ?? 8081)
-    : PRODUCTION_PORT;
+    ? ports.stagingPort
+    : ports.productionPort;
 
   const appPort = APP_PORT_BY_TECH[project.technology] ?? 80;
   const remoteDir = `/home/${server.username}/apps/${project.id}/${environment.toLowerCase()}`;
@@ -92,21 +106,35 @@ export async function deploymentStep(
   await ctx.log("info", `Image à déployer : ${image.imageTag}`);
   await ctx.log(
     "info",
-    `Environnement : ${environment} — port ${externalPort}`,
+    `Environnement : ${environment} — port ${externalPort} (production ${ports.productionPort}, staging ${ports.stagingPort})`,
   );
 
-  const deployment = await prisma.deployment.create({
-    data: {
-      pipelineId: ctx.pipelineId,
-      projectId: ctx.projectId,
-      serverId: server.id,
-      status: DeploymentStatus.RUNNING,
-      environment,
-      startedAt: new Date(),
-      imageTag: image.imageTag,
-      releaseVersion: ctx.commitSha.slice(0, 12),
-      ...(stagingStrategy ? { stagingStatus: DeploymentStatus.RUNNING } : {}),
-    },
+  // `upsert` permet de reprendre un pipeline dont l'étape Deployment a
+  // échoué : la contrainte unique sur pipelineId interdit de créer un
+  // second enregistrement pour la même exécution.
+  const deploymentData = {
+    pipelineId: ctx.pipelineId,
+    projectId: ctx.projectId,
+    serverId: server.id,
+    status: DeploymentStatus.RUNNING,
+    environment,
+    startedAt: new Date(),
+    imageTag: image.imageTag,
+    releaseVersion: ctx.commitSha.slice(0, 12),
+    stagingStatus: stagingStrategy ? DeploymentStatus.RUNNING : null,
+    stagingUrl: null,
+    url: null,
+    productionUrl: null,
+    productionStatus: null,
+    finishedAt: null,
+    durationMs: null,
+    error: null,
+  };
+
+  const deployment = await prisma.deployment.upsert({
+    where: { pipelineId: ctx.pipelineId },
+    create: deploymentData,
+    update: deploymentData,
     select: { id: true, startedAt: true },
   });
 

@@ -5,7 +5,11 @@ import cookieParser from "cookie-parser";
 import cors from "cors";
 import helmet from "helmet";
 import { HEADER_REQUEST_ID } from "../config/constants";
-import { globalLimiter } from "../middleware/rateLimiter";
+import { env } from "../config/env";
+import {
+  globalLimiter,
+  webhookLimiter,
+} from "../middleware/rateLimiter";
 import { errorHandler } from "../middleware/errorHandler";
 import { rawBodyMiddleware } from "../middleware/rawBody";
 import { authRouter } from "../modules/auth/auth.routes";
@@ -23,18 +27,51 @@ import { notificationsRouter } from "../modules/notifications/notifications.rout
 import { systemConfigRouter } from "../modules/system-config/system-config.routes";
 import { githubWebhook } from "../modules/webhooks/webhooks.controller";
 
+/**
+ * Format accepté pour l'en-tête `x-request-id` fourni par le client.
+ * Volontairement strict : UUID, identifiant d'outils de tracing ou slug.
+ */
+const REQUEST_ID_PATTERN = /^[A-Za-z0-9._:-]{1,128}$/;
+
+/**
+ * Origines autorisées à appeler l'API avec des credentials (cookies).
+ *
+ * `origin: true` (le comportement par défaut de la lib `cors`) reflète
+ * N'IMPORTE QUELLE origine : combiné à `credentials: true`, n'importe quel
+ * site pouvait lire les réponses authentifiées de l'API. On n'autorise
+ * donc que les origines explicitement configurées.
+ */
+function buildCorsOrigin(): string[] | ((origin: string | undefined, cb: (err: Error | null, allow?: boolean) => void) => void) {
+  const allowed = new Set<string>([env.FRONTEND_URL]);
+  // URL de l'API elle-même (utile pour les health checks / tests).
+  allowed.add(env.API_URL);
+  allowed.add(env.BACKEND_URL);
+
+  return (origin, cb) => {
+    // Requête sans en-tête Origin (curl, serveur à serveur, same-origin) :
+    // on l'autorise, le contrôle d'accès se fait via l'authentification.
+    if (!origin) return cb(null, true);
+    if (allowed.has(origin)) return cb(null, true);
+    return cb(new Error(`Origine non autorisée : ${origin}`));
+  };
+}
+
 export function createApp() {
   const app = express();
 
   app.set("trust proxy", 1);
   app.use(helmet());
-  app.use(cors({ origin: true, credentials: true }));
+  app.use(cors({ origin: buildCorsOrigin(), credentials: true }));
 
   // ----------------------------------------------------------
   // WEBHOOK : corps BRUT requis AVANT express.json()
+  // Le rate limit est appliqué ICI (avant le limiteur global) car la
+  // route est montée plus bas : sans cela, ce endpoint public et non
+  // authentifié était totalement illimité.
   // ----------------------------------------------------------
   app.post(
     "/api/webhooks/github",
+    webhookLimiter,
     rawBodyMiddleware,
     githubWebhook,
   );
@@ -49,11 +86,15 @@ export function createApp() {
   // ----------------------------------------------------------
   // Request ID
   // ----------------------------------------------------------
+  // L'en-tête `x-request-id` est fourni par le client : on ne l'accepte
+  // que s'il respecte un format strict, sinon on génère un UUID.
+  // Sans ce contrôle, une valeur contenant CR/LF fait lever une
+  // exception dans `res.setHeader` → réponse 500 sur une simple requête.
+  // ----------------------------------------------------------
   app.use((req, res, next) => {
     const headerId = req.headers[HEADER_REQUEST_ID];
-    const id =
-      (Array.isArray(headerId) ? headerId[0] : headerId) ??
-      crypto.randomUUID();
+    const raw = Array.isArray(headerId) ? headerId[0] : headerId;
+    const id = raw && REQUEST_ID_PATTERN.test(raw) ? raw : crypto.randomUUID();
     res.locals.requestId = id;
     res.setHeader(HEADER_REQUEST_ID, id);
     next();

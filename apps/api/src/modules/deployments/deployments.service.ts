@@ -42,6 +42,53 @@ export async function listDeployments(actor: ActorContext) {
   });
 }
 
+/**
+ * Liste paginée des déploiements d'un projet.
+ *
+ * La route `/api/projects/:projectId/deployments` était appelée par le
+ * front mais n'existait pas : elle renvoyait 404. On la sert ici avec le
+ * même contrôle d'accès que le reste des ressources du projet.
+ */
+export async function listProjectDeployments(
+  actor: ActorContext,
+  projectId: string,
+  query: { page: number; pageSize: number },
+) {
+  const project = await prisma.project.findUnique({
+    where: { id: projectId },
+    select: { id: true, ownerId: true },
+  });
+  if (!project) throw new NotFoundError("Projet introuvable");
+  if (actor.role !== Role.ADMIN && project.ownerId !== actor.id) {
+    throw new ForbiddenError("Accès interdit à ce projet");
+  }
+
+  const where: Prisma.DeploymentWhereInput = { projectId };
+  const skip = (query.page - 1) * query.pageSize;
+
+  const [items, total] = await prisma.$transaction([
+    prisma.deployment.findMany({
+      where,
+      skip,
+      take: query.pageSize,
+      orderBy: { createdAt: "desc" },
+      include: {
+        project: { select: { id: true, name: true, technology: true } },
+        server: { select: { id: true, name: true, host: true } },
+      },
+    }),
+    prisma.deployment.count({ where }),
+  ]);
+
+  return {
+    items,
+    page: query.page,
+    pageSize: query.pageSize,
+    total,
+    totalPages: Math.ceil(total / query.pageSize),
+  };
+}
+
 export async function getDeployment(actor: ActorContext, id: string) {
   return loadDeployment(actor, id);
 }
@@ -62,12 +109,17 @@ function composeProjectName(projectId: string, environment: string): string {
 
 function externalPort(deployment: {
   environment: string;
-  project: { config: { stagingPort: number } | null };
+  project: {
+    config: {
+      stagingPort: number | null;
+      productionPort: number | null;
+    } | null;
+  };
 }): number {
   if (deployment.environment === "STAGING") {
     return deployment.project.config?.stagingPort ?? 8081;
   }
-  return EXTERNAL_PORT;
+  return deployment.project.config?.productionPort ?? EXTERNAL_PORT;
 }
 
 function appUrl(serverHost: string, port: number) {
@@ -80,7 +132,12 @@ function deploymentUrl(
     url: string | null;
     stagingUrl: string | null;
     productionUrl: string | null;
-    project: { config: { stagingPort: number } | null };
+    project: {
+      config: {
+        stagingPort: number | null;
+        productionPort: number | null;
+      } | null;
+    };
   },
   serverHost: string,
 ): string {

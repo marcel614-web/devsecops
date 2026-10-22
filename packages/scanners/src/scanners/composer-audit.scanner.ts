@@ -1,8 +1,7 @@
 // packages/scanners/src/scanners/composer-audit.scanner.ts
-import { execFile } from "node:child_process";
-import { promisify } from "node:util";
 import fs from "node:fs/promises";
 import path from "node:path";
+import { execTool } from "@devsecops/shared";
 import type {
   ScanContext,
   ScanResult,
@@ -11,7 +10,6 @@ import type {
   ScannerSeverity,
 } from "../scanner";
 
-const execFileAsync = promisify(execFile);
 
 // Binaire configurable : utile si composer n'est pas dans le PATH.
 const COMPOSER_BIN = process.env.COMPOSER_BIN ?? "composer";
@@ -41,9 +39,8 @@ export class ComposerAuditScanner implements SecurityScanner {
 
   async isAvailable(): Promise<boolean> {
     try {
-      await execFileAsync(COMPOSER_BIN, ["--version"], {
+      await execTool(COMPOSER_BIN, ["--version"], {
         timeout: 30_000,
-        shell: true,
       });
       return true;
     } catch {
@@ -55,25 +52,24 @@ export class ComposerAuditScanner implements SecurityScanner {
     const started = Date.now();
     const logs: string[] = [];
 
-    // Sans lockfile, composer audit ne peut pas résoudre les versions.
+    // Sans lockfile, composer audit ne peut pas rÃƒÂ©soudre les versions.
     try {
       await fs.access(path.join(ctx.workspaceDir, "composer.lock"));
     } catch {
-      logs.push("[info] composer.lock absent — SCA PHP ignoré");
+      logs.push("[info] composer.lock absent Ã¢â‚¬â€ SCA PHP ignorÃƒÂ©");
       return this.emptyResult(started, logs, "SUCCESS");
     }
 
     let stdout = "";
     let exitCode = 0;
     try {
-      const result = await execFileAsync(
+      const result = await execTool(
         COMPOSER_BIN,
         ["audit", "--format=json", "--no-interaction", "--no-ansi"],
         {
           cwd: ctx.workspaceDir,
           timeout: 5 * 60_000,
           maxBuffer: 30 * 1024 * 1024,
-          shell: true,
         },
       );
       stdout = result.stdout;
@@ -87,10 +83,10 @@ export class ComposerAuditScanner implements SecurityScanner {
       stdout = anyErr.stdout ?? "";
       exitCode = anyErr.code ?? 1;
 
-      // composer audit retourne 1 quand des vulnérabilités existent.
+      // composer audit retourne 1 quand des vulnÃƒÂ©rabilitÃƒÂ©s existent.
       // Un code 2 (ou l'absence de JSON) indique une vraie erreur technique.
       if (!stdout.trim()) {
-        const msg = anyErr.stderr?.trim() || anyErr.message || "composer audit a échoué";
+        const msg = anyErr.stderr?.trim() || anyErr.message || "composer audit a ÃƒÂ©chouÃƒÂ©";
         logs.push(`[error] ${msg.slice(0, 2000)}`);
         return {
           scanner: this.name,
@@ -105,7 +101,7 @@ export class ComposerAuditScanner implements SecurityScanner {
         };
       }
       if (exitCode !== 1) {
-        logs.push(`[warn] composer audit a retourné le code ${exitCode}`);
+        logs.push(`[warn] composer audit a retournÃƒÂ© le code ${exitCode}`);
       }
     }
 
@@ -128,7 +124,7 @@ export class ComposerAuditScanner implements SecurityScanner {
           version: advisory.affectedVersions,
           description:
             advisory.title ??
-            `Vulnérabilité ${advisory.cve ?? advisory.advisoryId ?? "inconnue"} dans ${pkgName}`,
+            `VulnÃƒÂ©rabilitÃƒÂ© ${advisory.cve ?? advisory.advisoryId ?? "inconnue"} dans ${pkgName}`,
           reference: advisory.link ?? advisory.cve ?? advisory.advisoryId,
           raw: {
             advisoryId: advisory.advisoryId,
@@ -142,7 +138,7 @@ export class ComposerAuditScanner implements SecurityScanner {
 
     const severityCounts = this.countSeverities(findings);
     logs.push(
-      `[info] ${findings.length} vulnérabilité(s) composer : ` +
+      `[info] ${findings.length} vulnÃƒÂ©rabilitÃƒÂ©(s) composer : ` +
         `critical=${severityCounts.critical}, high=${severityCounts.high}, ` +
         `medium=${severityCounts.medium}, low=${severityCounts.low}`,
     );

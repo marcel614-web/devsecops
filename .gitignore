@@ -35,6 +35,16 @@ packages/*/src/**/*.js.map
 .env.test
 !.env.example
 
+# Clés privées, certificats et dumps de base : ne jamais versionner.
+# Les fichiers déjà suivis doivent être retirés de l'index (git rm --cached)
+# puis l'historique doit être purgé si les clés ont été exposées.
+secrets/
+*.pem
+*.key
+*.p12
+*.pfx
+*.dump
+
 # ============================================================
 # Prisma
 # ============================================================
@@ -114,3 +124,6 @@ tmp/
 *.backup
 *.orig
 .rej
+# Scripts temporaires d'acces SSH a la VM de dev (contiennent des secrets d'auth)
+.ssh_helper.py
+.ssh_run_script.py

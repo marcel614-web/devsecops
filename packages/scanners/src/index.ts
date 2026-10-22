@@ -20,3 +20,10 @@ export {
   type ZapAlert,
   type ZapInstance,
 } from "./scanners/zap.scanner";
+export {
+  scoreToSeverity,
+  cvssVectorToScore,
+  severityFromOsvVuln,
+  fetchOsvSeverities,
+  FALLBACK_SEVERITY,
+} from "./severity/osv";

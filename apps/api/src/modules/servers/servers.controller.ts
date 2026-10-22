@@ -122,3 +122,20 @@ export async function cleanupDockerImages(
     next(err);
   }
 }
+
+export async function getServerResources(
+  req: Request,
+  res: Response,
+  next: NextFunction,
+): Promise<void> {
+  try {
+    const actor = actorFrom(req);
+    const resources = await serversService.getServerResources(
+      actor,
+      req.params.id,
+    );
+    res.json(resources);
+  } catch (err) {
+    next(err);
+  }
+}

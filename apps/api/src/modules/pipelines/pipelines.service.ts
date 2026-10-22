@@ -9,6 +9,8 @@ import {
 } from "../../utils/errors";
 import { pipelineQueue } from "../../queues/pipeline.queue";
 import { redisConnection } from "../../queues/connection";
+import { listCommits } from "../github/repositories.service";
+import { logWarn } from "../../utils/logger";
 import { buildDefaultSteps } from "./pipeline.steps";
 import type {
   PipelineListQuery,
@@ -35,10 +37,24 @@ export interface ActorContext {
 async function ensureProjectAccess(
   actor: ActorContext,
   projectId: string,
-): Promise<{ id: string; ownerId: string; defaultBranch: string }> {
+): Promise<{
+  id: string;
+  ownerId: string;
+  defaultBranch: string;
+  repoId: string;
+  repoFullName: string;
+  githubRepositoryId: string | null;
+}> {
   const project = await prisma.project.findUnique({
     where: { id: projectId },
-    select: { id: true, ownerId: true, defaultBranch: true },
+    select: {
+      id: true,
+      ownerId: true,
+      defaultBranch: true,
+      repoId: true,
+      repoFullName: true,
+      githubRepositoryId: true,
+    },
   });
   if (!project) throw new NotFoundError("Projet introuvable");
 
@@ -47,6 +63,38 @@ async function ensureProjectAccess(
     throw new ForbiddenError("Accès interdit à ce projet");
   }
   return project;
+}
+
+/**
+ * Retrouve l'enregistrement GitHubRepository associé au projet.
+ *
+ * Les projets créés via le sélecteur GitHub stockent l'ID local du
+ * repository dans `repoId` (et non dans `githubRepositoryId`). On accepte
+ * donc les deux formats, ainsi qu'une correspondance par nom complet.
+ */
+async function resolveGitHubRepositoryId(project: {
+  githubRepositoryId: string | null;
+  repoId: string;
+  repoFullName: string;
+  ownerId: string;
+}): Promise<string | null> {
+  if (project.githubRepositoryId) return project.githubRepositoryId;
+
+  const repo = await prisma.gitHubRepository.findFirst({
+    where: {
+      OR: [
+        { id: project.repoId },
+        { repositoryId: project.repoId },
+        {
+          fullName: project.repoFullName,
+          installation: { userId: project.ownerId, revokedAt: null },
+        },
+      ],
+    },
+    select: { id: true },
+  });
+
+  return repo?.id ?? null;
 }
 
 // ============================================================
@@ -84,6 +132,14 @@ export async function listPipelines(
         durationMs: true,
         createdAt: true,
         _count: { select: { steps: true, scans: true } },
+        // Première étape non réussie : permet d'afficher l'action
+        // « Reprendre » directement dans les listes.
+        steps: {
+          where: { status: { not: StepStatus.SUCCESS } },
+          orderBy: { order: "asc" },
+          take: 1,
+          select: { id: true, name: true, order: true, status: true },
+        },
       },
     }),
     prisma.pipeline.count({ where }),
@@ -141,9 +197,42 @@ export async function runPipeline(
   if (!config) throw new NotFoundError("Configuration du projet introuvable");
 
   const branch = input.branch ?? project.defaultBranch;
-  const commitSha = input.commitSha ?? `manual-${Date.now()}`;
-  const author = input.author ?? actor.id;
+  let commitSha = input.commitSha;
+  let author = input.author;
   const trigger = input.trigger ?? "manual";
+
+  // Un lancement manuel sans SHA doit utiliser le dernier commit réel
+  // de la branche, et non un identifiant synthétique "manual-...".
+  if (!commitSha) {
+    const githubRepositoryId = await resolveGitHubRepositoryId(project);
+    if (githubRepositoryId) {
+      try {
+        const [latest] = await listCommits(
+          project.ownerId,
+          githubRepositoryId,
+          branch,
+        );
+        if (latest?.sha) {
+          commitSha = latest.sha;
+          if (!author && latest.authorName && latest.authorName !== "inconnu") {
+            author = latest.authorName;
+          }
+        }
+      } catch (err) {
+        logWarn(
+          "Impossible de récupérer le dernier commit GitHub — repli sur un SHA local",
+          {
+            projectId,
+            branch,
+            error: err instanceof Error ? err.message : String(err),
+          },
+        );
+      }
+    }
+  }
+
+  commitSha = commitSha ?? `manual-${Date.now()}`;
+  author = author ?? actor.id;
 
   const pipeline = await prisma.$transaction(async (tx) => {
     const created = await tx.pipeline.create({
@@ -153,6 +242,9 @@ export async function runPipeline(
         branch,
         author,
         trigger,
+        pullRequestNumber: input.pullRequestNumber ?? null,
+        pullRequestUrl: input.pullRequestUrl ?? null,
+        baseBranch: input.baseBranch ?? null,
         status: PipelineStatus.QUEUED,
       },
       select: {
@@ -203,6 +295,237 @@ export async function runPipeline(
   );
 
   return pipeline;
+}
+
+// ============================================================
+// RERUN
+// ============================================================
+
+/**
+ * Relance un pipeline terminé en échec (ou bloqué par le Security Gate)
+ * en créant une nouvelle exécution avec le même commit et la même branche.
+ */
+export async function rerunPipeline(
+  actor: ActorContext,
+  projectId: string,
+  pipelineId: string,
+) {
+  await ensureProjectAccess(actor, projectId);
+
+  const source = await prisma.pipeline.findFirst({
+    where: { id: pipelineId, projectId },
+    select: {
+      id: true,
+      status: true,
+      commitSha: true,
+      branch: true,
+      author: true,
+      pullRequestNumber: true,
+      pullRequestUrl: true,
+      baseBranch: true,
+    },
+  });
+  if (!source) throw new NotFoundError("Pipeline introuvable");
+
+  if (
+    source.status !== PipelineStatus.FAILED &&
+    source.status !== PipelineStatus.SECURITY_BLOCKED
+  ) {
+    throw new ConflictError(
+      "Seul un pipeline échoué ou bloqué par le Security Gate peut être relancé",
+    );
+  }
+
+  // Évite de lancer deux exécutions simultanées pour le même commit.
+  const active = await prisma.pipeline.findFirst({
+    where: {
+      projectId,
+      commitSha: source.commitSha,
+      branch: source.branch,
+      status: { in: [PipelineStatus.QUEUED, PipelineStatus.RUNNING] },
+    },
+    select: { id: true },
+  });
+  if (active) {
+    throw new ConflictError(
+      "Un pipeline est déjà en cours pour ce commit et cette branche",
+    );
+  }
+
+  // Les anciens pipelines manuels portent un SHA synthétique
+  // ("manual-..."). Dans ce cas, on laisse runPipeline récupérer le
+  // dernier commit réel de la branche au lieu de le recopier.
+  const isPlaceholderCommit = source.commitSha.startsWith("manual-");
+
+  return runPipeline(actor, projectId, {
+    branch: source.branch,
+    commitSha: isPlaceholderCommit ? undefined : source.commitSha,
+    author: isPlaceholderCommit ? undefined : source.author,
+    trigger: "rerun",
+    pullRequestNumber: source.pullRequestNumber ?? undefined,
+    pullRequestUrl: source.pullRequestUrl ?? undefined,
+    baseBranch: source.baseBranch ?? undefined,
+  });
+}
+
+// ============================================================
+// RESUME
+// ============================================================
+
+/**
+ * Reprend un pipeline sur la même exécution, à partir de la première
+ * étape qui n'a pas réussi. Les étapes précédentes déjà en SUCCESS sont
+ * conservées (comme un « Re-run failed jobs » GitHub).
+ */
+export async function resumePipeline(
+  actor: ActorContext,
+  projectId: string,
+  pipelineId: string,
+) {
+  await ensureProjectAccess(actor, projectId);
+
+  const pipeline = await prisma.pipeline.findFirst({
+    where: { id: pipelineId, projectId },
+    select: {
+      id: true,
+      status: true,
+      commitSha: true,
+      branch: true,
+      steps: {
+        orderBy: { order: "asc" },
+        select: {
+          id: true,
+          order: true,
+          name: true,
+          status: true,
+          resultJson: true,
+        },
+      },
+    },
+  });
+  if (!pipeline) throw new NotFoundError("Pipeline introuvable");
+
+  if (
+    pipeline.status === PipelineStatus.QUEUED ||
+    pipeline.status === PipelineStatus.RUNNING
+  ) {
+    throw new ConflictError("Ce pipeline est déjà en cours d'exécution");
+  }
+
+  const resumeIndex = pipeline.steps.findIndex(
+    (step) => step.status !== StepStatus.SUCCESS,
+  );
+  if (resumeIndex === -1) {
+    throw new ConflictError("Toutes les étapes de ce pipeline ont déjà réussi");
+  }
+  const resumeStep = pipeline.steps[resumeIndex];
+
+  // Évite de reprendre un pipeline pendant qu'une autre exécution du même
+  // commit est active (même logique que la relance complète).
+  const active = await prisma.pipeline.findFirst({
+    where: {
+      projectId,
+      id: { not: pipelineId },
+      commitSha: pipeline.commitSha,
+      branch: pipeline.branch,
+      status: { in: [PipelineStatus.QUEUED, PipelineStatus.RUNNING] },
+    },
+    select: { id: true },
+  });
+  if (active) {
+    throw new ConflictError(
+      "Un pipeline est déjà en cours pour ce commit et cette branche",
+    );
+  }
+
+  const previousStatus = pipeline.status;
+
+  await prisma.$transaction(async (tx) => {
+    await tx.pipeline.update({
+      where: { id: pipelineId },
+      data: {
+        status: PipelineStatus.QUEUED,
+        startedAt: null,
+        finishedAt: null,
+        durationMs: null,
+      },
+    });
+
+    // Les étapes déjà réussies restent intactes. À partir de la première
+    // étape non réussie, on remet tout en file d'attente.
+    for (const step of pipeline.steps.slice(resumeIndex)) {
+      const critical =
+        (step.resultJson as { critical?: boolean } | null)?.critical === true;
+
+      await tx.pipelineStep.update({
+        where: { id: step.id },
+        data: {
+          status: StepStatus.QUEUED,
+          startedAt: null,
+          finishedAt: null,
+          durationMs: null,
+          exitCode: null,
+          error: null,
+          resultJson: { critical } as Prisma.InputJsonValue,
+        },
+      });
+    }
+
+    await tx.auditLog.create({
+      data: {
+        userId: actor.id,
+        action: "PIPELINE_RESUMED",
+        targetType: "Pipeline",
+        targetId: pipelineId,
+        metadataJson: {
+          previousStatus,
+          resumeFromOrder: resumeStep.order,
+          resumeFromStep: resumeStep.name,
+          preservedSteps: resumeIndex,
+        },
+      },
+    });
+  });
+
+  // Efface un éventuel flag d'annulation obsolète.
+  await redisConnection.del(`${PIPELINE_CANCEL_PREFIX}${pipelineId}`);
+
+  // Le job BullMQ de l'exécution précédente est généralement terminé mais
+  // encore conservé (removeOnComplete). On le supprime pour pouvoir
+  // replanifier le même pipeline avec le même jobId.
+  let jobId = pipelineId;
+  try {
+    await pipelineQueue.remove(pipelineId);
+  } catch (err) {
+    logWarn(
+      "Impossible de supprimer l'ancien job BullMQ — replanification avec un identifiant unique",
+      {
+        pipelineId,
+        error: err instanceof Error ? err.message : String(err),
+      },
+    );
+    jobId = `${pipelineId}-resume-${Date.now()}`;
+  }
+
+  await pipelineQueue.add(
+    "run",
+    { pipelineId },
+    { jobId },
+  );
+
+  return prisma.pipeline.findUniqueOrThrow({
+    where: { id: pipelineId },
+    select: {
+      id: true,
+      projectId: true,
+      commitSha: true,
+      branch: true,
+      author: true,
+      trigger: true,
+      status: true,
+      createdAt: true,
+    },
+  });
 }
 
 // ============================================================

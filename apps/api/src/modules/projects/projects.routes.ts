@@ -2,6 +2,8 @@
 import { Router } from "express";
 import { requireAuth } from "../../middleware/auth";
 import { validate } from "../../middleware/validate";
+import { deploymentListQuerySchema } from "../deployments/deployments.schema";
+import * as deploymentsController from "../deployments/deployments.controller";
 import * as projectsController from "./projects.controller";
 import {
   createGateExceptionSchema,
@@ -48,6 +50,16 @@ projectsRouter.delete(
   "/:id",
   validate({ params: projectIdParamSchema }),
   projectsController.deleteProject,
+);
+
+// Déploiements du projet (utilisé par le filtre de la page Déploiements).
+projectsRouter.get(
+  "/:id/deployments",
+  validate({
+    params: projectIdParamSchema,
+    query: deploymentListQuerySchema,
+  }),
+  deploymentsController.listProjectDeployments,
 );
 
 // ------------------------------------------------------------

@@ -16,12 +16,22 @@ export interface AuthResponse {
   accessToken: string;
 }
 
+/**
+ * L'inscription ne délivre volontairement aucun jeton : le compte est
+ * inactif jusqu'à validation par un administrateur.
+ */
+export interface RegisterResponse {
+  user: AuthUser;
+  isActive: boolean;
+  message: string;
+}
+
 export const authService = {
   login: (email: string, password: string) =>
     api.post<AuthResponse>("/api/auth/login", { email, password }).then((r) => r.data),
 
   register: (email: string, password: string, name: string) =>
-    api.post<AuthResponse>("/api/auth/register", { email, password, name }).then((r) => r.data),
+    api.post<RegisterResponse>("/api/auth/register", { email, password, name }).then((r) => r.data),
 
   logout: () => api.post("/api/auth/logout"),
 

@@ -312,6 +312,9 @@ export async function updateProjectConfig(
         ? { deploymentStrategy: input.deploymentStrategy }
         : {}),
       ...(input.stagingPort !== undefined ? { stagingPort: input.stagingPort } : {}),
+      ...(input.productionPort !== undefined
+        ? { productionPort: input.productionPort }
+        : {}),
       ...(input.autoRollback !== undefined
         ? { autoRollback: input.autoRollback }
         : {}),
@@ -373,6 +376,7 @@ export async function createGateException(
       projectId,
       category: input.category,
       severity: input.severity ?? null,
+      fingerprint: input.fingerprint,
       reason: input.reason,
       expiresAt: input.expiresAt ?? null,
       createdById: actor.id,
@@ -389,6 +393,7 @@ export async function createGateException(
         projectId,
         category: exception.category,
         severity: exception.severity,
+        fingerprint: exception.fingerprint,
         expiresAt: exception.expiresAt?.toISOString() ?? null,
         reason: exception.reason,
       },

@@ -70,3 +70,9 @@ export class TooManyRequestsError extends AppError {
     super(message, 429, "TOO_MANY_REQUESTS");
   }
 }
+
+export class PayloadTooLargeError extends AppError {
+  constructor(message = "Corps de requête trop volumineux") {
+    super(message, 413, "PAYLOAD_TOO_LARGE");
+  }
+}

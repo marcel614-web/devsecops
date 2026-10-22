@@ -2,20 +2,17 @@
 import { prisma } from "../../utils/prisma";
 import { decryptString } from "../../utils/crypto";
 import { SshRunner } from "../../runners/ssh.runner";
+import { shellQuote } from "@devsecops/shared";
 import type { StepContext, StepResult } from "../../orchestrator/step.executor";
-
-function shellQuote(value: string): string {
-  return `"${value.replace(/"/g, '\\"')}"`;
-}
 
 /**
  * Signature de l'image Docker avec Cosign.
  *
  * Deux modes :
- *  - COSIGN_REGISTRY défini : l'image est retaguée, poussée puis signée
- *    dans le registre (mode recommandé) ;
+ *  - COSIGN_REGISTRY dÃ©fini : l'image est retaguÃ©e, poussÃ©e puis signÃ©e
+ *    dans le registre (mode recommandÃ©) ;
  *  - sinon : signature locale avec `--upload=false`, la signature est
- *    enregistrée dans DockerImage.signatureRef (mode dégradé, utile en TP).
+ *    enregistrÃ©e dans DockerImage.signatureRef (mode dÃ©gradÃ©, utile en TP).
  */
 export async function cosignStep(
   _step: unknown,
@@ -27,11 +24,11 @@ export async function cosignStep(
   });
 
   if (!image) {
-    await ctx.log("warn", "Aucune image Docker — signature Cosign ignorée");
+    await ctx.log("warn", "Aucune image Docker â€” signature Cosign ignorÃ©e");
     return {
       success: true,
       exitCode: 0,
-      data: { skipped: true, reason: "no docker image" },
+      data: { skipped: true, technical: true, reason: "no docker image" },
     };
   }
 
@@ -47,7 +44,7 @@ export async function cosignStep(
       success: false,
       exitCode: 1,
       error:
-        "Cosign est activé mais COSIGN_PRIVATE_KEY_PATH n'est pas configuré sur le worker",
+        "Cosign est activÃ© mais COSIGN_PRIVATE_KEY_PATH n'est pas configurÃ© sur le worker",
     };
   }
 
@@ -59,7 +56,7 @@ export async function cosignStep(
     return {
       success: false,
       exitCode: 1,
-      error: "Aucun serveur associé — impossible de signer l'image",
+      error: "Aucun serveur associÃ© â€” impossible de signer l'image",
     };
   }
 
@@ -68,7 +65,7 @@ export async function cosignStep(
     return {
       success: false,
       exitCode: 1,
-      error: "Clé SSH du serveur manquante",
+      error: "ClÃ© SSH du serveur manquante",
     };
   }
 
@@ -79,7 +76,7 @@ export async function cosignStep(
     return {
       success: false,
       exitCode: 1,
-      error: "Impossible de déchiffrer la clé SSH",
+      error: "Impossible de dÃ©chiffrer la clÃ© SSH",
     };
   }
   const passphrase = server.encryptedPassphrase
@@ -105,7 +102,7 @@ export async function cosignStep(
     );
     if (!availability.stdout.includes("OK")) {
       throw new Error(
-        "Cosign n'est pas installé sur la VM (https://docs.sigstore.dev/cosign/installation/)",
+        "Cosign n'est pas installÃ© sur la VM (https://docs.sigstore.dev/cosign/installation/)",
       );
     }
 
@@ -130,7 +127,7 @@ export async function cosignStep(
           60_000,
         );
         if (login !== 0) {
-          throw new Error("docker login au registre a échoué");
+          throw new Error("docker login au registre a Ã©chouÃ©");
         }
       }
 
@@ -138,7 +135,7 @@ export async function cosignStep(
         `docker tag ${shellQuote(image.imageTag)} ${shellQuote(imageRef)}`,
         60_000,
       );
-      if (tag.code !== 0) throw new Error("docker tag a échoué");
+      if (tag.code !== 0) throw new Error("docker tag a Ã©chouÃ©");
 
       const push = await ssh.execStream(
         `docker push ${shellQuote(imageRef)}`,
@@ -150,7 +147,7 @@ export async function cosignStep(
         },
         15 * 60_000,
       );
-      if (push !== 0) throw new Error("docker push a échoué");
+      if (push !== 0) throw new Error("docker push a Ã©chouÃ©");
 
       await ctx.log("info", `Signature de ${imageRef}...`);
       const sign = await ssh.exec(
@@ -161,14 +158,14 @@ export async function cosignStep(
       );
       if (sign.code !== 0) {
         throw new Error(
-          `cosign sign a échoué : ${(sign.stderr || sign.stdout).slice(0, 1000)}`,
+          `cosign sign a Ã©chouÃ© : ${(sign.stderr || sign.stdout).slice(0, 1000)}`,
         );
       }
     } else {
-      // Mode dégradé : signature détachée, conservée dans la base.
+      // Mode dÃ©gradÃ© : signature dÃ©tachÃ©e, conservÃ©e dans la base.
       await ctx.log(
         "warn",
-        "COSIGN_REGISTRY non configuré — signature locale (--upload=false)",
+        "COSIGN_REGISTRY non configurÃ© â€” signature locale (--upload=false)",
       );
       const sign = await ssh.exec(
         `COSIGN_PASSWORD=${shellQuote(password)} cosign sign --yes --key ${shellQuote(
@@ -178,7 +175,7 @@ export async function cosignStep(
       );
       if (sign.code !== 0) {
         throw new Error(
-          `cosign sign local a échoué : ${(sign.stderr || sign.stdout).slice(
+          `cosign sign local a Ã©chouÃ© : ${(sign.stderr || sign.stdout).slice(
             0,
             1000,
           )}`,
@@ -187,19 +184,19 @@ export async function cosignStep(
       signedLocally = true;
     }
 
-    // Vérification si la clé publique est fournie.
+    // VÃ©rification si la clÃ© publique est fournie.
     if (publicKeyPath) {
-      await ctx.log("info", "Vérification de la signature (cosign verify)...");
+      await ctx.log("info", "VÃ©rification de la signature (cosign verify)...");
       const verify = await ssh.exec(
         `cosign verify --key ${shellQuote(publicKeyPath)} ${shellQuote(imageRef)}`,
         2 * 60_000,
       );
       if (verify.code !== 0) {
         throw new Error(
-          `cosign verify a échoué : ${(verify.stderr || verify.stdout).slice(0, 1000)}`,
+          `cosign verify a Ã©chouÃ© : ${(verify.stderr || verify.stdout).slice(0, 1000)}`,
         );
       }
-      await ctx.log("info", "Signature Cosign vérifiée");
+      await ctx.log("info", "Signature Cosign vÃ©rifiÃ©e");
     }
 
     const signatureRef = signedLocally
@@ -216,7 +213,7 @@ export async function cosignStep(
 
     await ctx.log(
       "info",
-      `Image signée avec Cosign en ${((Date.now() - started) / 1000).toFixed(1)}s`,
+      `Image signÃ©e avec Cosign en ${((Date.now() - started) / 1000).toFixed(1)}s`,
     );
 
     return {
@@ -231,7 +228,7 @@ export async function cosignStep(
     };
   } catch (err) {
     const msg = err instanceof Error ? err.message : String(err);
-    await ctx.log("error", `Échec de Cosign : ${msg}`);
+    await ctx.log("error", `Ã‰chec de Cosign : ${msg}`);
     return { success: false, exitCode: 1, error: msg };
   } finally {
     await ssh.disconnect().catch(() => undefined);

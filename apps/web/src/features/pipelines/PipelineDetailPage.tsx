@@ -14,7 +14,7 @@ import { ScanSummary } from "@/components/security/ScanSummary";
 import { PipelineTimeline } from "@/components/security/PipelineTimeline";
 import { PipelineLogs } from "@/components/security/PipelineLogs";
 import { PipelineFailureBanner } from "@/components/security/PipelineFailureBanner";
-import { useCancelPipeline, usePipelineDetail, usePipelineScans } from "@/hooks/usePipeline";
+import { useCancelPipeline, usePipelineDetail, usePipelineScans, useRerunPipeline, useResumePipeline } from "@/hooks/usePipeline";
 import { pipelineService } from "@/services/pipeline.service";
 import { getPipelineFailure } from "@/lib/pipelineFailure";
 import { getErrorMessage } from "@/services/api";
@@ -27,12 +27,18 @@ export function PipelineDetailPage() {
 
   const [selectedStepId, setSelectedStepId] = useState<string | null>(null);
   const [confirmCancel, setConfirmCancel] = useState(false);
+  const [confirmRerun, setConfirmRerun] = useState(false);
+  const [confirmResume, setConfirmResume] = useState(false);
   const [copied, setCopied] = useState(false);
 
   const { data: pipeline, isLoading, isError, error, refetch, isFetching } = usePipelineDetail(projectId, pipelineId);
   const isRunning = pipeline?.status === "QUEUED" || pipeline?.status === "RUNNING";
+  const resumeIndex = pipeline?.steps.findIndex((step) => step.status !== "SUCCESS") ?? -1;
+  const resumeStep = resumeIndex >= 0 ? pipeline?.steps[resumeIndex] ?? null : null;
   const { data: scans } = usePipelineScans(projectId, pipelineId, !isRunning && !!pipeline);
   const cancelMutation = useCancelPipeline(projectId ?? "", pipelineId ?? "");
+  const rerunMutation = useRerunPipeline(projectId ?? "", pipelineId ?? "");
+  const resumeMutation = useResumePipeline(projectId ?? "", pipelineId ?? "");
 
   useEffect(() => {
     if (!pipeline || selectedStepId) return;
@@ -56,6 +62,35 @@ export function PipelineDetailPage() {
     } catch (err) {
       toast.show("error", getErrorMessage(err));
       setConfirmCancel(false);
+    }
+  };
+
+  const handleRerun = async () => {
+    try {
+      const next = await rerunMutation.mutateAsync();
+      toast.show("success", `Pipeline relancé : ${next.id.slice(0, 8)}`);
+      setConfirmRerun(false);
+      navigate(`/projects/${next.projectId}/pipelines/${next.id}`);
+    } catch (err) {
+      toast.show("error", getErrorMessage(err));
+      setConfirmRerun(false);
+    }
+  };
+
+  const handleResume = async () => {
+    try {
+      await resumeMutation.mutateAsync();
+      toast.show(
+        "success",
+        resumeStep
+          ? `Pipeline repris à l'étape « ${resumeStep.name} »`
+          : "Pipeline repris",
+      );
+      setConfirmResume(false);
+      refetch();
+    } catch (err) {
+      toast.show("error", getErrorMessage(err));
+      setConfirmResume(false);
     }
   };
 
@@ -84,6 +119,9 @@ export function PipelineDetailPage() {
   }
 
   const failure = getPipelineFailure(pipeline);
+  const canRerun =
+    pipeline.status === "FAILED" || pipeline.status === "SECURITY_BLOCKED";
+  const canResume = !!resumeStep && !isRunning;
 
   const copySha = async () => {
     try {
@@ -130,6 +168,34 @@ export function PipelineDetailPage() {
           )}
         </div>
         <div className="flex shrink-0 items-center gap-2">
+          {canResume && (
+            <Button
+              variant="primary"
+              size="sm"
+              onClick={() => setConfirmResume(true)}
+              className="gap-1.5"
+              title={
+                resumeStep
+                  ? `Reprendre à l'étape « ${resumeStep.name} » sans réexécuter les étapes déjà réussies`
+                  : "Reprendre le pipeline"
+              }
+            >
+              <PlayCircle className="h-4 w-4" />
+              <span className="hidden sm:inline">Reprendre</span>
+            </Button>
+          )}
+          {canRerun && (
+            <Button
+              variant="ghost"
+              size="sm"
+              onClick={() => setConfirmRerun(true)}
+              className="gap-1.5"
+              title="Recréer un pipeline depuis le début avec le même commit et la même branche"
+            >
+              <RotateCcw className="h-4 w-4" />
+              <span className="hidden md:inline">Tout relancer</span>
+            </Button>
+          )}
           {!isRunning && pipeline.status !== "QUEUED" && (
             <>
               <Button
@@ -350,6 +416,34 @@ export function PipelineDetailPage() {
         loading={cancelMutation.isPending}
         onConfirm={handleCancel}
         onCancel={() => setConfirmCancel(false)}
+      />
+
+      <ConfirmDialog
+        open={confirmResume}
+        title="Reprendre ce pipeline ?"
+        description={
+          resumeStep
+            ? `Le pipeline reprendra à l'étape « ${resumeStep.name} ». Les étapes précédentes déjà réussies seront conservées et ne seront pas réexécutées.`
+            : ""
+        }
+        confirmLabel="Reprendre"
+        loading={resumeMutation.isPending}
+        onConfirm={handleResume}
+        onCancel={() => setConfirmResume(false)}
+      />
+
+      <ConfirmDialog
+        open={confirmRerun}
+        title="Tout relancer ?"
+        description={
+          pipeline.commitSha.startsWith("manual-")
+            ? `Un nouveau pipeline sera créé depuis le début avec le dernier commit de la branche ${pipeline.branch}. L'exécution précédente reste conservée dans l'historique.`
+            : `Un nouveau pipeline sera créé depuis le début pour le commit ${pipeline.commitSha.slice(0, 7)} sur la branche ${pipeline.branch}. L'exécution précédente reste conservée dans l'historique.`
+        }
+        confirmLabel="Tout relancer"
+        loading={rerunMutation.isPending}
+        onConfirm={handleRerun}
+        onCancel={() => setConfirmRerun(false)}
       />
     </div>
   );

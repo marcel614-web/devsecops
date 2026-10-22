@@ -123,7 +123,8 @@ export interface ProjectConfiguration {
   gateImageEnabled: boolean;
   gateDastEnabled: boolean;
   deploymentStrategy: "direct" | "staging_then_production";
-  stagingPort: number;
+  stagingPort: number | null;
+  productionPort: number | null;
   autoRollback: boolean;
   createdAt: string;
   updatedAt: string;
@@ -134,6 +135,7 @@ export interface SecurityGateException {
   projectId: string;
   category: "ALL" | "SECRET" | "SAST" | "SCA" | "IMAGE" | "IAC" | "DAST";
   severity: Severity | null;
+  fingerprint: string | null;
   reason: string;
   createdById: string | null;
   expiresAt: string | null;
@@ -183,6 +185,8 @@ export interface Pipeline {
     scans: number;
     logs?: number;
   };
+  /** Dans les listes : première étape non réussie (pour l'action Reprendre). */
+  steps?: Array<Pick<PipelineStep, "id" | "name" | "order" | "status">>;
 }
 
 export interface PipelineStep {

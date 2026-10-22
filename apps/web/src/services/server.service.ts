@@ -50,6 +50,52 @@ export interface ServerTestResponse {
   lastCheckedAt: string;
 }
 
+export interface ServerResourceContainer {
+  name: string;
+  image: string;
+  status: string;
+  state: string;
+}
+
+export interface ServerResources {
+  fetchedAt: string;
+  hostname: string;
+  os: string;
+  kernel: string;
+  architecture: string;
+  cpuModel: string;
+  uptimeSeconds: number | null;
+  cpu: {
+    cores: number;
+    usagePercent: number | null;
+    load1: number | null;
+    load5: number | null;
+    load15: number | null;
+  };
+  memory: {
+    totalBytes: number;
+    usedBytes: number;
+    availableBytes: number;
+    usagePercent: number;
+    swapTotalBytes: number;
+    swapUsedBytes: number;
+  };
+  disk: {
+    mount: string;
+    totalBytes: number;
+    usedBytes: number;
+    availableBytes: number;
+    usagePercent: number;
+  };
+  docker: {
+    available: boolean;
+    running: number;
+    total: number;
+    images: number;
+    containers: ServerResourceContainer[];
+  };
+}
+
 // ============================================================
 // SERVICE
 // ============================================================
@@ -89,5 +135,14 @@ export const serverService = {
   cleanupImages: (id: string) =>
     api
       .post<{ output: string }>(`/api/servers/${id}/cleanup-images`)
+      .then((r) => r.data),
+
+  /**
+   * Relève CPU, mémoire, disque et Docker via SSH.
+   * Aucun cache serveur : chaque appel correspond à un relevé instantané.
+   */
+  getResources: (id: string) =>
+    api
+      .get<ServerResources>(`/api/servers/${id}/resources`)
       .then((r) => r.data),
 };

@@ -15,14 +15,14 @@ import type {
 // CONFIGURATION TRIVY
 // ============================================================
 
-// Volume Docker persistant contenant la DB Trivy pré-téléchargée.
+// Volume Docker persistant contenant la DB Trivy prÃ©-tÃ©lÃ©chargÃ©e.
 // Structure attendue : <volume>/trivy/db/{trivy.db,metadata.json}
 const TRIVY_VOLUME =
   process.env.TRIVY_VM_CACHE_VOLUME?.trim() || "trivy-cache";
-// Image Trivy exécutée sur la VM.
+// Image Trivy exÃ©cutÃ©e sur la VM.
 const TRIVY_IMAGE =
   process.env.TRIVY_VM_IMAGE?.trim() || "aquasec/trivy:latest";
-// Le cache Trivy est monté sur /root/.cache ; Trivy utilise /root/.cache/trivy.
+// Le cache Trivy est montÃ© sur /root/.cache ; Trivy utilise /root/.cache/trivy.
 const TRIVY_CACHE_MOUNT = "/root/.cache";
 const TRIVY_DB_DIR = "/root/.cache/trivy/db";
 // Timeout du scan complet
@@ -82,25 +82,25 @@ function countSeverities(findings: NormalizedFinding[]) {
 }
 
 // ============================================================
-// ÉTAPE TRIVY
+// Ã‰TAPE TRIVY
 // ============================================================
 
 export async function trivyStep(
   _step: unknown,
   ctx: StepContext,
 ): Promise<StepResult> {
-  // 1. Récupère l'image Docker
+  // 1. RÃ©cupÃ¨re l'image Docker
   const image = await prisma.dockerImage.findUnique({
     where: { pipelineId: ctx.pipelineId },
     select: { imageTag: true },
   });
 
   if (!image) {
-    await ctx.log("warn", "Aucune image Docker associée — étape Trivy ignorée");
+    await ctx.log("warn", "Aucune image Docker associÃ©e â€” Ã©tape Trivy ignorÃ©e");
     return {
       success: true,
       exitCode: 0,
-      data: { skipped: true, reason: "no docker image" },
+      data: { skipped: true, technical: true, reason: "no docker image" },
     };
   }
 
@@ -114,7 +114,7 @@ export async function trivyStep(
     return {
       success: false,
       exitCode: 1,
-      error: "Aucun serveur associé — impossible de scanner l'image",
+      error: "Aucun serveur associÃ© â€” impossible de scanner l'image",
     };
   }
 
@@ -124,7 +124,7 @@ export async function trivyStep(
     return {
       success: false,
       exitCode: 1,
-      error: "Clé SSH du serveur manquante",
+      error: "ClÃ© SSH du serveur manquante",
     };
   }
 
@@ -132,7 +132,7 @@ export async function trivyStep(
   const startTime = Date.now();
   const logs: string[] = [];
 
-  // 3. Déchiffre la clé SSH
+  // 3. DÃ©chiffre la clÃ© SSH
   let privateKey: string;
   try {
     privateKey = decryptString(server.encryptedPrivateKey);
@@ -140,7 +140,7 @@ export async function trivyStep(
     return {
       success: false,
       exitCode: 1,
-      error: "Impossible de déchiffrer la clé SSH",
+      error: "Impossible de dÃ©chiffrer la clÃ© SSH",
     };
   }
 
@@ -159,15 +159,15 @@ export async function trivyStep(
       passphrase,
     });
 
-    // 5. Vérifie la présence de l'image Trivy (pull si absent)
-    await ctx.log("info", "Vérification de l'image Trivy sur la VM...");
+    // 5. VÃ©rifie la prÃ©sence de l'image Trivy (pull si absent)
+    await ctx.log("info", "VÃ©rification de l'image Trivy sur la VM...");
     const imageCheck = await ssh.exec(
       `docker image inspect ${TRIVY_IMAGE} >/dev/null 2>&1 && echo OK || echo MISSING`,
       15_000,
     );
 
     if (imageCheck.stdout.includes("MISSING")) {
-      await ctx.log("info", "Téléchargement de l'image Trivy...");
+      await ctx.log("info", "TÃ©lÃ©chargement de l'image Trivy...");
       const pullCode = await ssh.execStream(
         `docker pull ${TRIVY_IMAGE}`,
         (chunk, stream) => {
@@ -179,14 +179,14 @@ export async function trivyStep(
         10 * 60_000,
       );
       if (pullCode !== 0) {
-        throw new Error("Impossible de télécharger l'image Trivy");
+        throw new Error("Impossible de tÃ©lÃ©charger l'image Trivy");
       }
     }
 
-    // 6. Vérifie que la DB Trivy est présente dans le volume.
+    // 6. VÃ©rifie que la DB Trivy est prÃ©sente dans le volume.
     //    On refuse de lancer le scan sans DB : sinon Trivy tenterait un
-    //    téléchargement réseau et échouerait avec un timeout.
-    await ctx.log("info", "Vérification de la base Trivy locale...");
+    //    tÃ©lÃ©chargement rÃ©seau et Ã©chouerait avec un timeout.
+    await ctx.log("info", "VÃ©rification de la base Trivy locale...");
     const dbCheck = await ssh.exec(
       `docker run --rm -v ${TRIVY_VOLUME}:${TRIVY_CACHE_MOUNT} --entrypoint sh ${TRIVY_IMAGE} ` +
         `-c 'test -s ${TRIVY_DB_DIR}/trivy.db && test -s ${TRIVY_DB_DIR}/metadata.json && echo CACHE_OK || echo CACHE_MISSING'`,
@@ -195,18 +195,18 @@ export async function trivyStep(
 
     if (!dbCheck.stdout.includes("CACHE_OK")) {
       throw new Error(
-        `Base de vulnérabilités Trivy absente sur la VM (volume ${TRIVY_VOLUME}). ` +
+        `Base de vulnÃ©rabilitÃ©s Trivy absente sur la VM (volume ${TRIVY_VOLUME}). ` +
           `Placez trivy.db et metadata.json dans ${TRIVY_DB_DIR} du volume, ` +
-          "ou exécutez la préparation du cache Trivy.",
+          "ou exÃ©cutez la prÃ©paration du cache Trivy.",
       );
     }
 
     await ctx.log(
       "info",
-      "Base Trivy locale détectée — mise à jour réseau désactivée pour ce scan",
+      "Base Trivy locale dÃ©tectÃ©e â€” mise Ã  jour rÃ©seau dÃ©sactivÃ©e pour ce scan",
     );
 
-    // 7. Scan Trivy avec le volume de cache, sans aucun téléchargement.
+    // 7. Scan Trivy avec le volume de cache, sans aucun tÃ©lÃ©chargement.
     await ctx.log("info", `Scan Trivy de l'image ${image.imageTag}...`);
     const trivyStart = Date.now();
 
@@ -230,14 +230,14 @@ export async function trivyStep(
 
     if (scanResult.code !== 0) {
       throw new Error(
-        `Trivy a échoué (code ${scanResult.code}) : ${scanResult.stderr.slice(0, 500)}`,
+        `Trivy a Ã©chouÃ© (code ${scanResult.code}) : ${scanResult.stderr.slice(0, 500)}`,
       );
     }
 
     const trivyDuration = Date.now() - trivyStart;
     await ctx.log(
       "info",
-      `Trivy terminé en ${(trivyDuration / 1000).toFixed(1)}s`,
+      `Trivy terminÃ© en ${(trivyDuration / 1000).toFixed(1)}s`,
     );
 
     // 8. Parse le JSON
@@ -271,7 +271,7 @@ export async function trivyStep(
 
     const severityCounts = countSeverities(findings);
     logs.push(
-      `[info] Trivy : ${findings.length} vulnérabilité(s) — ` +
+      `[info] Trivy : ${findings.length} vulnÃ©rabilitÃ©(s) â€” ` +
         `critical=${severityCounts.critical}, high=${severityCounts.high}, ` +
         `medium=${severityCounts.medium}, low=${severityCounts.low}`,
     );
@@ -300,7 +300,7 @@ export async function trivyStep(
 
     await ctx.log(
       "info",
-      `Trivy : ${findings.length} vulnérabilité(s) — ` +
+      `Trivy : ${findings.length} vulnÃ©rabilitÃ©(s) â€” ` +
         `critical=${severityCounts.critical}, high=${severityCounts.high}`,
     );
 
@@ -316,7 +316,7 @@ export async function trivyStep(
     };
   } catch (err) {
     const msg = err instanceof Error ? err.message : String(err);
-    await ctx.log("error", `Échec de Trivy : ${msg}`);
+    await ctx.log("error", `Ã‰chec de Trivy : ${msg}`);
 
     await persistScanResult(
       {

@@ -35,14 +35,14 @@ export interface StepContext {
     message: string,
   ) => Promise<void>;
   /**
-   * Vérifie si une demande d'annulation est active pour ce pipeline.
-   * Les étapes longues (build, install) peuvent l'appeler périodiquement
+   * VÃ©rifie si une demande d'annulation est active pour ce pipeline.
+   * Les Ã©tapes longues (build, install) peuvent l'appeler pÃ©riodiquement
    * et abandonner si le retour est `true`.
    */
   isCancelled: () => Promise<boolean>;
-  /** Vrai si une étape critique a échoué avant l'étape courante. */
+  /** Vrai si une Ã©tape critique a Ã©chouÃ© avant l'Ã©tape courante. */
   pipelineAborted?: boolean;
-  /** Vrai si le Security Gate a bloqué le pipeline. */
+  /** Vrai si le Security Gate a bloquÃ© le pipeline. */
   pipelineSecurityBlocked?: boolean;
 }
 
@@ -88,11 +88,11 @@ export async function executeStep(
   if (!handler) {
     await ctx.log(
       "warn",
-      `Aucun handler enregistré pour le type "${step.type}" — étape ignorée`,
+      `Aucun handler enregistrÃ© pour le type "${step.type}" â€” Ã©tape ignorÃ©e`,
     );
     return {
       success: true,
-      data: { skipped: true, reason: `No handler for type ${step.type}` },
+      data: { skipped: true, technical: true, reason: `No handler for type ${step.type}` },
     };
   }
 

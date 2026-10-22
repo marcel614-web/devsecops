@@ -76,13 +76,16 @@ export interface UpdateProjectConfigInput {
   gateImageEnabled?: boolean;
   gateDastEnabled?: boolean;
   deploymentStrategy?: "direct" | "staging_then_production";
-  stagingPort?: number;
+  stagingPort?: number | null;
+  productionPort?: number | null;
   autoRollback?: boolean;
 }
 
 export interface CreateGateExceptionInput {
   category: SecurityGateException["category"];
   severity?: Severity | null;
+  /** CVE, GHSA, règle ou empreinte du finding ciblé. */
+  fingerprint: string;
   reason: string;
   expiresAt?: string | null;
 }

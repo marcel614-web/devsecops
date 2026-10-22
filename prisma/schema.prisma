@@ -249,7 +249,8 @@ model ProjectConfiguration {
   gateImageEnabled     Boolean  @default(true)
   gateDastEnabled      Boolean  @default(true)
   deploymentStrategy   String   @default("direct") // direct | staging_then_production
-  stagingPort          Int      @default(8081)
+  stagingPort          Int?     // null = allocation automatique au déploiement
+  productionPort       Int?     // null = allocation automatique au déploiement
   autoRollback         Boolean  @default(true)
   createdAt            DateTime @default(now())
   updatedAt            DateTime @updatedAt
@@ -457,6 +458,10 @@ model SecurityGateException {
   projectId   String
   category    String   @default("ALL") // ALL | SECRET | SAST | SCA | IMAGE | IAC | DAST
   severity    String?  // null = toutes les sévérités
+  /// CVE, GHSA, règle Semgrep, référence ou empreinte du finding.
+  /// Obligatoire pour les nouvelles exceptions : une exception limitée à
+  /// une catégorie/sévérité masquait sinon TOUS les findings du bucket.
+  fingerprint String?
   reason      String
   createdById String?
   expiresAt   DateTime?
@@ -466,6 +471,7 @@ model SecurityGateException {
   createdBy User?   @relation(fields: [createdById], references: [id], onDelete: SetNull)
 
   @@index([projectId])
+  @@index([fingerprint])
   @@index([expiresAt])
 }
 

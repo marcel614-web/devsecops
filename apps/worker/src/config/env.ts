@@ -3,6 +3,7 @@ import path from "node:path";
 import fs from "node:fs";
 import dotenv from "dotenv";
 import { z } from "zod";
+import { secretField } from "@devsecops/shared";
 
 /**
  * Charge le premier .env trouvé parmi les chemins candidats.
@@ -39,7 +40,7 @@ loadEnvFile();
 const EnvSchema = z.object({
   NODE_ENV: z.enum(["development", "test", "production"]).default("development"),
   LOG_LEVEL: z
-    .enum(["fatal", "error", "warn", "info", "debug", "trace"])
+    .enum(["fatal", "error", "warn", "info", "debug", "trace", "silent"])
     .default("info"),
 
   DATABASE_URL: z.string().min(1),
@@ -48,7 +49,7 @@ const EnvSchema = z.object({
   REDIS_PORT: z.coerce.number().int().positive().default(6379),
   REDIS_PASSWORD: z.string().optional().default(""),
 
-  MASTER_ENCRYPTION_KEY: z.string().min(1),
+  MASTER_ENCRYPTION_KEY: secretField("MASTER_ENCRYPTION_KEY"),
 });
 
 const parsed = EnvSchema.safeParse(process.env);

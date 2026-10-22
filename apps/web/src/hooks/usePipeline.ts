@@ -64,3 +64,40 @@ export function useCancelPipeline(projectId: string, pipelineId: string) {
     },
   });
 }
+
+/**
+ * Relance un pipeline échoué en créant une nouvelle exécution
+ * avec le même commit et la même branche.
+ */
+export function useRerunPipeline(projectId: string, pipelineId: string) {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: () => pipelineService.rerun(projectId, pipelineId),
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: ["pipeline", projectId, pipelineId] });
+      qc.invalidateQueries({ queryKey: ["global-pipelines"] });
+      qc.invalidateQueries({ queryKey: ["project-pipelines", projectId] });
+      qc.invalidateQueries({ queryKey: ["dashboard", "summary"] });
+    },
+  });
+}
+
+/**
+ * Reprend un pipeline à partir de la première étape non réussie, sans
+ * réexécuter les étapes déjà en SUCCESS.
+ */
+export function useResumePipeline(projectId: string, pipelineId: string) {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: () => pipelineService.resume(projectId, pipelineId),
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: ["pipeline", projectId, pipelineId] });
+      qc.invalidateQueries({
+        queryKey: ["pipeline-logs", projectId, pipelineId],
+      });
+      qc.invalidateQueries({ queryKey: ["global-pipelines"] });
+      qc.invalidateQueries({ queryKey: ["project-pipelines", projectId] });
+      qc.invalidateQueries({ queryKey: ["dashboard", "summary"] });
+    },
+  });
+}

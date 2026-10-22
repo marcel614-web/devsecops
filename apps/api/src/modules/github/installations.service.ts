@@ -1,6 +1,6 @@
 // apps/api/src/modules/github/installations.service.ts
 import { prisma } from "../../utils/prisma";
-import { BadRequestError, NotFoundError } from "../../utils/errors";
+import { BadRequestError, ConflictError, NotFoundError } from "../../utils/errors";
 import {
   fetchInstallation,
   getInstallationOctokit,
@@ -57,6 +57,24 @@ export async function syncInstallation({
   const accountType = ghInstall.target_type ?? "User";
 
   // 2. Upsert de l'installation
+  //
+  // SÉCURITÉ : l'installation appartient à un utilisateur de la plateforme.
+  // Sans ce contrôle, un second utilisateur qui installe la GitHub App sur
+  // le même compte/organisation VOLAIT l'installation (et donc l'accès aux
+  // repositories, branches et commits du premier) parce que l'upsert
+  // réécrivait `userId`.
+  const existing = await prisma.gitHubInstallation.findUnique({
+    where: { installationId },
+    select: { id: true, userId: true, revokedAt: true },
+  });
+
+  if (existing && existing.userId !== userId && !existing.revokedAt) {
+    throw new ConflictError(
+      "Cette installation GitHub App est déjà rattachée à un autre utilisateur de la plateforme. " +
+        "Demandez-lui de la détacher (révoquer l'installation) avant de la réinstaller.",
+    );
+  }
+
   const installation = await prisma.gitHubInstallation.upsert({
     where: { installationId },
     create: {
@@ -147,7 +165,7 @@ export async function syncRepositories(installationId: string) {
       page,
     });
 
-    const items = data.repositories as unknown as RepoItem[];
+    const items = (data?.repositories ?? []) as unknown as RepoItem[];
     if (items.length === 0) break;
     repos.push(...items);
     if (items.length < 100) break;

@@ -1,4 +1,5 @@
 import { useState } from "react";
+import { Link, useSearchParams } from "react-router-dom";
 import { ExternalLink, Play, Square, RotateCw, Trash2, Rocket } from "lucide-react";
 import { PageHeader } from "@/components/layout/PageHeader";
 import { Card, CardContent } from "@/components/ui/Card";
@@ -16,6 +17,7 @@ import { timeAgo } from "@/lib/utils";
 
 type DeploymentItem = {
   id: string;
+  pipelineId: string;
   projectId: string;
   status: string;
   environment: string;
@@ -38,7 +40,14 @@ type DeploymentItem = {
 export function DeploymentsPage() {
   const qc = useQueryClient();
   const toast = useToast();
+  const [searchParams] = useSearchParams();
   const [uninstallTarget, setUninstallTarget] = useState<DeploymentItem | null>(null);
+
+  // Le détail d'un pipeline pointe vers /deployments?pipelineId=...
+  // Sans ce filtre, la page affichait toutes les applications et semblait
+  // toujours ouvrir le même déploiement.
+  const pipelineId = searchParams.get("pipelineId");
+  const projectId = searchParams.get("projectId");
 
   const { data, isLoading, isError, error, refetch, isFetching } = useQuery({
     queryKey: ["deployments"],
@@ -83,7 +92,13 @@ export function DeploymentsPage() {
     onError: (err) => toast.show("error", getErrorMessage(err)),
   });
 
-  const items = (data ?? []) as DeploymentItem[];
+  const allItems = (data ?? []) as DeploymentItem[];
+  const items = allItems.filter(
+    (deployment) =>
+      (!pipelineId || deployment.pipelineId === pipelineId) &&
+      (!projectId || deployment.projectId === projectId),
+  );
+  const hasFilter = Boolean(pipelineId || projectId);
 
   return (
     <div>
@@ -97,6 +112,23 @@ export function DeploymentsPage() {
           </Button>
         }
       />
+
+      {hasFilter && (
+        <div className="mb-4 flex flex-wrap items-center justify-between gap-2 rounded-lg border border-primary-500/30 bg-primary-500/5 px-3 py-2 text-sm">
+          <span>
+            Filtre actif :{" "}
+            {pipelineId
+              ? `pipeline ${pipelineId.slice(0, 8)}`
+              : `projet ${projectId}`}
+          </span>
+          <Link
+            to="/deployments"
+            className="text-primary-500 hover:underline"
+          >
+            Voir tous les déploiements
+          </Link>
+        </div>
+      )}
 
       {isLoading && (
         <Card>
@@ -118,8 +150,26 @@ export function DeploymentsPage() {
 
       {!isLoading && !isError && items.length === 0 && (
         <EmptyState
-          title="Aucune application déployée"
-          description="Lance un pipeline avec le déploiement activé pour voir apparaître une application ici."
+          title={
+            hasFilter
+              ? "Aucun déploiement pour ce filtre"
+              : "Aucune application déployée"
+          }
+          description={
+            hasFilter
+              ? "Le pipeline ou le projet sélectionné n'a pas encore de déploiement enregistré."
+              : "Lance un pipeline avec le déploiement activé pour voir apparaître une application ici."
+          }
+          action={
+            hasFilter ? (
+              <Link
+                to="/deployments"
+                className="text-sm text-primary-500 hover:underline"
+              >
+                Voir tous les déploiements
+              </Link>
+            ) : undefined
+          }
         />
       )}
 

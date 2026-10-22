@@ -182,8 +182,11 @@ export function ProjectConfigTab({ project }: { project: ProjectDetail }) {
   const [strategy, setStrategy] = useState<
     "direct" | "staging_then_production"
   >(project.config?.deploymentStrategy ?? "direct");
-  const [stagingPort, setStagingPort] = useState(
-    project.config?.stagingPort ?? 8081,
+  const [stagingPort, setStagingPort] = useState<number | "">(
+    project.config?.stagingPort ?? "",
+  );
+  const [productionPort, setProductionPort] = useState<number | "">(
+    project.config?.productionPort ?? "",
   );
   const [autoRollback, setAutoRollback] = useState(
     project.config?.autoRollback ?? true,
@@ -192,6 +195,7 @@ export function ProjectConfigTab({ project }: { project: ProjectDetail }) {
   const [exceptionForm, setExceptionForm] = useState<CreateGateExceptionInput>({
     category: "ALL",
     severity: null,
+    fingerprint: "",
     reason: "",
     expiresAt: null,
   });
@@ -220,7 +224,8 @@ export function ProjectConfigTab({ project }: { project: ProjectDetail }) {
       });
       setScanners(scannersFromConfig(c));
       setStrategy(c.deploymentStrategy);
-      setStagingPort(c.stagingPort);
+      setStagingPort(c.stagingPort ?? "");
+      setProductionPort(c.productionPort ?? "");
       setAutoRollback(c.autoRollback);
     }
     setDeploymentEnabled(project.deploymentEnabled);
@@ -274,7 +279,8 @@ export function ProjectConfigTab({ project }: { project: ProjectDetail }) {
     deploymentEnabled !== project.deploymentEnabled ||
     serverId !== (project.serverId ?? "") ||
     strategy !== (project.config?.deploymentStrategy ?? "direct") ||
-    stagingPort !== (project.config?.stagingPort ?? 8081) ||
+    stagingPort !== (project.config?.stagingPort ?? "") ||
+    productionPort !== (project.config?.productionPort ?? "") ||
     autoRollback !== (project.config?.autoRollback ?? true);
 
   const techDirty = technology !== project.technology;
@@ -334,7 +340,8 @@ export function ProjectConfigTab({ project }: { project: ProjectDetail }) {
       });
       await projectService.updateConfig(project.id, {
         deploymentStrategy: strategy,
-        stagingPort,
+        stagingPort: stagingPort === "" ? null : stagingPort,
+        productionPort: productionPort === "" ? null : productionPort,
         autoRollback,
       });
     },
@@ -361,6 +368,7 @@ export function ProjectConfigTab({ project }: { project: ProjectDetail }) {
       setExceptionForm({
         category: "ALL",
         severity: null,
+        fingerprint: "",
         reason: "",
         expiresAt: null,
       });
@@ -500,31 +508,44 @@ export function ProjectConfigTab({ project }: { project: ProjectDetail }) {
             </div>
           </div>
 
-          {strategy === "staging_then_production" && (
-            <div className="grid grid-cols-1 gap-3 rounded-lg border border-border p-3 md:grid-cols-3">
-              <Field
-                label="Port de staging"
-                value={stagingPort}
-                onChange={setStagingPort}
-                min={1}
-              />
-              <div className="flex items-end">
-                <label className="flex items-center gap-2 text-sm">
-                  <input
-                    type="checkbox"
-                    checked={autoRollback}
-                    onChange={(e) => setAutoRollback(e.target.checked)}
-                    className="h-4 w-4 rounded border-border"
-                  />
-                  Rollback automatique
-                </label>
-              </div>
-              <p className="self-end text-xs text-muted">
-                En cas d'échec du healthcheck de production, la dernière image
-                saine est redéployée.
+          <div className="grid grid-cols-1 gap-3 rounded-lg border border-border p-3 md:grid-cols-3">
+            <PortField
+              label="Port de production"
+              value={productionPort}
+              onChange={setProductionPort}
+              hint="Vide = allocation automatique"
+            />
+            {strategy === "staging_then_production" ? (
+              <>
+                <PortField
+                  label="Port de staging"
+                  value={stagingPort}
+                  onChange={setStagingPort}
+                  hint="Vide = allocation automatique"
+                />
+                <div className="flex items-end">
+                  <label className="flex items-center gap-2 text-sm">
+                    <input
+                      type="checkbox"
+                      checked={autoRollback}
+                      onChange={(e) => setAutoRollback(e.target.checked)}
+                      className="h-4 w-4 rounded border-border"
+                    />
+                    Rollback automatique
+                  </label>
+                </div>
+              </>
+            ) : (
+              <p className="self-end text-xs text-muted md:col-span-2">
+                Un port de staging sera attribué automatiquement si vous activez
+                le mode staging.
               </p>
-            </div>
-          )}
+            )}
+          </div>
+          <p className="text-xs text-muted">
+            Les ports sont uniques par serveur. Si un port est déjà utilisé par
+            un autre projet, un port libre lui sera attribué au déploiement.
+          </p>
 
           <div className="flex justify-end">
             <Button
@@ -785,9 +806,10 @@ export function ProjectConfigTab({ project }: { project: ProjectDetail }) {
         </CardHeader>
         <CardContent className="space-y-4">
           <p className="text-xs text-muted">
-            Une exception réduit les compteurs du gate pour une catégorie et/ou
-            une sévérité. Elle est auditée et doit être justifiée. Les findings
-            marqués faux positif ou risque accepté sont également exclus.
+            Une exception cible un finding précis (CVE, GHSA, règle ou
+            empreinte). Elle ne masque plus tout un bucket catégorie/sévérité.
+            Elle est auditée, datée et doit être justifiée. Les findings marqués
+            faux positif ou risque accepté sont également exclus.
           </p>
 
           {exceptionsLoading ? (
@@ -805,6 +827,11 @@ export function ProjectConfigTab({ project }: { project: ProjectDetail }) {
                       {exception.severity
                         ? ` · ${exception.severity}`
                         : " · toutes sévérités"}
+                      {exception.fingerprint && (
+                        <span className="ml-2 font-mono text-xs text-muted">
+                          {exception.fingerprint}
+                        </span>
+                      )}
                       {exception.expiresAt && (
                         <span className="ml-2 text-xs text-muted">
                           expire le{" "}
@@ -899,11 +926,30 @@ export function ProjectConfigTab({ project }: { project: ProjectDetail }) {
               <Button
                 onClick={() => createExceptionMutation.mutate()}
                 loading={createExceptionMutation.isPending}
-                disabled={!exceptionForm.reason.trim()}
+                disabled={
+                  !exceptionForm.reason.trim() ||
+                  !exceptionForm.fingerprint.trim()
+                }
                 className="gap-2"
               >
                 <Plus className="h-4 w-4" /> Ajouter
               </Button>
+            </div>
+            <div className="md:col-span-4">
+              <label className="mb-1 block text-xs text-muted">
+                Finding ciblé (CVE, GHSA, règle, empreinte)
+              </label>
+              <Input
+                value={exceptionForm.fingerprint}
+                onChange={(e) =>
+                  setExceptionForm((f) => ({
+                    ...f,
+                    fingerprint: e.target.value,
+                  }))
+                }
+                maxLength={300}
+                placeholder="Ex. : CVE-2024-1234 ou GHSA-xxxx-yyyy-zzzz"
+              />
             </div>
             <div className="md:col-span-4">
               <label className="mb-1 block text-xs text-muted">
@@ -958,6 +1004,45 @@ function Toggle({
         )}
       />
     </button>
+  );
+}
+
+function PortField({
+  label,
+  hint,
+  value,
+  onChange,
+}: {
+  label: string;
+  hint?: string;
+  value: number | "";
+  onChange: (v: number | "") => void;
+}) {
+  return (
+    <div>
+      <label className="mb-1 block text-xs text-muted">{label}</label>
+      <Input
+        type="number"
+        min={1}
+        max={65535}
+        placeholder="Auto"
+        value={value}
+        onChange={(e) => {
+          const raw = e.target.value;
+          if (raw === "") {
+            onChange("");
+            return;
+          }
+          const parsed = Number(raw);
+          onChange(
+            Number.isInteger(parsed) && parsed >= 1 && parsed <= 65535
+              ? parsed
+              : "",
+          );
+        }}
+      />
+      {hint && <p className="mt-1 text-[11px] text-muted">{hint}</p>}
+    </div>
   );
 }
 

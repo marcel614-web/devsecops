@@ -9,13 +9,14 @@ import { getInstallationToken } from "../../services/github-token.service";
 import { getGithubAppConfig } from "../../services/github-config.service";
 import { execFileAsync } from "../../orchestrator/step.executor";
 import type { StepContext, StepResult } from "../../orchestrator/step.executor";
+import { buildSandboxEnv } from "../../utils/sandbox-env";
 
 const WORKSPACES_ROOT = path.join(os.tmpdir(), "devsecops-workspaces");
 const MAX_ATTEMPTS = 3;
 const RETRY_DELAY_MS = 5_000;
 
 // ============================================================
-// RÉSOLUTION DE L'URL DE CLONE
+// RÃƒâ€°SOLUTION DE L'URL DE CLONE
 // ============================================================
 interface CloneSource {
   url: string;
@@ -24,10 +25,10 @@ interface CloneSource {
 }
 
 /**
- * Détermine l'URL et l'authentification pour cloner un repo.
+ * DÃƒÂ©termine l'URL et l'authentification pour cloner un repo.
  *
- * 1. Repo local "local:..."  → file://
- * 2. Repo lié à une GitHub App → token d'installation
+ * 1. Repo local "local:..."  Ã¢â€ â€™ file://
+ * 2. Repo liÃƒÂ© ÃƒÂ  une GitHub App Ã¢â€ â€™ token d'installation
  * 3. Fallback : repo public via miroir ghfast.top
  * 4. Fallback final : GitHub direct
  */
@@ -46,7 +47,7 @@ async function resolveCloneSource(
     };
   }
 
-  // -------- 2. Repo lié à une GitHub App --------
+  // -------- 2. Repo liÃƒÂ© ÃƒÂ  une GitHub App --------
   const project = await prisma.project.findUnique({
     where: { id: projectId },
     select: {
@@ -90,12 +91,12 @@ async function resolveCloneSource(
     } catch (err) {
       logger.warn(
         { err, repoFullName },
-        "Échec génération token installation — fallback vers clone public",
+        "Ãƒâ€°chec gÃƒÂ©nÃƒÂ©ration token installation Ã¢â‚¬â€ fallback vers clone public",
       );
     }
   }
 
-  // -------- 3. Miroir (utile pour réseau instable) --------
+  // -------- 3. Miroir (utile pour rÃƒÂ©seau instable) --------
   const mirrorPrefix = process.env.GIT_MIRROR_PREFIX?.trim() ?? "";
   const raw = `https://github.com/${repoFullName}.git`;
 
@@ -131,7 +132,7 @@ async function tryClone(
 ): Promise<CloneAttemptResult> {
   const args: string[] = [];
 
-  // Header d'authentification Git (jamais persisté sur disque)
+  // Header d'authentification Git (jamais persistÃƒÂ© sur disque)
   if (source.authHeader) {
     args.push("-c", `http.extraheader=${source.authHeader}`);
   }
@@ -149,12 +150,12 @@ async function tryClone(
   try {
     await execFileAsync("git", args, {
       timeout: timeoutMs,
-      env: {
-        ...process.env,
+      // Environnement filtrÃƒÂ© : `git` n'a besoin d'aucun secret de plateforme.
+      env: buildSandboxEnv(process.env, {
         GIT_TERMINAL_PROMPT: "0",
         GIT_HTTP_LOW_SPEED_LIMIT: "1000",
         GIT_HTTP_LOW_SPEED_TIME: "60",
-      },
+      }),
     });
     return { ok: true };
   } catch (err) {
@@ -165,7 +166,7 @@ async function tryClone(
 }
 
 // ============================================================
-// ÉTAPE CHECKOUT
+// Ãƒâ€°TAPE CHECKOUT
 // ============================================================
 export async function checkoutStep(
   _step: unknown,
@@ -178,12 +179,12 @@ export async function checkoutStep(
 
   switch (source.kind) {
     case "local":
-      await ctx.log("info", `Repo local détecté`);
+      await ctx.log("info", `Repo local dÃƒÂ©tectÃƒÂ©`);
       break;
     case "github-app":
       await ctx.log(
         "info",
-        `Clone via GitHub App (installation authentifiée)`,
+        `Clone via GitHub App (installation authentifiÃƒÂ©e)`,
       );
       break;
     case "github-mirror":
@@ -196,7 +197,7 @@ export async function checkoutStep(
 
   await ctx.log(
     "info",
-    `Clonage de ${ctx.repoFullName} (branche ${ctx.branch}) — profondeur 1`,
+    `Clonage de ${ctx.repoFullName} (branche ${ctx.branch}) Ã¢â‚¬â€ profondeur 1`,
   );
 
   let lastError = "";
@@ -224,7 +225,7 @@ export async function checkoutStep(
     if (result.ok) {
       await ctx.log(
         "info",
-        `Clonage réussi en ${duration}ms (tentative ${attempt})`,
+        `Clonage rÃƒÂ©ussi en ${duration}ms (tentative ${attempt})`,
       );
 
       try {
@@ -234,7 +235,7 @@ export async function checkoutStep(
           { cwd: ctx.workspaceDir },
         );
         const headSha = stdout.trim();
-        await ctx.log("info", `Commit cloné : ${headSha}`);
+        await ctx.log("info", `Commit clonÃƒÂ© : ${headSha}`);
 
         return {
           success: true,
@@ -262,15 +263,15 @@ export async function checkoutStep(
       .join(" | ");
     await ctx.log(
       "warn",
-      `Tentative ${attempt} échouée (${duration}ms) : ${shortError}`,
+      `Tentative ${attempt} ÃƒÂ©chouÃƒÂ©e (${duration}ms) : ${shortError}`,
     );
   }
 
-  await ctx.log("error", `Échec du clonage après ${MAX_ATTEMPTS} tentatives`);
+  await ctx.log("error", `Ãƒâ€°chec du clonage aprÃƒÂ¨s ${MAX_ATTEMPTS} tentatives`);
   return {
     success: false,
     exitCode: 1,
-    error: `Clonage échoué après ${MAX_ATTEMPTS} tentatives : ${lastError
+    error: `Clonage ÃƒÂ©chouÃƒÂ© aprÃƒÂ¨s ${MAX_ATTEMPTS} tentatives : ${lastError
       .split("\n")
       .slice(-2)
       .join(" | ")}`,

@@ -11,6 +11,12 @@ export const pipelinesApi = {
   run: (projectId: string, data?: { branch?: string; commitSha?: string }) =>
     api.post<{ pipeline: Pipeline }>(`/api/projects/${projectId}/pipelines/run`, data ?? {}).then((r) => r.data.pipeline),
 
+  rerun: (projectId: string, id: string) =>
+    api.post<{ pipeline: Pipeline }>(`/api/projects/${projectId}/pipelines/${id}/rerun`).then((r) => r.data.pipeline),
+
+  resume: (projectId: string, id: string) =>
+    api.post<{ pipeline: Pipeline }>(`/api/projects/${projectId}/pipelines/${id}/resume`).then((r) => r.data.pipeline),
+
   cancel: (projectId: string, id: string) =>
     api.post(`/api/projects/${projectId}/pipelines/${id}/cancel`),
 

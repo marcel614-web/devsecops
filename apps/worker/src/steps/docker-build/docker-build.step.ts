@@ -7,6 +7,7 @@ import { prisma } from "../../utils/prisma";
 import { decryptString } from "../../utils/crypto";
 import { logger } from "../../utils/logger";
 import { SshRunner } from "../../runners/ssh.runner";
+import { isValidGitSha } from "@devsecops/shared";
 import type { StepContext, StepResult } from "../../orchestrator/step.executor";
 
 // ============================================================
@@ -38,6 +39,10 @@ const EXCLUDED_DIRS = [
   ".nyc_output",
   ".idea",
   ".vscode",
+  ".ssh",
+  ".aws",
+  ".azure",
+  ".kube",
 ];
 
 // Fichiers individuels à exclure (nom exact du fichier).
@@ -47,10 +52,44 @@ const EXCLUDED_FILES = [
 ];
 
 /**
+ * Motifs de fichiers sensibles qui ne doivent JAMAIS partir dans l'archive
+ * de build. Sans ce filtre, un `.env`, une clé privée ou un dump de base
+ * pouvait être copié dans l'image (`COPY . .`) puis exposé par nginx.
+ *
+ * On reste volontairement conservateur : les fichiers de configuration
+ * d'application versionnés (ex. `config.example.json`) ne sont pas touchés.
+ */
+const SAFE_ENV_TEMPLATES = new Set([
+  ".env.example",
+  ".env.sample",
+  ".env.template",
+  ".env.dist",
+]);
+
+const EXCLUDED_SECRET_PATTERNS: RegExp[] = [
+  /^\.env$/i,
+  /^\.env\..+$/i,
+  /\.pem$/i,
+  /\.key$/i,
+  /\.p12$/i,
+  /\.pfx$/i,
+  /\.jks$/i,
+  /\.keystore$/i,
+  /^id_(rsa|dsa|ecdsa|ed25519)$/i,
+  /^\.npmrc$/i,
+  /^\.pypirc$/i,
+  /^\.netrc$/i,
+  /^credentials(\.json)?$/i,
+  /\.dump$/i,
+];
+
+/**
  * Filtre utilisé par `tar.create`. Retourne `true` pour inclure le chemin,
  * `false` pour l'exclure.
+ *
+ * Exporté pour être testé directement : c'est une barrière de sécurité.
  */
-function shouldIncludePath(entryPath: string): boolean {
+export function shouldIncludePath(entryPath: string): boolean {
   // Normalise les séparateurs (Windows → Unix)
   const normalized = entryPath.replace(/\\/g, "/").replace(/^\.\//, "");
   if (normalized === "." || normalized === "") return true;
@@ -63,6 +102,14 @@ function shouldIncludePath(entryPath: string): boolean {
 
   // Exclut les noms de fichiers individuels
   if (EXCLUDED_FILES.includes(basename)) return false;
+
+  // Les modèles d'environnement ne contiennent pas de secret réel.
+  if (SAFE_ENV_TEMPLATES.has(basename.toLowerCase())) return true;
+
+  // Exclut les secrets et matériaux cryptographiques
+  if (EXCLUDED_SECRET_PATTERNS.some((pattern) => pattern.test(basename))) {
+    return false;
+  }
 
   // Exclut si un des segments du chemin est dans EXCLUDED_DIRS
   for (const part of parts) {
@@ -84,7 +131,132 @@ async function fileExists(p: string): Promise<boolean> {
   }
 }
 
-function generateDockerfile(tech: string): string {
+async function readTextIfExists(filePath: string): Promise<string | null> {
+  try {
+    return await fs.readFile(filePath, "utf8");
+  } catch {
+    return null;
+  }
+}
+
+interface PythonStartCommand {
+  command: string[];
+  extraInstall?: string;
+}
+
+/**
+ * Détermine comment démarrer une application Python.
+ *
+ * Le fallback historique (`python -m http.server`) sert les fichiers
+ * sources et ne lance pas l'application (Flask, FastAPI, Django…).
+ * On détecte donc le framework et le fichier d'entrée pour démarrer
+ * réellement l'application sur le port 8000 exposé par le conteneur.
+ */
+async function detectPythonStart(
+  workspaceDir: string,
+): Promise<PythonStartCommand> {
+  const requirements =
+    (await readTextIfExists(path.join(workspaceDir, "requirements.txt"))) ?? "";
+  const pyproject =
+    (await readTextIfExists(path.join(workspaceDir, "pyproject.toml"))) ?? "";
+  const dependencies = `${requirements}\n${pyproject}`.toLowerCase();
+
+  // Django
+  if (await fileExists(path.join(workspaceDir, "manage.py"))) {
+    return {
+      command: ["python", "manage.py", "runserver", "0.0.0.0:8000"],
+    };
+  }
+
+  const candidates = ["web_server", "app", "main", "server", "wsgi"];
+
+  for (const moduleName of candidates) {
+    const source = await readTextIfExists(
+      path.join(workspaceDir, `${moduleName}.py`),
+    );
+    if (!source) continue;
+
+    // FastAPI : app = FastAPI()
+    const fastapiMatch = source.match(
+      /^\s*([A-Za-z_]\w*)\s*=\s*FastAPI\s*\(/m,
+    );
+    if (fastapiMatch) {
+      const extraInstall = dependencies.includes("uvicorn")
+        ? undefined
+        : "RUN pip install --no-cache-dir uvicorn";
+      return {
+        command: [
+          "python",
+          "-m",
+          "uvicorn",
+          `${moduleName}:${fastapiMatch[1]}`,
+          "--host",
+          "0.0.0.0",
+          "--port",
+          "8000",
+        ],
+        extraInstall,
+      };
+    }
+
+    // Flask : app = Flask(__name__)
+    const flaskMatch = source.match(/^\s*([A-Za-z_]\w*)\s*=\s*Flask\s*\(/m);
+    if (flaskMatch) {
+      const appVariable = flaskMatch[1];
+      const appSpec =
+        appVariable === "app" ? moduleName : `${moduleName}:${appVariable}`;
+      return {
+        command: [
+          "flask",
+          "--app",
+          appSpec,
+          "run",
+          "--host",
+          "0.0.0.0",
+          "--port",
+          "8000",
+        ],
+      };
+    }
+
+    // Flask sans assignation détectable mais avec app.run(...)
+    if (/app\.run\s*\(/.test(source) && dependencies.includes("flask")) {
+      return {
+        command: [
+          "flask",
+          "--app",
+          moduleName,
+          "run",
+          "--host",
+          "0.0.0.0",
+          "--port",
+          "8000",
+        ],
+      };
+    }
+  }
+
+  // Script Python classique avec un point d'entrée explicite.
+  for (const moduleName of ["main", "app", "server", "web_server"]) {
+    const source = await readTextIfExists(
+      path.join(workspaceDir, `${moduleName}.py`),
+    );
+    if (
+      source &&
+      /if\s+__name__\s*==\s*["']__main__["']/.test(source)
+    ) {
+      return { command: ["python", `${moduleName}.py`] };
+    }
+  }
+
+  // Dernier recours : serveur de fichiers statiques.
+  return { command: ["python", "-m", "http.server", "8000"] };
+}
+
+async function generateDockerfile(
+  tech: string,
+  workspaceDir: string,
+): Promise<string> {
   if (tech === "NODEJS") {
     return [
       "FROM node:24-alpine",
@@ -108,16 +280,22 @@ function generateDockerfile(tech: string): string {
     ].join("\n");
   }
   if (tech === "PYTHON") {
-    return [
+    const start = await detectPythonStart(workspaceDir);
+    const lines = [
       "FROM python:3.12-slim",
       "WORKDIR /app",
+      "ENV PYTHONUNBUFFERED=1",
       "COPY requirements.txt* pyproject.toml* ./",
       "RUN (test -f requirements.txt && pip install --no-cache-dir -r requirements.txt) || (test -f pyproject.toml && pip install --no-cache-dir .) || true",
+    ];
+    if (start.extraInstall) lines.push(start.extraInstall);
+    lines.push(
       "COPY . .",
       "RUN rm -f .devsecops.Dockerfile",
       "EXPOSE 8000",
-      'CMD ["python", "-m", "http.server", "8000"]',
-    ].join("\n");
+      `CMD ${JSON.stringify(start.command)}`,
+    );
+    return lines.join("\n");
   }
   return [
     "FROM alpine:latest",
@@ -143,7 +321,35 @@ export async function dockerBuildStep(
   _step: unknown,
   ctx: StepContext,
 ): Promise<StepResult> {
-  const imageTag = `devsecops/${ctx.projectId}:${ctx.commitSha.slice(0, 12)}`;
+  // ----------------------------------------------------------
+  // 0. Garde-fou : le SHA alimente le tag Docker, qui part ensuite dans
+  //    une commande shell exécutée sur la VM de déploiement.
+  //    On le valide ici (défense en profondeur : l'API le valide aussi,
+  //    mais le worker ne doit jamais faire confiance à la base).
+  // ----------------------------------------------------------
+  if (!isValidGitSha(ctx.commitSha)) {
+    return {
+      success: false,
+      exitCode: 1,
+      error: `SHA de commit invalide : "${ctx.commitSha}". Refus de construire l'image.`,
+    };
+  }
+
+  // Le tag doit être unique par build : deux runs ne doivent jamais pointer
+  // vers la même image, sinon le second écrase le tag du premier et le
+  // rollback redéploie la mauvaise version.
+  //
+  // - SHA de commit réel tronqué à 12 caractères : 48 bits d'entropie,
+  //   le risque de collision est négligeable.
+  // - SHA de substitution (`manual-<epoch ms>`) : tronqué à 12 caractères il
+  //   ne reste que 5 chiffres significatifs, ce qui produit des collisions
+  //   régulières entre deux runs lancés à la même seconde. On utilise
+  //   l'identifiant du pipeline, qui est unique par construction.
+  const tagSuffix = ctx.commitSha.startsWith("manual-")
+    ? ctx.pipelineId
+    : ctx.commitSha.slice(0, 12);
+
+  const imageTag = `devsecops/${ctx.projectId}:${tagSuffix}`;
 
   // ----------------------------------------------------------
   // 1. Charge le projet + serveur
@@ -188,7 +394,7 @@ export async function dockerBuildStep(
     const tech = await detectTech(ctx.workspaceDir);
     await ctx.log("info", `Technologie détectée pour le Dockerfile : ${tech}`);
 
-    const content = generateDockerfile(tech);
+    const content = await generateDockerfile(tech, ctx.workspaceDir);
     await fs.writeFile(
       path.join(ctx.workspaceDir, ".devsecops.Dockerfile"),
       content,

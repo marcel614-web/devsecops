@@ -81,6 +81,50 @@ export async function runPipeline(
 }
 
 // ============================================================
+// RERUN
+// ============================================================
+
+export async function rerunPipeline(
+  req: Request,
+  res: Response,
+  next: NextFunction,
+): Promise<void> {
+  try {
+    const actor = actorFrom(req);
+    const pipeline = await pipelinesService.rerunPipeline(
+      actor,
+      req.params.projectId,
+      req.params.id,
+    );
+    res.status(202).json({ pipeline });
+  } catch (err) {
+    next(err);
+  }
+}
+
+// ============================================================
+// RESUME
+// ============================================================
+
+export async function resumePipeline(
+  req: Request,
+  res: Response,
+  next: NextFunction,
+): Promise<void> {
+  try {
+    const actor = actorFrom(req);
+    const pipeline = await pipelinesService.resumePipeline(
+      actor,
+      req.params.projectId,
+      req.params.id,
+    );
+    res.status(202).json({ pipeline });
+  } catch (err) {
+    next(err);
+  }
+}
+
+// ============================================================
 // CANCEL
 // ============================================================
 

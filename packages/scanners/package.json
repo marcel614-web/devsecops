@@ -5,6 +5,15 @@
   "main": "dist/index.js",
   "types": "dist/index.d.ts",
   "scripts": {
-    "build": "tsc -p tsconfig.json"
+    "build": "tsc -p tsconfig.json",
+    "test": "vitest run",
+    "test:watch": "vitest"
+  },
+  "dependencies": {
+    "@devsecops/shared": "*"
+  },
+  "devDependencies": {
+    "vitest": "^2.1.0",
+    "@vitest/coverage-v8": "^2.1.0"
   }
 }

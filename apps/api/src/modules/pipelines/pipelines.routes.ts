@@ -29,6 +29,18 @@ pipelinesRouter.post(
   pipelinesController.runPipeline,
 );
 
+pipelinesRouter.post(
+  "/:id/rerun",
+  validate({ params: projectPipelineParamSchema }),
+  pipelinesController.rerunPipeline,
+);
+
+pipelinesRouter.post(
+  "/:id/resume",
+  validate({ params: projectPipelineParamSchema }),
+  pipelinesController.resumePipeline,
+);
+
 pipelinesRouter.get(
   "/:id",
   validate({ params: projectPipelineParamSchema }),

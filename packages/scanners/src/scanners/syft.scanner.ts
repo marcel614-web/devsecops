@@ -1,11 +1,9 @@
 // packages/scanners/src/scanners/syft.scanner.ts
-import { execFile } from "node:child_process";
-import { promisify } from "node:util";
 import fs from "node:fs/promises";
 import path from "node:path";
+import { execTool } from "@devsecops/shared";
 import type { ScanContext, ScanResult } from "../scanner";
 
-const execFileAsync = promisify(execFile);
 
 const SYFT_IMAGE = process.env.SYFT_IMAGE ?? "anchore/syft:latest";
 
@@ -50,8 +48,8 @@ export interface SyftSummary {
 }
 
 /**
- * Transforme un rapport Syft JSON en résumé compact stockable en base.
- * Le JSON brut peut être très volumineux : on ne conserve que l'essentiel.
+ * Transforme un rapport Syft JSON en rÃƒÂ©sumÃƒÂ© compact stockable en base.
+ * Le JSON brut peut ÃƒÂªtre trÃƒÂ¨s volumineux : on ne conserve que l'essentiel.
  */
 export function parseSyftReport(report: SyftReport): SyftSummary {
   const artifacts = report.artifacts ?? [];
@@ -87,8 +85,8 @@ export function parseSyftReport(report: SyftReport): SyftSummary {
 /**
  * Scanner SBOM Syft.
  *
- * Le worker exécute Syft sur la VM de déploiement via SSH et réutilise
- * `parseSyftReport`. Cette classe permet une exécution locale lorsque
+ * Le worker exÃƒÂ©cute Syft sur la VM de dÃƒÂ©ploiement via SSH et rÃƒÂ©utilise
+ * `parseSyftReport`. Cette classe permet une exÃƒÂ©cution locale lorsque
  * Docker est disponible.
  */
 export class SyftScanner {
@@ -96,9 +94,8 @@ export class SyftScanner {
 
   async isAvailable(): Promise<boolean> {
     try {
-      await execFileAsync("docker", ["--version"], {
+      await execTool("docker", ["--version"], {
         timeout: 30_000,
-        shell: true,
       });
       return true;
     } catch {
@@ -109,7 +106,7 @@ export class SyftScanner {
   async scanImage(imageTag: string): Promise<ScanResult & { summary?: SyftSummary }> {
     const started = Date.now();
     try {
-      const { stdout } = await execFileAsync(
+      const { stdout } = await execTool(
         "docker",
         [
           "run",
@@ -125,7 +122,6 @@ export class SyftScanner {
         {
           timeout: 15 * 60_000,
           maxBuffer: 200 * 1024 * 1024,
-          shell: false,
         },
       );
 
@@ -168,7 +164,7 @@ export class SyftScanner {
       vulnerabilityCount: 0,
       severityCounts: { critical: 0, high: 0, medium: 0, low: 0, info: 0 },
       findings: [],
-      logs: ["[error] SyftScanner.scan() nécessite une image — utilisez scanImage()"],
+      logs: ["[error] SyftScanner.scan() nÃƒÂ©cessite une image Ã¢â‚¬â€ utilisez scanImage()"],
       error: "imageTag requis",
     };
   }

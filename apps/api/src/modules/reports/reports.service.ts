@@ -29,7 +29,7 @@ export async function listReports(
       skip,
       take: query.pageSize,
       include: {
-        project: { select: { id: true, name: true } },
+        project: { select: { id: true, name: true, repoFullName: true } },
         pipeline: { select: { id: true, commitSha: true, status: true, branch: true } },
       },
     }),
@@ -49,7 +49,7 @@ export async function getReport(actor: ActorContext, id: string) {
   const report = await prisma.securityReport.findUnique({
     where: { id },
     include: {
-      project: { select: { id: true, name: true, ownerId: true } },
+      project: { select: { id: true, name: true, repoFullName: true, ownerId: true } },
       pipeline: { select: { id: true, commitSha: true, status: true, branch: true } },
     },
   });

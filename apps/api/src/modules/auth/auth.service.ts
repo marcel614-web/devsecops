@@ -59,6 +59,16 @@ export interface AuthResult {
   tokens: AuthTokens;
 }
 
+/**
+ * Résultat d'une inscription : le compte créé est **inactif** (validation
+ * par un administrateur requise), donc AUCUN jeton n'est délivré.
+ */
+export interface RegisterResult {
+  user: AuthUserPublic;
+  isActive: false;
+  tokens: null;
+}
+
 interface AuditContext {
   ip?: string;
   userAgent?: string;
@@ -115,7 +125,7 @@ async function writeAudit(input: {
 export async function registerUser(
   input: RegisterInput,
   ctx: AuditContext = {},
-): Promise<AuthResult> {
+): Promise<RegisterResult> {
   const existing = await prisma.user.findUnique({
     where: { email: input.email },
     select: { id: true },
@@ -150,9 +160,14 @@ export async function registerUser(
     userAgent: ctx.userAgent,
   });
 
+  // Le compte est inactif : on ne délivre AUCUN jeton. Historiquement, un
+  // access token valide était renvoyé pour un compte jamais activé, ce qui
+  // constituait un contournement de l'activation (requireAuth ne revérifie
+  // pas isActive). L'utilisateur doit être activé par un administrateur.
   return {
     user: toPublicUser(user),
-    tokens: buildTokens(user.id, user.role),
+    isActive: false,
+    tokens: null,
   };
 }
 

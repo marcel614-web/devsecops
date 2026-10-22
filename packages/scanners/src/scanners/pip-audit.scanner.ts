@@ -1,8 +1,7 @@
 // packages/scanners/src/scanners/pip-audit.scanner.ts
-import { execFile } from "node:child_process";
-import { promisify } from "node:util";
 import fs from "node:fs/promises";
 import path from "node:path";
+import { execTool } from "@devsecops/shared";
 import type {
   ScanContext,
   ScanResult,
@@ -10,8 +9,11 @@ import type {
   NormalizedFinding,
   ScannerSeverity,
 } from "../scanner";
+import {
+  FALLBACK_SEVERITY,
+  fetchOsvSeverities,
+} from "../severity/osv";
 
-const execFileAsync = promisify(execFile);
 
 // Binaire configurable. Si pip-audit n'est pas dans le PATH, on tente
 // `python -m pip_audit` (voir isAvailable / scan).
@@ -53,16 +55,14 @@ export class PipAuditScanner implements SecurityScanner {
     }
 
     try {
-      await execFileAsync(PIP_AUDIT_BIN, ["--version"], {
+      await execTool(PIP_AUDIT_BIN, ["--version"], {
         timeout: 30_000,
-        shell: true,
       });
       return true;
     } catch {
       try {
-        await execFileAsync(PYTHON_BIN, ["-m", "pip_audit", "--version"], {
+        await execTool(PYTHON_BIN, ["-m", "pip_audit", "--version"], {
           timeout: 30_000,
-          shell: true,
         });
         return true;
       } catch {
@@ -73,10 +73,10 @@ export class PipAuditScanner implements SecurityScanner {
           );
           if (await this.exists(venvPython)) {
             try {
-              await execFileAsync(
+              await execTool(
                 venvPython,
                 ["-m", "pip_audit", "--version"],
-                { timeout: 30_000, shell: true },
+                { timeout: 30_000 },
               );
               return true;
             } catch {
@@ -102,7 +102,7 @@ export class PipAuditScanner implements SecurityScanner {
     const started = Date.now();
     const logs: string[] = [];
 
-    // Préfère pip-audit installé dans le venv créé par INSTALL_DEPS.
+    // PrÃƒÂ©fÃƒÂ¨re pip-audit installÃƒÂ© dans le venv crÃƒÂ©ÃƒÂ© par INSTALL_DEPS.
     const venvPipAudit = this.venvPath(
       ctx.workspaceDir,
       process.platform === "win32" ? "pip-audit.exe" : "pip-audit",
@@ -119,7 +119,7 @@ export class PipAuditScanner implements SecurityScanner {
       ? venvPython
       : PYTHON_BIN;
 
-    // Détermine la cible du scan : requirements.txt, venv local, ou projet.
+    // DÃƒÂ©termine la cible du scan : requirements.txt, venv local, ou projet.
     const hasRequirements = await this.exists(
       path.join(ctx.workspaceDir, "requirements.txt"),
     );
@@ -129,7 +129,7 @@ export class PipAuditScanner implements SecurityScanner {
     );
 
     if (!hasRequirements && !hasVenv && !hasPyproject) {
-      logs.push("[info] Aucun fichier de dépendances Python — SCA Python ignoré");
+      logs.push("[info] Aucun fichier de dÃƒÂ©pendances Python Ã¢â‚¬â€ SCA Python ignorÃƒÂ©");
       return this.emptyResult(started, logs, "SUCCESS");
     }
 
@@ -142,14 +142,13 @@ export class PipAuditScanner implements SecurityScanner {
     let stdout = "";
     let exitCode = 0;
     try {
-      const result = await execFileAsync(
+      const result = await execTool(
         primaryBin,
         [...auditTargetArgs, "--format=json", "--progress-spinner=off"],
         {
           cwd: ctx.workspaceDir,
           timeout: 5 * 60_000,
           maxBuffer: 30 * 1024 * 1024,
-          shell: true,
         },
       );
       stdout = result.stdout;
@@ -164,9 +163,9 @@ export class PipAuditScanner implements SecurityScanner {
       exitCode = anyErr.code ?? 1;
 
       if (!stdout.trim()) {
-        // Deuxième tentative avec `python -m pip_audit`.
+        // DeuxiÃƒÂ¨me tentative avec `python -m pip_audit`.
         try {
-          const fallback = await execFileAsync(
+          const fallback = await execTool(
             fallbackPython,
             [
               "-m",
@@ -179,7 +178,6 @@ export class PipAuditScanner implements SecurityScanner {
               cwd: ctx.workspaceDir,
               timeout: 5 * 60_000,
               maxBuffer: 30 * 1024 * 1024,
-              shell: true,
             },
           );
           stdout = fallback.stdout;
@@ -197,7 +195,7 @@ export class PipAuditScanner implements SecurityScanner {
               fb.stderr?.trim() ||
               anyErr.stderr?.trim() ||
               anyErr.message ||
-              "pip-audit a échoué";
+              "pip-audit a ÃƒÂ©chouÃƒÂ©";
             logs.push(`[error] ${msg.slice(0, 2000)}`);
             return {
               scanner: this.name,
@@ -214,7 +212,7 @@ export class PipAuditScanner implements SecurityScanner {
         }
       }
       if (exitCode !== 1 && exitCode !== 0) {
-        logs.push(`[warn] pip-audit a retourné le code ${exitCode}`);
+        logs.push(`[warn] pip-audit a retournÃƒÂ© le code ${exitCode}`);
       }
     }
 
@@ -222,13 +220,31 @@ export class PipAuditScanner implements SecurityScanner {
     try {
       parsed = JSON.parse(stdout) as PipAuditOutput;
     } catch {
-      logs.push("[warn] Impossible de parser la sortie JSON de pip-audit");
-      return this.emptyResult(started, logs, "SUCCESS");
+      // PROBLÃƒË†ME CORRIGÃƒâ€° : une sortie illisible ÃƒÂ©tait rapportÃƒÂ©e comme
+      // "SUCCESS" avec 0 vulnÃƒÂ©rabilitÃƒÂ©. Un scan cassÃƒÂ© devenait donc un
+      // scan propre, et le Security Gate validait le pipeline.
+      // On remonte dÃƒÂ©sormais un ÃƒÂ©chec technique.
+      logs.push("[error] Impossible de parser la sortie JSON de pip-audit");
+      return {
+        scanner: this.name,
+        status: "FAILED",
+        durationMs: Date.now() - started,
+        exitCode: exitCode ?? 2,
+        vulnerabilityCount: 0,
+        severityCounts: { critical: 0, high: 0, medium: 0, low: 0, info: 0 },
+        findings: [],
+        logs,
+        error: "Sortie de pip-audit illisible (JSON invalide)",
+      };
     }
 
     const dependencies = Array.isArray(parsed)
       ? parsed
       : (parsed.dependencies ?? []);
+
+    // RÃƒÂ©solution des sÃƒÂ©vÃƒÂ©ritÃƒÂ©s rÃƒÂ©elles via OSV (une seule requÃƒÂªte batch).
+    const allVulns = dependencies.flatMap((dep) => dep.vulns ?? []);
+    const severities = await this.resolveSeverities(allVulns, logs);
 
     const findings: NormalizedFinding[] = [];
     for (const dep of dependencies) {
@@ -237,13 +253,13 @@ export class PipAuditScanner implements SecurityScanner {
         findings.push({
           tool: this.name,
           technology: "PYTHON",
-          severity: this.mapSeverity(vuln),
+          severity: this.resolveSeverity(vuln, severities),
           packageName: dep.name,
           version: dep.version,
           fixedVersion: vuln.fix_versions?.join(", "),
           description:
             vuln.description?.slice(0, 2000) ??
-            `Vulnérabilité ${id} dans ${dep.name ?? "un paquet Python"}`,
+            `VulnÃƒÂ©rabilitÃƒÂ© ${id} dans ${dep.name ?? "un paquet Python"}`,
           reference: id,
           raw: {
             aliases: vuln.aliases,
@@ -255,7 +271,7 @@ export class PipAuditScanner implements SecurityScanner {
 
     const severityCounts = this.countSeverities(findings);
     logs.push(
-      `[info] ${findings.length} vulnérabilité(s) pip-audit : ` +
+      `[info] ${findings.length} vulnÃƒÂ©rabilitÃƒÂ©(s) pip-audit : ` +
         `critical=${severityCounts.critical}, high=${severityCounts.high}, ` +
         `medium=${severityCounts.medium}, low=${severityCounts.low}`,
     );
@@ -299,8 +315,67 @@ export class PipAuditScanner implements SecurityScanner {
 
   private mapSeverity(_vuln: PipAuditVuln): ScannerSeverity {
     // pip-audit ne fournit pas de score CVSS dans sa sortie JSON.
-    // On classe en MEDIUM par défaut ; les CVE restent consultables via la référence.
-    return "MEDIUM";
+    // La sÃƒÂ©vÃƒÂ©ritÃƒÂ© rÃƒÂ©elle est rÃƒÂ©solue via l'API OSV (voir `resolveSeverities`).
+    // Cette valeur n'est qu'un filet de sÃƒÂ©curitÃƒÂ© : elle ne doit pas ÃƒÂªtre
+    // utilisÃƒÂ©e seule, sinon un CVE critique Python ne dÃƒÂ©clencherait jamais
+    // le Security Gate.
+    return FALLBACK_SEVERITY;
+  }
+
+  /**
+   * RÃƒÂ©sout la sÃƒÂ©vÃƒÂ©ritÃƒÂ© rÃƒÂ©elle des vulnÃƒÂ©rabilitÃƒÂ©s via l'API OSV.
+   *
+   * Retourne une Map identifiant (CVE / GHSA / PYSEC) Ã¢â€ â€™ sÃƒÂ©vÃƒÂ©ritÃƒÂ©.
+   * En cas d'ÃƒÂ©chec rÃƒÂ©seau, on conserve la sÃƒÂ©vÃƒÂ©ritÃƒÂ© de repli (HIGH),
+   * qui est volontairement conservatrice : mieux vaut surestimer.
+   */
+  private async resolveSeverities(
+    vulns: PipAuditVuln[],
+    logs: string[],
+  ): Promise<Map<string, ScannerSeverity>> {
+    const ids: string[] = [];
+    for (const vuln of vulns) {
+      const id = vuln.id ?? vuln.aliases?.[0];
+      if (id) ids.push(id);
+      for (const alias of vuln.aliases ?? []) ids.push(alias);
+    }
+
+    if (ids.length === 0) return new Map();
+
+    try {
+      const severities = await fetchOsvSeverities(ids);
+      if (severities.size === 0) {
+        logs.push(
+          "[warn] OSV n'a retournÃƒÂ© aucune sÃƒÂ©vÃƒÂ©ritÃƒÂ© Ã¢â‚¬â€ classification par dÃƒÂ©faut (HIGH)",
+        );
+      }
+      return severities;
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : String(err);
+      logs.push(
+        `[warn] RÃƒÂ©solution de sÃƒÂ©vÃƒÂ©ritÃƒÂ© OSV impossible (${msg}) Ã¢â‚¬â€ classification par dÃƒÂ©faut (HIGH)`,
+      );
+      return new Map();
+    }
+  }
+
+  /**
+   * DÃƒÂ©termine la sÃƒÂ©vÃƒÂ©ritÃƒÂ© finale d'une vulnÃƒÂ©rabilitÃƒÂ© pip-audit.
+   */
+  private resolveSeverity(
+    vuln: PipAuditVuln,
+    severities: Map<string, ScannerSeverity>,
+  ): ScannerSeverity {
+    const candidates = [vuln.id, ...(vuln.aliases ?? [])].filter(
+      (v): v is string => Boolean(v),
+    );
+
+    for (const candidate of candidates) {
+      const found = severities.get(candidate);
+      if (found) return found;
+    }
+
+    return this.mapSeverity(vuln);
   }
 
   private countSeverities(findings: NormalizedFinding[]) {

@@ -1,6 +1,5 @@
 // packages/scanners/src/scanners/semgrep.scanner.ts
-import { execFile } from "node:child_process";
-import { promisify } from "node:util";
+import { execTool } from "@devsecops/shared";
 import type {
   ScanContext,
   ScanResult,
@@ -9,7 +8,6 @@ import type {
   ScannerSeverity,
 } from "../scanner";
 
-const execFileAsync = promisify(execFile);
 
 interface SemgrepResult {
   check_id: string;
@@ -39,9 +37,8 @@ export class SemgrepScanner implements SecurityScanner {
 
   async isAvailable(): Promise<boolean> {
     try {
-      await execFileAsync("semgrep", ["--version"], {
-        timeout: 180_000, // Python à froid peut prendre 30-60s sur Windows
-        shell: true,
+      await execTool("semgrep", ["--version"], {
+        timeout: 180_000, // Python ÃƒÂ  froid peut prendre 30-60s sur Windows
       });
       return true;
     } catch {
@@ -57,16 +54,16 @@ export class SemgrepScanner implements SecurityScanner {
     );
 
     try {
-      const { stdout, stderr } = await execFileAsync(
+      const { stdout, stderr } = await execTool(
         "semgrep",
         [
           "--config=auto",
           "--json",
           "--quiet",
           "--timeout", "60",
-          // Le workspace contient les dépendances installées par
+          // Le workspace contient les dÃƒÂ©pendances installÃƒÂ©es par
           // INSTALL_DEPS : sans ces exclusions, Semgrep analyse des
-          // milliers de fichiers de node_modules et échoue par timeout.
+          // milliers de fichiers de node_modules et ÃƒÂ©choue par timeout.
           "--exclude=**/node_modules/**",
           "--exclude=**/vendor/**",
           "--exclude=**/.git/**",
@@ -79,7 +76,6 @@ export class SemgrepScanner implements SecurityScanner {
         {
           timeout: 10 * 60_000,
           maxBuffer: 50 * 1024 * 1024,
-          shell: true,
         },
       );
 
@@ -112,7 +108,7 @@ export class SemgrepScanner implements SecurityScanner {
 
       const severityCounts = this.countSeverities(normalized);
       logs.push(
-        `[info] ${normalized.length} résultat(s) Semgrep : ` +
+        `[info] ${normalized.length} rÃƒÂ©sultat(s) Semgrep : ` +
           `critical=${severityCounts.critical}, high=${severityCounts.high}, ` +
           `medium=${severityCounts.medium}, low=${severityCounts.low}`,
       );
@@ -143,7 +139,7 @@ export class SemgrepScanner implements SecurityScanner {
           }));
           const severityCounts = this.countSeverities(normalized);
           logs.push(
-            `[info] Semgrep code retour ${anyErr.code ?? "?"} — résultats parsés`,
+            `[info] Semgrep code retour ${anyErr.code ?? "?"} Ã¢â‚¬â€ rÃƒÂ©sultats parsÃƒÂ©s`,
           );
           return {
             scanner: this.name,
@@ -160,7 +156,7 @@ export class SemgrepScanner implements SecurityScanner {
         }
       }
 
-      logs.push(`[error] Échec de Semgrep : ${msg}`);
+      logs.push(`[error] Ãƒâ€°chec de Semgrep : ${msg}`);
       return {
         scanner: this.name,
         status: "FAILED",
