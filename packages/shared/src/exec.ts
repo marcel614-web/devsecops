@@ -85,7 +85,11 @@ export async function execTool(
     // On construit la commande nous-memes et on la passe en un seul
     // argument a cmd.exe : Node l'echappe pour CreateProcess, cmd ne voit
     // donc qu'une commande unique et explicite.
-    const command = [bin, ...args].map(quoteForCmd).join(" ");
+    //
+    // La commande doit etre entouree d'une paire de guillemets
+    // supplementaire : sinon cmd.exe /s /c coupe la ligne au niveau des
+    // guillemets du chemin de l'executable et renvoie une erreur de syntaxe.
+    const command = `"${[bin, ...args].map(quoteForCmd).join(" ")}"`;
     return execFileAsync("cmd.exe", ["/d", "/s", "/c", command], {
       ...options,
       shell: false,
@@ -110,11 +114,27 @@ export function spawnTool(
   options: ToolExecOptions = {},
 ): Promise<{ code: number | null; signal: NodeJS.Signals | null }> {
   return new Promise((resolve, reject) => {
-    const child = spawn(bin, args, {
-      cwd: options.cwd,
-      env: options.env,
-      shell: false,
-    });
+    const child = isWindowsBatch(bin)
+      ? spawn(
+          "cmd.exe",
+          [
+            "/d",
+            "/s",
+            "/c",
+            `"${[bin, ...args].map(quoteForCmd).join(" ")}"`,
+          ],
+          {
+            cwd: options.cwd,
+            env: options.env,
+            shell: false,
+            windowsVerbatimArguments: true,
+          },
+        )
+      : spawn(bin, args, {
+          cwd: options.cwd,
+          env: options.env,
+          shell: false,
+        });
 
     child.stdout?.on("data", (chunk: Buffer) =>
       onData(chunk.toString("utf8"), "stdout"),

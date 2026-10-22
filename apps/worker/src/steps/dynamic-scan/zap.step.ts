@@ -2,6 +2,7 @@
 import { spawn } from "node:child_process";
 import { existsSync } from "node:fs";
 import fs from "node:fs/promises";
+import net from "node:net";
 import os from "node:os";
 import path from "node:path";
 import { ScanType } from "@prisma/client";
@@ -63,6 +64,30 @@ function resolveLocalZapCwd(bin: string): string {
   return path.dirname(bin);
 }
 
+/**
+ * ZAP demarre un proxy local sur le port 8080 par defaut. Ce port est
+ * souvent deja utilise (Burp Suite, une application deployee, etc.), ce qui
+ * fait echouer ZAP avec `java.net.BindException`. On demande donc au systeme
+ * un port libre avant de lancer ZAP.
+ */
+async function findFreePort(): Promise<number> {
+  return new Promise((resolve, reject) => {
+    const server = net.createServer();
+    server.unref();
+    server.once("error", reject);
+    server.listen(0, "127.0.0.1", () => {
+      const address = server.address();
+      const port =
+        typeof address === "object" && address ? address.port : 0;
+      server.close((err) => {
+        if (err) return reject(err);
+        if (port <= 0) return reject(new Error("Aucun port libre trouve"));
+        resolve(port);
+      });
+    });
+  });
+}
+
 interface LocalProcessResult {
   exitCode: number;
   output: string;
@@ -89,8 +114,14 @@ function runLocalZapProcess(
     // une ligne de commande.
     // On passe desormais par cmd.exe explicitement, avec un echappement
     // strict et "fail closed" des arguments.
+    //
+    // `cmd.exe /d /s /c` attend la commande complete entouree d'une paire
+    // de guillemets supplementaire lorsque le chemin de l'executable est
+    // lui-meme deja quote. Sans ces guillemets externes, cmd coupe la ligne
+    // au mauvais endroit (ex. `zap.bat" "-version`) et renvoie
+    // "La syntaxe du nom de fichier, de repertoire ou de volume est incorrecte".
     const command = isWindows
-      ? [bin, ...args].map(quoteForCmd).join(" ")
+      ? `"${[bin, ...args].map(quoteForCmd).join(" ")}"`
       : bin;
 
     const child = isWindows
@@ -469,10 +500,22 @@ async function runLocalZapScan(
       buildZapAutomationPlan(targetUrl, workDir),
       "utf8",
     );
+    // ZAP attend que son repertoire de travail existe deja.
+    await fs.mkdir(zapHome, { recursive: true });
+    const zapPort = await findFreePort();
 
     const proc = await runLocalZapProcess(
       zapBin,
-      ["-cmd", "-silent", "-dir", zapHome, "-autorun", planPath],
+      [
+        "-cmd",
+        "-silent",
+        "-dir",
+        zapHome,
+        "-port",
+        String(zapPort),
+        "-autorun",
+        planPath,
+      ],
       cwd,
       ZAP_LOCAL_TIMEOUT_MS,
     );

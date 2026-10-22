@@ -32,18 +32,39 @@ export class SshRunner {
       keepaliveInterval: 30_000,
     };
 
-    this.conn = new Client();
+    const conn = new Client();
+    this.conn = conn;
+    let ready = false;
 
     await new Promise<void>((resolve, reject) => {
-      this.conn!.once("ready", () => resolve());
-      this.conn!.once("error", (err) =>
-        reject(new Error(`SSH ${opts.host}:${opts.port} — ${err.message}`)),
-      );
+      // Ce gestionnaire reste attache apres le handshake : sans lui, une
+      // coupure reseau ulterieure emet un evenement `error` non gere et tue
+      // tout le processus Node (donc le worker et les jobs en cours).
+      conn.on("error", (err) => {
+        if (!ready) {
+          reject(
+            new Error(`SSH ${opts.host}:${opts.port} — ${err.message}`),
+          );
+          return;
+        }
+        logger.warn(
+          { host: opts.host, port: opts.port, error: err.message },
+          "Connexion SSH perdue",
+        );
+      });
+      conn.once("ready", () => {
+        ready = true;
+        resolve();
+      });
       try {
-        this.conn!.connect(config);
+        conn.connect(config);
       } catch (err) {
         reject(err);
       }
+    }).catch((err) => {
+      conn.end();
+      if (this.conn === conn) this.conn = null;
+      throw err;
     });
 
     logger.debug({ host: opts.host, user: opts.username }, "SSH connecté");
@@ -73,6 +94,10 @@ export class SshRunner {
         });
         stream.stderr.on("data", (data: Buffer) => {
           stderr += data.toString("utf8");
+        });
+        stream.on("error", (err: Error) => {
+          clearTimeout(timer);
+          reject(new Error(`Erreur du flux SSH : ${err.message}`));
         });
         stream.on("close", (code: number) => {
           clearTimeout(timer);
@@ -114,6 +139,10 @@ export class SshRunner {
         stream.stderr.on("data", (data: Buffer) =>
           onData(data.toString("utf8"), "stderr"),
         );
+        stream.on("error", (err: Error) => {
+          clearTimeout(timer);
+          reject(new Error(`Erreur du flux SSH : ${err.message}`));
+        });
         stream.on("close", (code: number) => {
           clearTimeout(timer);
           resolve(code ?? 0);

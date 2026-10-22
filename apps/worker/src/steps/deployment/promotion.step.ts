@@ -206,6 +206,10 @@ export async function promotionStep(
           url: productionUrl,
           finishedAt,
           durationMs,
+          // Une promotion qui reussit ne doit pas conserver l'erreur d'une
+          // tentative precedente (reprise de pipeline apres timeout SSH).
+          error: null,
+          rollbackImageTag: null,
         },
       });
 
