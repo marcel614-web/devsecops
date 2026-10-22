@@ -235,6 +235,28 @@ export async function runPipeline(
   author = author ?? actor.id;
 
   const pipeline = await prisma.$transaction(async (tx) => {
+    // Verrou atomique par (projet, commit, branche) : deux requêtes
+    // simultanées (double-clic, webhook + manuel) ne peuvent pas créer
+    // deux pipelines actifs pour le même commit. Le verrou est
+    // transactionnel et libéré automatiquement au commit/rollback.
+    const lockKey = `${projectId}:${commitSha}:${branch}`;
+    await tx.$queryRaw`SELECT pg_advisory_xact_lock(hashtextextended(${lockKey}, 0))`;
+
+    const active = await tx.pipeline.findFirst({
+      where: {
+        projectId,
+        commitSha,
+        branch,
+        status: { in: [PipelineStatus.QUEUED, PipelineStatus.RUNNING] },
+      },
+      select: { id: true },
+    });
+    if (active) {
+      throw new ConflictError(
+        "Un pipeline est déjà en cours pour ce commit et cette branche",
+      );
+    }
+
     const created = await tx.pipeline.create({
       data: {
         projectId,
