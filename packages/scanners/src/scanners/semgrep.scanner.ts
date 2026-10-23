@@ -36,8 +36,9 @@ export class SemgrepScanner implements SecurityScanner {
   public readonly name = "semgrep";
 
   async isAvailable(): Promise<boolean> {
+    const bin = process.env.SEMGREP_BIN ?? "semgrep";
     try {
-      await execTool("semgrep", ["--version"], {
+      await execTool(bin, ["--version"], {
         timeout: 180_000, // Python ÃƒÂ  froid peut prendre 30-60s sur Windows
       });
       return true;
@@ -54,8 +55,9 @@ export class SemgrepScanner implements SecurityScanner {
     );
 
     try {
+      const bin = process.env.SEMGREP_BIN ?? "semgrep";
       const { stdout, stderr } = await execTool(
-        "semgrep",
+        bin,
         [
           "--config=auto",
           "--json",
