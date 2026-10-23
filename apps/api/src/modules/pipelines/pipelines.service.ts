@@ -240,7 +240,12 @@ export async function runPipeline(
     // deux pipelines actifs pour le même commit. Le verrou est
     // transactionnel et libéré automatiquement au commit/rollback.
     const lockKey = `${projectId}:${commitSha}:${branch}`;
-    await tx.$queryRaw`SELECT pg_advisory_xact_lock(hashtextextended(${lockKey}, 0))`;
+    // `pg_advisory_xact_lock` renvoie le pseudo-type PostgreSQL `void`.
+    // `$queryRaw` tente de désérialiser cette colonne et échoue avec
+    // « Failed to deserialize column of type 'void' ». `$executeRaw` ne
+    // renvoie pas de colonne : le verrou est bien pris dans la transaction
+    // sans provoquer d'erreur de désérialisation.
+    await tx.$executeRaw`SELECT pg_advisory_xact_lock(hashtextextended(${lockKey}, 0))`;
 
     const active = await tx.pipeline.findFirst({
       where: {

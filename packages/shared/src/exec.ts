@@ -1,5 +1,7 @@
 // packages/scanners/src/exec.ts
 import { execFile, spawn } from "node:child_process";
+import { existsSync } from "node:fs";
+import path from "node:path";
 import { promisify } from "node:util";
 
 const execFileAsync = promisify(execFile);
@@ -74,6 +76,27 @@ function isWindowsBatch(bin: string): boolean {
 }
 
 /**
+ * `execFile('npm', ...)` echoue avec ENOENT sous Windows : `npm` est un
+ * script `npm.cmd`, et CreateProcess ne resout pas les extensions de
+ * `PATHEXT` comme le fait cmd.exe. On resout donc explicitement les
+ * commandes sans extension vers leur `.cmd`/`.bat` present dans PATH.
+ */
+function resolveWindowsCommand(bin: string): string {
+  if (process.platform !== "win32") return bin;
+  if (path.extname(bin) || bin.includes("\\") || bin.includes("/")) return bin;
+
+  const dirs = (process.env.PATH ?? "").split(path.delimiter);
+  for (const dir of dirs) {
+    if (!dir) continue;
+    for (const ext of [".cmd", ".bat"]) {
+      const candidate = path.join(dir, `${bin}${ext}`);
+      if (existsSync(candidate)) return candidate;
+    }
+  }
+  return bin;
+}
+
+/**
  * Execute un outil externe et retourne stdout/stderr.
  */
 export async function execTool(
@@ -81,6 +104,7 @@ export async function execTool(
   args: string[],
   options: ToolExecOptions = {},
 ): Promise<ToolExecResult> {
+  bin = resolveWindowsCommand(bin);
   if (isWindowsBatch(bin)) {
     // On construit la commande nous-memes et on la passe en un seul
     // argument a cmd.exe : Node l'echappe pour CreateProcess, cmd ne voit
@@ -113,6 +137,7 @@ export function spawnTool(
   onData: (chunk: string, stream: "stdout" | "stderr") => void,
   options: ToolExecOptions = {},
 ): Promise<{ code: number | null; signal: NodeJS.Signals | null }> {
+  bin = resolveWindowsCommand(bin);
   return new Promise((resolve, reject) => {
     const child = isWindowsBatch(bin)
       ? spawn(

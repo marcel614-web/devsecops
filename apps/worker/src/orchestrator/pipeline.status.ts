@@ -67,13 +67,21 @@ export async function markStepFinished(
     ? now.getTime() - step.startedAt.getTime()
     : null;
 
+  // Un echec de spawn (`ENOENT`) expose un code texte, alors que la colonne
+  // Prisma `exitCode` est un entier. Sans normalisation, la mise a jour de
+  // l'etape leve une exception et laisse le pipeline bloque/incoherent.
+  const exitCode =
+    typeof options.exitCode === "number" && Number.isInteger(options.exitCode)
+      ? options.exitCode
+      : null;
+
   await prisma.pipelineStep.update({
     where: { id: stepId },
     data: {
       status,
       finishedAt: now,
       durationMs,
-      exitCode: options.exitCode ?? null,
+      exitCode,
       error: options.error ?? null,
       ...(options.resultJson !== undefined
         ? { resultJson: options.resultJson as object }
