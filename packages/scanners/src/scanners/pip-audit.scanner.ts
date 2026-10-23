@@ -1,7 +1,7 @@
 // packages/scanners/src/scanners/pip-audit.scanner.ts
 import fs from "node:fs/promises";
 import path from "node:path";
-import { execTool } from "@devsecops/shared";
+import { execTool, isTransientNetworkError } from "@devsecops/shared";
 import type {
   ScanContext,
   ScanResult,
@@ -19,6 +19,27 @@ import {
 // `python -m pip_audit` (voir isAvailable / scan).
 const PIP_AUDIT_BIN = process.env.PIP_AUDIT_BIN ?? "pip-audit";
 const PYTHON_BIN = process.env.PYTHON_BIN ?? "python";
+
+/**
+ * Service de vulnérabilités utilisé par pip-audit.
+ *
+ * `pypi` (défaut de l'outil) interroge `pypi.org` une fois PAR PAQUET :
+ * sur un réseau instable, un seul timeout fait échouer tout le scan.
+ * `osv` effectue une requête batch unique et bien plus rapide.
+ */
+const PIP_AUDIT_SERVICE = process.env.PIP_AUDIT_SERVICE ?? "osv";
+const PIP_AUDIT_TIMEOUT_S =
+  process.env.PIP_AUDIT_TIMEOUT ?? "60";
+const PIP_AUDIT_ATTEMPTS = 3;
+
+function pipAuditAttempts(): number {
+  const parsed = Number.parseInt(process.env.PIP_AUDIT_ATTEMPTS ?? "", 10);
+  return Number.isFinite(parsed) && parsed > 0 ? parsed : PIP_AUDIT_ATTEMPTS;
+}
+
+function pipAuditDelay(ms: number): Promise<void> {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
 
 interface PipAuditVuln {
   id?: string;
@@ -139,19 +160,28 @@ export class PipAuditScanner implements SecurityScanner {
         ? ["--path", ".venv"]
         : ["."];
 
+    const auditArgs = [
+      ...auditTargetArgs,
+      "--format=json",
+      "--progress-spinner=off",
+      "--vulnerability-service",
+      PIP_AUDIT_SERVICE,
+      "--timeout",
+      PIP_AUDIT_TIMEOUT_S,
+    ];
+
     let stdout = "";
     let exitCode = 0;
     try {
-      const result = await execTool(
+      const result = await this.execAudit(
         primaryBin,
-        [...auditTargetArgs, "--format=json", "--progress-spinner=off"],
-        {
-          cwd: ctx.workspaceDir,
-          timeout: 5 * 60_000,
-          maxBuffer: 30 * 1024 * 1024,
-        },
+        ctx.workspaceDir,
+        auditArgs,
+        logs,
+        "pip-audit",
       );
       stdout = result.stdout;
+      exitCode = result.code;
     } catch (err) {
       const anyErr = err as {
         stdout?: string;
@@ -163,25 +193,17 @@ export class PipAuditScanner implements SecurityScanner {
       exitCode = anyErr.code ?? 1;
 
       if (!stdout.trim()) {
-        // DeuxiÃƒÂ¨me tentative avec `python -m pip_audit`.
+        // Deuxième tentative avec `python -m pip_audit`.
         try {
-          const fallback = await execTool(
+          const fallback = await this.execAudit(
             fallbackPython,
-            [
-              "-m",
-              "pip_audit",
-              ...auditTargetArgs,
-              "--format=json",
-              "--progress-spinner=off",
-            ],
-            {
-              cwd: ctx.workspaceDir,
-              timeout: 5 * 60_000,
-              maxBuffer: 30 * 1024 * 1024,
-            },
+            ctx.workspaceDir,
+            ["-m", "pip_audit", ...auditArgs],
+            logs,
+            "python -m pip_audit",
           );
           stdout = fallback.stdout;
-          exitCode = 0;
+          exitCode = fallback.code;
         } catch (fallbackErr) {
           const fb = fallbackErr as {
             stdout?: string;
@@ -195,7 +217,7 @@ export class PipAuditScanner implements SecurityScanner {
               fb.stderr?.trim() ||
               anyErr.stderr?.trim() ||
               anyErr.message ||
-              "pip-audit a ÃƒÂ©chouÃƒÂ©";
+              "pip-audit a échoué";
             logs.push(`[error] ${msg.slice(0, 2000)}`);
             return {
               scanner: this.name,
@@ -212,7 +234,7 @@ export class PipAuditScanner implements SecurityScanner {
         }
       }
       if (exitCode !== 1 && exitCode !== 0) {
-        logs.push(`[warn] pip-audit a retournÃƒÂ© le code ${exitCode}`);
+        logs.push(`[warn] pip-audit a retourné le code ${exitCode}`);
       }
     }
 
@@ -286,6 +308,58 @@ export class PipAuditScanner implements SecurityScanner {
       findings,
       logs,
     };
+  }
+
+  /**
+   * Exécute pip-audit avec nouvelles tentatives.
+   *
+   * Seules les erreurs réseau transitoires (DNS, timeout, connexion
+   * coupée) sont rejouées. pip-audit sort avec le code 1 lorsqu'il trouve
+   * des vulnérabilités : ce n'est PAS une erreur, la sortie JSON reste
+   * exploitable.
+   */
+  private async execAudit(
+    bin: string,
+    cwd: string,
+    args: string[],
+    logs: string[],
+    label: string,
+  ): Promise<{ stdout: string; code: number }> {
+    const attempts = pipAuditAttempts();
+    let lastError: unknown;
+
+    for (let attempt = 1; attempt <= attempts; attempt += 1) {
+      try {
+        const result = await execTool(bin, args, {
+          cwd,
+          timeout: 5 * 60_000,
+          maxBuffer: 30 * 1024 * 1024,
+        });
+        return { stdout: result.stdout, code: 0 };
+      } catch (err) {
+        lastError = err;
+        const anyErr = err as {
+          stdout?: string;
+          code?: number;
+        };
+        const stdout = anyErr.stdout ?? "";
+        if (stdout.trim()) {
+          return { stdout, code: anyErr.code ?? 1 };
+        }
+        if (!isTransientNetworkError(err) || attempt >= attempts) {
+          throw err;
+        }
+        const waitMs = 3000 * attempt;
+        logs.push(
+          `[warn] ${label} : erreur réseau transitoire ` +
+            `(tentative ${attempt}/${attempts}), nouvelle tentative dans ` +
+            `${Math.round(waitMs / 1000)}s`,
+        );
+        await pipAuditDelay(waitMs);
+      }
+    }
+
+    throw lastError;
   }
 
   private async exists(p: string): Promise<boolean> {

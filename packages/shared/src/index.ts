@@ -25,3 +25,9 @@ export {
   type ToolExecOptions,
   type ToolExecResult,
 } from "./exec";
+
+export {
+  isTransientNetworkError,
+  describeExecError,
+  type ExecLikeError,
+} from "./network-errors";

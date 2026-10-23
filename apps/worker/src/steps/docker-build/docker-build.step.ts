@@ -7,8 +7,55 @@ import { prisma } from "../../utils/prisma";
 import { decryptString } from "../../utils/crypto";
 import { logger } from "../../utils/logger";
 import { SshRunner } from "../../runners/ssh.runner";
-import { isValidGitSha } from "@devsecops/shared";
+import { isValidGitSha, isTransientNetworkError } from "@devsecops/shared";
 import type { StepContext, StepResult } from "../../orchestrator/step.executor";
+
+// ============================================================
+// OPTIONS DE BUILD RÉSEAU
+// ============================================================
+/**
+ * Certaines VM de build ont un démon Docker dont le résolveur
+ * (`/etc/resolv.conf` → `127.0.0.53` via systemd-resolved) n'est pas
+ * joignable depuis le réseau de build : `docker build` échoue alors sur
+ * `lookup registry-1.docker.io ... i/o timeout`, et `pip`/`npm` dans les
+ * couches `RUN` échouent de la même façon.
+ *
+ * `DOCKER_BUILD_NETWORK=host` fait utiliser le réseau de l'hôte aux
+ * conteneurs de build, où la résolution DNS fonctionne. Vide = comportement
+ * Docker par défaut. La valeur est validée (allow-list) car elle est
+ * insérée dans une commande shell distante.
+ */
+const DOCKER_BUILD_NETWORK = (process.env.DOCKER_BUILD_NETWORK ?? "").trim();
+const ALLOWED_BUILD_NETWORKS = new Set(["host", "bridge", "none", "default"]);
+const DEFAULT_DOCKER_BUILD_ATTEMPTS = 2;
+
+function dockerBuildAttempts(): number {
+  const parsed = Number.parseInt(
+    process.env.DOCKER_BUILD_ATTEMPTS ?? "",
+    10,
+  );
+  return Number.isFinite(parsed) && parsed > 0
+    ? parsed
+    : DEFAULT_DOCKER_BUILD_ATTEMPTS;
+}
+
+function dockerBuildDelay(ms: number): Promise<void> {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+/**
+ * Délai maximal d'un build (par défaut 20 min). Sur un réseau lent, le
+ * premier build Python peut télécharger plusieurs dizaines de Mo de
+ * wheels ; le cache BuildKit rend les suivants beaucoup plus rapides.
+ */
+function dockerBuildTimeoutMs(): number {
+  const parsed = Number.parseInt(
+    process.env.DOCKER_BUILD_TIMEOUT_MS ?? "",
+    10,
+  );
+  return Number.isFinite(parsed) && parsed > 0 ? parsed : 20 * 60_000;
+}
+
 
 // ============================================================
 // EXCLUSIONS DE L'ARCHIVE
@@ -183,7 +230,7 @@ async function detectPythonStart(
     if (fastapiMatch) {
       const extraInstall = dependencies.includes("uvicorn")
         ? undefined
-        : "RUN pip install --no-cache-dir uvicorn";
+        : "RUN --mount=type=cache,target=/root/.cache/pip pip install uvicorn";
       return {
         command: [
           "python",
@@ -286,7 +333,10 @@ async function generateDockerfile(
       "WORKDIR /app",
       "ENV PYTHONUNBUFFERED=1",
       "COPY requirements.txt* pyproject.toml* ./",
-      "RUN (test -f requirements.txt && pip install --no-cache-dir -r requirements.txt) || (test -f pyproject.toml && pip install --no-cache-dir .) || true",
+      // Cache pip persistant entre builds BuildKit : sans lui, chaque
+      // build retélécharge toutes les wheels (réseau de la VM lent) et
+      // peut dépasser le délai de build.
+      "RUN --mount=type=cache,target=/root/.cache/pip sh -c \"(test -f requirements.txt && pip install --retries 10 --timeout 120 -r requirements.txt) || (test -f pyproject.toml && pip install --retries 10 --timeout 120 .) || true\"",
     ];
     if (start.extraInstall) lines.push(start.extraInstall);
     lines.push(
@@ -514,24 +564,77 @@ export async function dockerBuildStep(
     // ------------------------------------------------------
     // 8. Build sur la VM
     // ------------------------------------------------------
+    let networkArg = "";
+    if (DOCKER_BUILD_NETWORK) {
+      if (ALLOWED_BUILD_NETWORKS.has(DOCKER_BUILD_NETWORK)) {
+        networkArg = ` --network ${DOCKER_BUILD_NETWORK}`;
+        await ctx.log(
+          "info",
+          `Réseau de build Docker : ${DOCKER_BUILD_NETWORK} (DOCKER_BUILD_NETWORK)`,
+        );
+      } else {
+        await ctx.log(
+          "warn",
+          `DOCKER_BUILD_NETWORK invalide (${DOCKER_BUILD_NETWORK}) — ignoré`,
+        );
+      }
+    }
+
     await ctx.log("info", `Build de l'image ${imageTag} sur la VM...`);
     const buildStart = Date.now();
+    const buildCommand =
+      `cd "${remoteDir}" && DOCKER_BUILDKIT=1 docker build` +
+      `${networkArg} -f "${dockerfileArg}" -t "${imageTag}"` +
+      ` --label devsecops.pipeline=${ctx.pipelineId}` +
+      ` --label devsecops.project=${ctx.projectId} .`;
 
-    const buildCode = await ssh.execStream(
-      `cd "${remoteDir}" && DOCKER_BUILDKIT=1 docker build -f "${dockerfileArg}" -t "${imageTag}" --label devsecops.pipeline=${ctx.pipelineId} --label devsecops.project=${ctx.projectId} .`,
-      (chunk, stream) => {
-        const trimmed = chunk.trim();
-        if (!trimmed) return;
-        for (const line of trimmed.split("\n")) {
-          if (!line.trim()) continue;
-          void ctx.log(
-            stream === "stderr" ? "debug" : "info",
-            `[build] ${line}`,
-          );
-        }
-      },
-      20 * 60_000,
-    );
+    const buildAttempts = dockerBuildAttempts();
+    let buildCode = -1;
+    let buildOutput = "";
+
+    for (let attempt = 1; attempt <= buildAttempts; attempt += 1) {
+      if (attempt > 1) {
+        await ctx.log(
+          "warn",
+          `Nouvelle tentative de build (${attempt}/${buildAttempts})...`,
+        );
+      }
+
+      buildOutput = "";
+      buildCode = await ssh.execStream(
+        buildCommand,
+        (chunk, stream) => {
+          buildOutput += chunk;
+          // On ne conserve que la fin : suffisant pour détecter une erreur
+          // réseau et pour le diagnostic.
+          if (buildOutput.length > 20_000) {
+            buildOutput = buildOutput.slice(-20_000);
+          }
+          const trimmed = chunk.trim();
+          if (!trimmed) return;
+          for (const line of trimmed.split("\n")) {
+            if (!line.trim()) continue;
+            void ctx.log(
+              stream === "stderr" ? "debug" : "info",
+              `[build] ${line}`,
+            );
+          }
+        },
+        dockerBuildTimeoutMs(),
+      );
+
+      if (buildCode === 0) break;
+
+      const transient = isTransientNetworkError({ message: buildOutput });
+      if (!transient || attempt >= buildAttempts) break;
+
+      await ctx.log(
+        "warn",
+        "Échec réseau transitoire pendant le build (DNS/timeout) — " +
+          "nouvelle tentative dans quelques secondes",
+      );
+      await dockerBuildDelay(5000 * attempt);
+    }
 
     if (buildCode !== 0) {
       throw new Error(`docker build a échoué (code ${buildCode})`);

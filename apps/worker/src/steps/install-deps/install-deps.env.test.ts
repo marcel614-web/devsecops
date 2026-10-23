@@ -43,6 +43,21 @@ describe("buildDependencyEnv — isolation des gestionnaires de dépendances", (
     expect(env.PIP_CACHE_DIR).toBeTruthy();
     expect(env.PIP_DISABLE_PIP_VERSION_CHECK).toBe("1");
     expect(env.PIP_NO_INPUT).toBe("1");
+    expect(env.PIP_RETRIES).toBe("5");
+    expect(env.PIP_DEFAULT_TIMEOUT).toBe("60");
+  });
+
+  it("transmet un index pip configurable sans exposer de secret", () => {
+    const previous = process.env.PIP_INDEX_URL;
+    process.env.PIP_INDEX_URL = "https://mirror.example/simple";
+    try {
+      const env = buildDependencyEnv();
+      expect(env.PIP_INDEX_URL).toBe("https://mirror.example/simple");
+      expect(env.DATABASE_URL).toBeUndefined();
+    } finally {
+      if (previous === undefined) delete process.env.PIP_INDEX_URL;
+      else process.env.PIP_INDEX_URL = previous;
+    }
   });
 
   it("permet d'ajouter explicitement une variable non secrète", () => {
