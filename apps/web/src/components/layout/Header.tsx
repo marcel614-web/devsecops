@@ -1,3 +1,4 @@
+//apps/web/src/components/layout/Header.tsx 
 import { LogOut, User as UserIcon } from "lucide-react";
 import { useNavigate } from "react-router-dom";
 import { useAuthStore } from "@/stores/authStore";

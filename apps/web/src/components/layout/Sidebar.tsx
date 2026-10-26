@@ -1,7 +1,9 @@
+import { useEffect } from "react";
 import { NavLink } from "react-router-dom";
 import {
   LayoutDashboard, FolderGit2, Github, GitBranch, Shield, AlertTriangle,
-  Server, Rocket, FileText, ScrollText, Users, Settings, Bell, ChevronLeft, ChevronRight, X,
+  Server, Rocket, FileText, ScrollText, Users, Settings, Bell,
+  PanelLeftClose, PanelLeftOpen, X,
 } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { useUiStore } from "@/stores/uiStore";
@@ -68,114 +70,162 @@ export function Sidebar() {
   const { data: unreadData } = useUnreadNotificationCount();
   const unreadCount = unreadData?.count ?? 0;
 
-  const content = (
-    <aside
-      className={cn(
-        "h-full bg-surface border-r border-border flex flex-col transition-[width] duration-200",
-        sidebarCollapsed ? "w-16" : "w-64",
-        "md:relative md:translate-x-0",
-        sidebarMobileOpen
-          ? "fixed inset-y-0 left-0 z-40 translate-x-0"
-          : "fixed -translate-x-full md:translate-x-0",
-      )}
-    >
-      <div className="h-14 flex items-center justify-between px-4 border-b border-border shrink-0">
-        {!sidebarCollapsed && (
-          <div className="flex items-center gap-2 min-w-0">
-            <div className="w-7 h-7 rounded-md bg-primary-600 flex items-center justify-center text-white text-xs font-bold">
-              DS
-            </div>
-            <span className="font-semibold truncate">DevSecOps</span>
-          </div>
-        )}
-        <button
-          onClick={closeMobileSidebar}
-          className="md:hidden text-muted hover:text-slate-700 dark:hover:text-slate-200"
-        >
-          <X className="w-4 h-4" />
-        </button>
-      </div>
+  // Le tiroir mobile est toujours déployé (libellés visibles)
+  const collapsed = sidebarCollapsed && !sidebarMobileOpen;
 
-      <nav className="flex-1 overflow-y-auto scrollbar-thin py-2">
-        {sections.map((section, si) => (
-          <div key={si} className="mb-2">
-            {section.title && !sidebarCollapsed && (
-              <p className="px-4 py-1.5 text-[11px] uppercase tracking-wider text-muted font-medium">
-                {section.title}
-              </p>
-            )}
-            {section.items
-              .filter((it) => !it.adminOnly || isAdmin)
-              .map((it) => {
-                const badgeCount = it.showUnread ? unreadCount : 0;
-                return (
-                  <NavLink
-                    key={it.to}
-                    to={it.to}
-                    onClick={closeMobileSidebar}
-                    className={({ isActive }) =>
-                      cn(
-                        "relative flex items-center gap-3 mx-2 px-2.5 py-1.5 rounded-md text-sm transition-colors",
-                        sidebarCollapsed && "justify-center",
-                        isActive
-                          ? "bg-primary-600 text-white"
-                          : "text-slate-600 dark:text-slate-300 hover:bg-slate-200/70 dark:hover:bg-slate-700/50",
-                      )
-                    }
-                    title={
-                      sidebarCollapsed
-                        ? badgeCount > 0
-                          ? `${it.label} (${badgeCount})`
-                          : it.label
-                        : undefined
-                    }
-                  >
-                    <it.icon className="w-4 h-4 shrink-0" />
-                    {!sidebarCollapsed && (
-                      <span className="truncate">{it.label}</span>
-                    )}
-                    {badgeCount > 0 &&
-                      (sidebarCollapsed ? (
-                        <span className="absolute right-1.5 top-1.5 h-1.5 w-1.5 rounded-full bg-red-500" />
-                      ) : (
-                        <span className="ml-auto flex h-4 min-w-[1rem] items-center justify-center rounded-full bg-red-500 px-1 text-[10px] font-semibold leading-none text-white">
-                          {badgeCount > 99 ? "99+" : badgeCount}
-                        </span>
-                      ))}
-                  </NavLink>
-                );
-              })}
-          </div>
-        ))}
-      </nav>
+  // Mobile : Échap ferme le tiroir, le fond ne défile plus
+  useEffect(() => {
+    if (!sidebarMobileOpen) return;
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key === "Escape") closeMobileSidebar();
+    };
+    const previous = document.body.style.overflow;
+    document.body.style.overflow = "hidden";
+    document.addEventListener("keydown", onKey);
+    return () => {
+      document.body.style.overflow = previous;
+      document.removeEventListener("keydown", onKey);
+    };
+  }, [sidebarMobileOpen, closeMobileSidebar]);
 
-      <button
-        onClick={toggleSidebar}
-        className={cn(
-          "hidden md:flex items-center gap-2 h-10 px-3 border-t border-border text-muted hover:text-slate-700 dark:hover:text-slate-200 text-xs",
-          sidebarCollapsed && "justify-center",
-        )}
-      >
-        {sidebarCollapsed ? <ChevronRight className="w-4 h-4" /> : (
-          <>
-            <ChevronLeft className="w-4 h-4" />
-            <span>Réduire</span>
-          </>
-        )}
-      </button>
-    </aside>
-  );
+  const visibleSections = sections
+    .map((s) => ({ ...s, items: s.items.filter((it) => !it.adminOnly || isAdmin) }))
+    .filter((s) => s.items.length > 0);
 
   return (
     <>
-      {/* Overlay mobile */}
-      {sidebarMobileOpen && (
+      {/* Fond du tiroir mobile */}
+      <div
+        aria-hidden="true"
+        onClick={closeMobileSidebar}
+        className={cn(
+          "fixed inset-0 z-30 bg-slate-950/60 backdrop-blur-[1px] transition-opacity duration-200 md:hidden",
+          sidebarMobileOpen ? "opacity-100" : "pointer-events-none opacity-0",
+        )}
+      />
+
+      <aside
+        id="app-sidebar"
+        className={cn(
+          "flex h-full flex-col border-r border-border bg-surface",
+          "fixed inset-y-0 left-0 z-40 w-64 transition-[transform,width] duration-200 ease-out",
+          "md:static md:translate-x-0",
+          collapsed ? "md:w-16" : "md:w-64",
+          sidebarMobileOpen ? "translate-x-0 shadow-2xl" : "-translate-x-full max-md:invisible",
+        )}
+      >
+        {/* En-tête : logo toujours visible */}
         <div
-          className="fixed inset-0 z-30 bg-black/50 md:hidden"
-          onClick={closeMobileSidebar}
-        />
-      )}
-      {content}
+          className={cn(
+            "flex h-14 shrink-0 items-center border-b border-border px-4",
+            collapsed ? "justify-center" : "justify-between",
+          )}
+        >
+          <NavLink
+            to="/dashboard"
+            onClick={closeMobileSidebar}
+            aria-label="DevSecOps – accueil"
+            className="flex min-w-0 items-center gap-2.5 rounded-md"
+          >
+            <span className="flex h-8 w-8 shrink-0 items-center justify-center rounded-md bg-primary-600 text-xs font-bold text-white">
+              DS
+            </span>
+            {!collapsed && <span className="truncate font-semibold">DevSecOps</span>}
+          </NavLink>
+
+          <button
+            type="button"
+            onClick={closeMobileSidebar}
+            aria-label="Fermer le menu"
+            className="flex h-9 w-9 items-center justify-center rounded-md text-muted hover:bg-slate-200/70 dark:hover:bg-slate-700/60 md:hidden"
+          >
+            <X className="h-4 w-4" />
+          </button>
+        </div>
+
+        <nav
+          aria-label="Navigation principale"
+          className="scrollbar-thin flex-1 overflow-y-auto overflow-x-hidden py-3"
+        >
+          {visibleSections.map((section, si) => (
+            <div key={si} role="group" aria-label={section.title} className="mb-1">
+              {section.title &&
+                (collapsed ? (
+                  <div className="mx-4 my-2 border-t border-border" aria-hidden="true" />
+                ) : (
+                  <p className="px-5 pb-1 pt-3 text-xs font-medium text-muted">{section.title}</p>
+                ))}
+
+              <ul className="space-y-0.5">
+                {section.items.map((it) => {
+                  const badge = it.showUnread ? unreadCount : 0;
+                  const badgeLabel = badge > 99 ? "99+" : String(badge);
+                  const accessibleName =
+                    badge > 0 ? `${it.label}, ${badge} non lue${badge > 1 ? "s" : ""}` : it.label;
+
+                  return (
+                    <li key={it.to}>
+                      <NavLink
+                        to={it.to}
+                        onClick={closeMobileSidebar}
+                        aria-label={collapsed ? accessibleName : undefined}
+                        title={collapsed ? accessibleName : undefined}
+                        className={({ isActive }) =>
+                          cn(
+                            "relative mx-2 flex items-center gap-3 rounded-md px-2.5 py-2 text-sm transition-colors",
+                            collapsed && "justify-center",
+                            isActive
+                              ? "bg-primary-600 font-medium text-white"
+                              : "text-slate-600 hover:bg-slate-200/70 dark:text-slate-300 dark:hover:bg-slate-700/50",
+                          )
+                        }
+                      >
+                        <it.icon className="h-4 w-4 shrink-0" aria-hidden="true" />
+                        {!collapsed && <span className="truncate">{it.label}</span>}
+                        {badge > 0 &&
+                          (collapsed ? (
+                            <span
+                              aria-hidden="true"
+                              className="absolute right-1.5 top-1.5 h-2 w-2 rounded-full bg-red-500 ring-2 ring-surface"
+                            />
+                          ) : (
+                            <span
+                              aria-hidden="true"
+                              className="ml-auto flex h-4 min-w-[1rem] items-center justify-center rounded-full bg-red-500 px-1 text-[10px] font-semibold leading-none text-white"
+                            >
+                              {badgeLabel}
+                            </span>
+                          ))}
+                      </NavLink>
+                    </li>
+                  );
+                })}
+              </ul>
+            </div>
+          ))}
+        </nav>
+
+        <button
+          type="button"
+          onClick={toggleSidebar}
+          aria-expanded={!sidebarCollapsed}
+          aria-controls="app-sidebar"
+          title={sidebarCollapsed ? "Développer le menu" : undefined}
+          className={cn(
+            "hidden h-11 shrink-0 items-center gap-2 border-t border-border px-4 text-xs text-muted hover:bg-slate-100 hover:text-slate-700 dark:hover:bg-slate-700/40 dark:hover:text-slate-200 md:flex",
+            sidebarCollapsed && "justify-center px-0",
+          )}
+        >
+          {sidebarCollapsed ? (
+            <PanelLeftOpen className="h-4 w-4" aria-label="Développer le menu" />
+          ) : (
+            <>
+              <PanelLeftClose className="h-4 w-4" aria-hidden="true" />
+              <span>Réduire le menu</span>
+            </>
+          )}
+        </button>
+      </aside>
     </>
   );
 }

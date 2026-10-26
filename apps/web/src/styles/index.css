@@ -1,3 +1,4 @@
+/* apps/web/src/styles/index.css  (seule feuille de style globale) */
 @tailwind base;
 @tailwind components;
 @tailwind utilities;
@@ -9,7 +10,8 @@
     --color-surface: 255 255 255;
     --color-panel: 241 245 249;
     --color-border: 226 232 240;
-    --color-muted: 100 116 139;
+    --color-muted: 100 116 139; /* contraste ≥ 4.5:1 sur fond blanc */
+    color-scheme: light;
   }
   .dark {
     /* Dark mode */
@@ -18,6 +20,7 @@
     --color-panel: 30 41 59;
     --color-border: 51 65 85;
     --color-muted: 148 163 184;
+    color-scheme: dark; /* scrollbars et champs natifs sombres */
   }
 
   html,
@@ -28,12 +31,24 @@
 
   body {
     @apply bg-bg text-slate-800 dark:text-slate-200;
-    font-family: Inter, system-ui, sans-serif;
+    font-family: "Inter Variable", Inter, system-ui, -apple-system, sans-serif;
+    font-feature-settings: "cv11", "ss01";
+    -webkit-font-smoothing: antialiased;
     margin: 0;
+  }
+
+  /* Chiffres alignés dans les tableaux et compteurs */
+  table,
+  .tabular {
+    font-variant-numeric: tabular-nums;
   }
 }
 
 /* Scrollbars fines */
+.scrollbar-thin {
+  scrollbar-width: thin;
+  scrollbar-color: rgb(100 116 139 / 0.4) transparent;
+}
 .scrollbar-thin::-webkit-scrollbar { width: 8px; height: 8px; }
 .scrollbar-thin::-webkit-scrollbar-track { background: transparent; }
 .scrollbar-thin::-webkit-scrollbar-thumb {
@@ -44,8 +59,22 @@
   background: rgb(100 116 139 / 0.7);
 }
 
-/* Focus ring uniforme */
+/* Focus clavier visible et uniforme (jamais au clic souris) */
 :focus-visible {
-  outline: 2px solid rgb(59 130 246 / 0.5);
+  outline: 2px solid rgb(59 130 246 / 0.8);
   outline-offset: 2px;
+  border-radius: 4px;
+}
+main:focus-visible { outline: none; }
+
+/* Respect de la préférence « réduire les animations » */
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    animation-duration: 0.01ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.01ms !important;
+    scroll-behavior: auto !important;
+  }
 }

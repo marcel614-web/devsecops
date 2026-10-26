@@ -1,0 +1,43 @@
+// apps/web/src/hooks/useDismissable.ts
+import { useEffect, useRef } from "react";
+import type { RefObject } from "react";
+
+/**
+ * Ferme un panneau flottant (menu, popover) :
+ *  - clic / toucher en dehors du conteneur
+ *  - touche Échap (le focus est alors rendu au bouton déclencheur)
+ */
+export function useDismissable(
+  containerRef: RefObject<HTMLElement>,
+  open: boolean,
+  onClose: () => void,
+  triggerRef?: RefObject<HTMLElement>,
+) {
+  const closeRef = useRef(onClose);
+  closeRef.current = onClose;
+
+  useEffect(() => {
+    if (!open) return;
+
+    const onPointer = (e: MouseEvent | TouchEvent) => {
+      if (containerRef.current && !containerRef.current.contains(e.target as Node)) {
+        closeRef.current();
+      }
+    };
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key === "Escape") {
+        closeRef.current();
+        triggerRef?.current?.focus();
+      }
+    };
+
+    document.addEventListener("mousedown", onPointer);
+    document.addEventListener("touchstart", onPointer, { passive: true });
+    document.addEventListener("keydown", onKey);
+    return () => {
+      document.removeEventListener("mousedown", onPointer);
+      document.removeEventListener("touchstart", onPointer);
+      document.removeEventListener("keydown", onKey);
+    };
+  }, [containerRef, triggerRef, open]);
+}
