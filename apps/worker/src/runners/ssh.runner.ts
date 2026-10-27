@@ -1,5 +1,10 @@
 // apps/worker/src/runners/ssh.runner.ts
-import { Client, type ConnectConfig, type SFTPWrapper } from "ssh2";
+import {
+  Client,
+  type ClientChannel,
+  type ConnectConfig,
+  type SFTPWrapper,
+} from "ssh2";
 import path from "node:path";
 import { logger } from "../utils/logger";
 
@@ -74,34 +79,54 @@ export class SshRunner {
     if (!this.conn) throw new Error("SSH non connecté");
 
     return new Promise((resolve, reject) => {
-      const timer = setTimeout(() => {
-        reject(
-          new Error(`Timeout SSH (${timeoutMs}ms) : ${command.slice(0, 80)}`),
+      let settled = false;
+      let timer: NodeJS.Timeout | null = null;
+      let stream: ClientChannel | null = null;
+
+      const finish = (fn: () => void) => {
+        if (settled) return;
+        settled = true;
+        if (timer) {
+          clearTimeout(timer);
+          timer = null;
+        }
+        fn();
+      };
+
+      timer = setTimeout(() => {
+        try {
+          stream?.close();
+        } catch {
+          // canal déjà fermé
+        }
+        finish(() =>
+          reject(
+            new Error(`Timeout SSH (${timeoutMs}ms) : ${command.slice(0, 80)}`),
+          ),
         );
       }, timeoutMs);
 
-      this.conn!.exec(command, (err, stream) => {
+      this.conn!.exec(command, (err, channel) => {
         if (err) {
-          clearTimeout(timer);
-          return reject(err);
+          finish(() => reject(err));
+          return;
         }
+        stream = channel;
 
         let stdout = "";
         let stderr = "";
 
-        stream.on("data", (data: Buffer) => {
+        channel.on("data", (data: Buffer) => {
           stdout += data.toString("utf8");
         });
-        stream.stderr.on("data", (data: Buffer) => {
+        channel.stderr.on("data", (data: Buffer) => {
           stderr += data.toString("utf8");
         });
-        stream.on("error", (err: Error) => {
-          clearTimeout(timer);
-          reject(new Error(`Erreur du flux SSH : ${err.message}`));
+        channel.on("error", (error: Error) => {
+          finish(() => reject(new Error(`Erreur du flux SSH : ${error.message}`)));
         });
-        stream.on("close", (code: number) => {
-          clearTimeout(timer);
-          resolve({ stdout, stderr, code: code ?? 0 });
+        channel.on("close", (code: number) => {
+          finish(() => resolve({ stdout, stderr, code: code ?? 0 }));
         });
       });
     });
@@ -115,23 +140,68 @@ export class SshRunner {
     command: string,
     onData: (chunk: string, stream: "stdout" | "stderr") => void,
     timeoutMs = 10 * 60_000,
+    signal?: AbortSignal,
   ): Promise<number> {
     if (!this.conn) throw new Error("SSH non connecté");
 
     return new Promise((resolve, reject) => {
-      const timer = setTimeout(() => {
-        reject(
-          new Error(
-            `Timeout SSH stream (${timeoutMs}ms) : ${command.slice(0, 80)}`,
+      let settled = false;
+      let timer: NodeJS.Timeout | null = null;
+      let channel: ClientChannel | null = null;
+
+      const cleanup = () => {
+        if (timer) {
+          clearTimeout(timer);
+          timer = null;
+        }
+        signal?.removeEventListener("abort", onAbort);
+      };
+
+      const finish = (fn: () => void) => {
+        if (settled) return;
+        settled = true;
+        cleanup();
+        fn();
+      };
+
+      const onAbort = () => {
+        try {
+          channel?.close();
+        } catch {
+          // Le canal est peut-être déjà fermé.
+        }
+        const err = new Error("SSH stream aborted");
+        err.name = "AbortError";
+        finish(() => reject(err));
+      };
+
+      timer = setTimeout(() => {
+        try {
+          channel?.close();
+        } catch {
+          // ignore
+        }
+        finish(() =>
+          reject(
+            new Error(
+              `Timeout SSH stream (${timeoutMs}ms) : ${command.slice(0, 80)}`,
+            ),
           ),
         );
       }, timeoutMs);
 
+      if (signal?.aborted) {
+        onAbort();
+        return;
+      }
+      signal?.addEventListener("abort", onAbort, { once: true });
+
       this.conn!.exec(command, (err, stream) => {
         if (err) {
-          clearTimeout(timer);
-          return reject(err);
+          finish(() => reject(err));
+          return;
         }
+        channel = stream;
 
         stream.on("data", (data: Buffer) =>
           onData(data.toString("utf8"), "stdout"),
@@ -140,12 +210,10 @@ export class SshRunner {
           onData(data.toString("utf8"), "stderr"),
         );
         stream.on("error", (err: Error) => {
-          clearTimeout(timer);
-          reject(new Error(`Erreur du flux SSH : ${err.message}`));
+          finish(() => reject(new Error(`Erreur du flux SSH : ${err.message}`)));
         });
         stream.on("close", (code: number) => {
-          clearTimeout(timer);
-          resolve(code ?? 0);
+          finish(() => resolve(code ?? 0));
         });
       });
     });
@@ -166,6 +234,28 @@ export class SshRunner {
 
     await new Promise<void>((resolve, reject) => {
       sftp.fastPut(localPath, remotePath, {}, (err) => {
+        sftp.end();
+        if (err) return reject(err);
+        resolve();
+      });
+    });
+  }
+
+  /**
+   * Télécharge un fichier distant vers un chemin local via SFTP.
+   */
+  async downloadFile(remotePath: string, localPath: string): Promise<void> {
+    if (!this.conn) throw new Error("SSH non connecté");
+
+    const sftp: SFTPWrapper = await new Promise((resolve, reject) => {
+      this.conn!.sftp((err, client) => {
+        if (err) return reject(err);
+        resolve(client);
+      });
+    });
+
+    await new Promise<void>((resolve, reject) => {
+      sftp.fastGet(remotePath, localPath, {}, (err) => {
         sftp.end();
         if (err) return reject(err);
         resolve();

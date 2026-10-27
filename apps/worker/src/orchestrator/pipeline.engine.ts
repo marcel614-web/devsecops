@@ -18,6 +18,7 @@ import {
 } from "../utils/cancellation";
 import { postPullRequestCheck } from "../services/github-checks.service";
 import { cleanupPipelineArtifacts } from "./pipeline.cleanup";
+import { destroySandbox } from "../isolation/sandbox";
 import {
   restoreScanTriage,
   snapshotAndClearScan,
@@ -120,6 +121,7 @@ async function runPipelineInternal(pipelineId: string): Promise<void> {
   if (pipeline.status === PipelineStatus.CANCELLED) {
     logger.warn({ pipelineId }, "Pipeline déjà annulé, rien à faire");
     await clearPipelineCancellation(pipelineId);
+    await destroySandbox(pipelineId).catch(() => undefined);
     await cleanupPipelineArtifacts(pipelineId, pipeline.project.id);
     return;
   }
@@ -156,7 +158,8 @@ async function runPipelineInternal(pipelineId: string): Promise<void> {
   let securityBlocked = false; // Security Gate bloqué
   let abortReason: string | null = null;
 
-  for (const step of pipeline.steps) {
+  try {
+    for (const step of pipeline.steps) {
     // ------------------------------------------------------------
     // 0. Vérifie une demande d'annulation AVANT de démarrer l'étape
     // ------------------------------------------------------------
@@ -313,7 +316,27 @@ async function runPipelineInternal(pipelineId: string): Promise<void> {
     }
 
     // ------------------------------------------------------------
-    // 4. Cas spécial : Security Gate a bloqué le déploiement
+    // 4. Étape interrompue par une annulation (sandbox détruite)
+    // ------------------------------------------------------------
+    if (result.cancelled === true) {
+      cancelled = true;
+      aborted = true;
+      abortReason = "Annulation demandée par l'utilisateur";
+      await markStepFinished(step.id, StepStatus.CANCELLED, {
+        exitCode: result.exitCode ?? 130,
+        error: result.error ?? "Exécution annulée",
+      });
+      await logStep(
+        pipelineId,
+        step.id,
+        "warn",
+        `Étape annulée : ${step.name}`,
+      );
+      continue;
+    }
+
+    // ------------------------------------------------------------
+    // 4bis. Cas spécial : Security Gate a bloqué le déploiement
     // ------------------------------------------------------------
     if (result.blockDeployment === true) {
       await markStepFinished(step.id, StepStatus.SECURITY_BLOCKED, {
@@ -378,6 +401,14 @@ async function runPipelineInternal(pipelineId: string): Promise<void> {
         `Pipeline interrompu (étape critique) : ${step.name}`,
       );
     }
+    }
+  } finally {
+    // Nettoyage garanti de la sandbox : succès, échec, timeout, annulation
+    // ou exception. Le nettoyage est idempotent et ne doit jamais masquer
+    // l'issue du pipeline.
+    await destroySandbox(pipelineId, (level, message) =>
+      logStep(pipelineId, null, level, message),
+    ).catch(() => undefined);
   }
 
   // ------------------------------------------------------------
@@ -510,6 +541,7 @@ export async function runPipeline(pipelineId: string): Promise<void> {
       }
 
       await clearPipelineCancellation(pipelineId);
+      await destroySandbox(pipelineId).catch(() => undefined);
       await cleanupPipelineArtifacts(pipelineId, current.projectId);
     } catch (cleanupErr) {
       logger.error(

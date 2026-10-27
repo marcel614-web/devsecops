@@ -1,15 +1,24 @@
 // apps/worker/src/steps/tests/tests.step.ts
 import path from "node:path";
 import fs from "node:fs/promises";
-import os from "node:os";
-import { execTool } from "@devsecops/shared";
 import type { StepContext, StepResult } from "../../orchestrator/step.executor";
-import { buildSandboxEnv } from "../../utils/sandbox-env";
-
-const NPM_CACHE_DIR =
-  process.platform === "win32"
-    ? path.join(os.homedir(), "AppData", "Local", "devsecops", "npm-cache")
-    : path.join(os.homedir(), ".cache", "devsecops", "npm-cache");
+import {
+  destroySandbox,
+  openSandbox,
+  type SandboxSession,
+} from "../../isolation/sandbox";
+import { loadSandboxConfig } from "../../isolation/sandbox-config";
+import {
+  SandboxCancelledError,
+  SandboxCommandError,
+  SandboxTimeoutError,
+  SandboxUnavailableError,
+} from "../../isolation/sandbox-errors";
+import {
+  SandboxPathError,
+  SandboxSecurityError,
+} from "../../isolation/sandbox-command";
+import { ensureNodeModules } from "../install-deps/node-dependencies";
 
 interface PackageJson {
   scripts?: Record<string, string>;
@@ -24,11 +33,86 @@ async function fileExists(p: string): Promise<boolean> {
   }
 }
 
+function tail(value: string | undefined, max = 3000): string {
+  return value ? value.trim().slice(-max) : "";
+}
+
 /**
- * ExÃƒÆ’Ã†â€™Ãƒâ€šÃ‚Â©cute les tests du projet.
+ * Ignore les tests mais libère la sandbox créée par INSTALL_DEPS. Pour les
+ * technologies sans exécuteur de tests (Python/PHP), la conserver jusqu'à la
+ * fin du pipeline consommerait inutilement la RAM du moteur.
+ */
+async function skipTests(
+  ctx: StepContext,
+  message: string,
+): Promise<StepResult> {
+  await ctx.log("warn", message);
+  await destroySandbox(ctx.pipelineId).catch(() => undefined);
+  return { success: true, exitCode: 0, data: { skipped: true } };
+}
+
+async function failureResult(
+  ctx: StepContext,
+  err: unknown,
+  label: string,
+): Promise<StepResult> {
+  if (err instanceof SandboxCancelledError) {
+    await ctx.log("warn", `${label} : exécution annulée`);
+    return {
+      success: false,
+      cancelled: true,
+      exitCode: 130,
+      error: "Exécution annulée",
+    };
+  }
+  if (err instanceof SandboxTimeoutError) {
+    await ctx.log("error", `${label} : ${err.message}`);
+    return {
+      success: false,
+      exitCode: 124,
+      error: `${label} : délai maximal de la sandbox dépassé`,
+    };
+  }
+  if (err instanceof SandboxUnavailableError) {
+    await ctx.log("error", `${label} : sandbox indisponible — ${err.message}`);
+    return {
+      success: false,
+      exitCode: 1,
+      error: `${label} : sandbox indisponible (aucune exécution sur l'hôte)`,
+    };
+  }
+  if (err instanceof SandboxPathError || err instanceof SandboxSecurityError) {
+    await ctx.log("error", `${label} : refus de sécurité — ${err.message}`);
+    return {
+      success: false,
+      exitCode: 1,
+      error: `${label} : configuration de sandbox refusée`,
+    };
+  }
+  if (err instanceof SandboxCommandError) {
+    await ctx.log("error", `${err.label} : code ${err.result.exitCode}`);
+    const stdout = tail(err.result.stdout);
+    const stderr = tail(err.result.stderr);
+    if (stdout) await ctx.log("error", `[stdout]\n${stdout}`);
+    if (stderr) await ctx.log("error", `[stderr]\n${stderr}`);
+    return {
+      success: false,
+      exitCode: err.result.exitCode,
+      error: `${label} : ${err.label} a échoué`,
+    };
+  }
+  const message = err instanceof Error ? err.message : String(err);
+  await ctx.log("error", `${label} : ${message}`);
+  return { success: false, exitCode: 1, error: `${label} échoués` };
+}
+
+/**
+ * Exécute les tests du projet dans la sandbox.
  *
- * L'installation des dÃƒÆ’Ã†â€™Ãƒâ€šÃ‚Â©pendances est dÃƒÆ’Ã†â€™Ãƒâ€šÃ‚Â©sormais assurÃƒÆ’Ã†â€™Ãƒâ€šÃ‚Â©e par l'ÃƒÆ’Ã†â€™Ãƒâ€šÃ‚Â©tape
- * INSTALL_DEPS (handler dÃƒÆ’Ã†â€™Ãƒâ€šÃ‚Â©diÃƒÆ’Ã†â€™Ãƒâ€šÃ‚Â©) : cette ÃƒÆ’Ã†â€™Ãƒâ€šÃ‚Â©tape ne fait plus que les tests.
+ * L'installation des dépendances est assurée par INSTALL_DEPS. Si la sandbox
+ * a été détruite entre-temps (reprise de pipeline), les dépendances Node sont
+ * réinstallées dans la sandbox avant les tests. Aucun test n'est exécuté sur
+ * l'hôte du worker.
  */
 export async function testsStep(
   _step: unknown,
@@ -50,19 +134,16 @@ export async function testsStep(
       (await fileExists(path.join(ctx.workspaceDir, "pyproject.toml")));
 
     if (hasComposer || hasPython) {
-      await ctx.log(
-        "warn",
-        "Tests automatiques non configurÃƒÆ’Ã†â€™Ãƒâ€šÃ‚Â©s pour cette technologie ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬ÃƒÂ¢Ã¢â€šÂ¬Ã‚Â ÃƒÆ’Ã†â€™Ãƒâ€šÃ‚Â©tape ignorÃƒÆ’Ã†â€™Ãƒâ€šÃ‚Â©e",
+      return skipTests(
+        ctx,
+        "Tests automatiques non configurés pour cette technologie — étape ignorée",
       );
-    } else {
-      await ctx.log("warn", "Aucun package.json ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬ÃƒÂ¢Ã¢â€šÂ¬Ã‚Â ÃƒÆ’Ã†â€™Ãƒâ€šÃ‚Â©tape Tests ignorÃƒÆ’Ã†â€™Ãƒâ€šÃ‚Â©e");
     }
-    return { success: true, exitCode: 0, data: { skipped: true } };
+    return skipTests(ctx, "Aucun package.json — étape Tests ignorée");
   }
 
   if (!pkg) {
-    await ctx.log("warn", "package.json illisible ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬ÃƒÂ¢Ã¢â€šÂ¬Ã‚Â ÃƒÆ’Ã†â€™Ãƒâ€šÃ‚Â©tape Tests ignorÃƒÆ’Ã†â€™Ãƒâ€šÃ‚Â©e");
-    return { success: true, exitCode: 0, data: { skipped: true } };
+    return skipTests(ctx, "package.json illisible — étape Tests ignorée");
   }
 
   const testScript = pkg.scripts?.test;
@@ -72,45 +153,90 @@ export async function testsStep(
     !testScript.includes("no test specified");
 
   if (!hasTest) {
-    await ctx.log("warn", "Aucun script 'test' ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬ÃƒÂ¢Ã¢â€šÂ¬Ã‚Â ÃƒÆ’Ã†â€™Ãƒâ€šÃ‚Â©tape ignorÃƒÆ’Ã†â€™Ãƒâ€šÃ‚Â©e");
-    return { success: true, exitCode: 0, data: { skipped: true } };
+    return skipTests(ctx, "Aucun script 'test' — étape Tests ignorée");
   }
 
-  await fs.mkdir(NPM_CACHE_DIR, { recursive: true });
-  await ctx.log("info", "ExÃƒÆ’Ã†â€™Ãƒâ€šÃ‚Â©cution des tests (npm test --if-present)");
-  const testStart = Date.now();
+  let config;
   try {
-    const { stdout, stderr } = await execTool(
-      "npm",
-      ["test", "--if-present"],
+    config = loadSandboxConfig();
+  } catch (err) {
+    await ctx.log(
+      "error",
+      `Configuration de la sandbox invalide : ${
+        err instanceof Error ? err.message : String(err)
+      }`,
+    );
+    return {
+      success: false,
+      exitCode: 1,
+      error: "Configuration de la sandbox invalide",
+    };
+  }
+
+  let session: SandboxSession | null = null;
+  try {
+    session = await openSandbox(
       {
-        cwd: ctx.workspaceDir,
-        timeout: 10 * 60_000,
-        // Environnement filtrÃƒÆ’Ã†â€™Ãƒâ€šÃ‚Â© : le script `test` du dÃƒÆ’Ã†â€™Ãƒâ€šÃ‚Â©pÃƒÆ’Ã†â€™Ãƒâ€šÃ‚Â´t est du code
-        // non fiable. Il ne doit JAMAIS recevoir les secrets de la
-        // plateforme (clÃƒÆ’Ã†â€™Ãƒâ€šÃ‚Â© maÃƒÆ’Ã†â€™Ãƒâ€šÃ‚Â®tresse de chiffrement, JWT, DATABASE_URLÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬Ãƒâ€šÃ‚Â¦).
-        env: buildSandboxEnv(process.env, {
-          NPM_CONFIG_CACHE: NPM_CACHE_DIR,
-        }),
+        pipelineId: ctx.pipelineId,
+        projectId: ctx.projectId,
+        workspaceDir: ctx.workspaceDir,
+        technology: "NODEJS",
       },
+      { log: ctx.log, isCancelled: ctx.isCancelled },
     );
 
-    const testMs = Date.now() - testStart;
-    if (stdout) await ctx.log("info", stdout.trim().slice(0, 4000));
-    if (stderr) await ctx.log("debug", stderr.trim().slice(0, 4000));
-    await ctx.log("info", `Tests rÃƒÆ’Ã†â€™Ãƒâ€šÃ‚Â©ussis en ${(testMs / 1000).toFixed(1)}s`);
+    await ensureNodeModules(
+      session,
+      ctx.workspaceDir,
+      config.installTimeoutMs,
+      ctx.log,
+    );
+
+    if (config.testNetwork === "egress") {
+      await ctx.log(
+        "warn",
+        "SANDBOX_TEST_NETWORK=egress : les tests disposent d'un accès réseau " +
+          "sortant. Cette option doit rester exceptionnelle.",
+      );
+    }
+
+    await ctx.log("info", "Exécution des tests dans la sandbox (npm test)...");
+    const started = Date.now();
+    const result = await session.run({
+      command: "npm",
+      args: ["test", "--if-present"],
+      timeoutMs: config.testTimeoutMs,
+      network: config.testNetwork,
+      label: "npm test",
+    });
+
+    if (result.exitCode !== 0) {
+      await ctx.log("error", `Tests échoués (code ${result.exitCode})`);
+      const stdout = tail(result.stdout);
+      const stderr = tail(result.stderr);
+      if (stdout) await ctx.log("error", `[stdout]\n${stdout}`);
+      if (stderr) await ctx.log("error", `[stderr]\n${stderr}`);
+      return {
+        success: false,
+        exitCode: result.exitCode,
+        error: "Tests échoués",
+      };
+    }
+
+    await ctx.log(
+      "info",
+      `Tests réussis en ${((Date.now() - started) / 1000).toFixed(1)}s`,
+    );
     return { success: true, exitCode: 0 };
   } catch (err) {
-    const msg = err instanceof Error ? err.message : String(err);
-    const anyErr = err as { stdout?: string; stderr?: string; code?: number };
-
-    if (anyErr.stdout) {
-      await ctx.log("error", anyErr.stdout.trim().slice(-2000));
+    return failureResult(ctx, err, "Tests");
+  } finally {
+    // Plus aucune étape n'a besoin de la sandbox après les tests. La détruire
+    // ici libère la RAM/le disque sans attendre la fin du pipeline (build,
+    // scans, déploiement). Le nettoyage du moteur reste aussi garanti en
+    // `finally` côté pipeline, pour les cas d'arrêt brutal.
+    if (session) {
+      await session.destroy().catch(() => undefined);
     }
-    if (anyErr.stderr) {
-      await ctx.log("error", anyErr.stderr.trim().slice(-2000));
-    }
-    await ctx.log("error", `Tests ÃƒÆ’Ã†â€™Ãƒâ€šÃ‚Â©chouÃƒÆ’Ã†â€™Ãƒâ€šÃ‚Â©s (code ${anyErr.code ?? "?"}) : ${msg}`);
-    return { success: false, exitCode: anyErr.code ?? 1, error: "Tests ÃƒÆ’Ã†â€™Ãƒâ€šÃ‚Â©chouÃƒÆ’Ã†â€™Ãƒâ€šÃ‚Â©s" };
   }
 }

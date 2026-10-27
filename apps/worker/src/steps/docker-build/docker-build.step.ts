@@ -9,6 +9,12 @@ import { logger } from "../../utils/logger";
 import { SshRunner } from "../../runners/ssh.runner";
 import { isValidGitSha, isTransientNetworkError } from "@devsecops/shared";
 import type { StepContext, StepResult } from "../../orchestrator/step.executor";
+import { shouldIncludePath } from "../../utils/archive-filter";
+
+// Ré-exporté pour les tests historiques et les appelants qui importaient le
+// filtre depuis cette étape. L'implémentation vit désormais dans
+// `utils/archive-filter.ts`, partagée avec la sandbox.
+export { shouldIncludePath };
 
 // ============================================================
 // OPTIONS DE BUILD RÉSEAU
@@ -56,115 +62,6 @@ function dockerBuildTimeoutMs(): number {
   return Number.isFinite(parsed) && parsed > 0 ? parsed : 20 * 60_000;
 }
 
-
-// ============================================================
-// EXCLUSIONS DE L'ARCHIVE
-// ============================================================
-// Répertoires qui ne doivent PAS être envoyés à la VM.
-// docker build refera les installations nécessaires via le Dockerfile.
-// Sans ce filtre, l'archive contient node_modules (plusieurs centaines
-// de MB) et sature le disque de la VM.
-const EXCLUDED_DIRS = [
-  "node_modules",
-  ".git",
-  "dist",
-  "build",
-  "out",
-  ".next",
-  ".nuxt",
-  ".cache",
-  ".turbo",
-  ".parcel-cache",
-  ".venv",
-  "venv",
-  "__pycache__",
-  "vendor",
-  ".pytest_cache",
-  ".mypy_cache",
-  ".ruff_cache",
-  "coverage",
-  ".nyc_output",
-  ".idea",
-  ".vscode",
-  ".ssh",
-  ".aws",
-  ".azure",
-  ".kube",
-];
-
-// Fichiers individuels à exclure (nom exact du fichier).
-const EXCLUDED_FILES = [
-  ".DS_Store",
-  "Thumbs.db",
-];
-
-/**
- * Motifs de fichiers sensibles qui ne doivent JAMAIS partir dans l'archive
- * de build. Sans ce filtre, un `.env`, une clé privée ou un dump de base
- * pouvait être copié dans l'image (`COPY . .`) puis exposé par nginx.
- *
- * On reste volontairement conservateur : les fichiers de configuration
- * d'application versionnés (ex. `config.example.json`) ne sont pas touchés.
- */
-const SAFE_ENV_TEMPLATES = new Set([
-  ".env.example",
-  ".env.sample",
-  ".env.template",
-  ".env.dist",
-]);
-
-const EXCLUDED_SECRET_PATTERNS: RegExp[] = [
-  /^\.env$/i,
-  /^\.env\..+$/i,
-  /\.pem$/i,
-  /\.key$/i,
-  /\.p12$/i,
-  /\.pfx$/i,
-  /\.jks$/i,
-  /\.keystore$/i,
-  /^id_(rsa|dsa|ecdsa|ed25519)$/i,
-  /^\.npmrc$/i,
-  /^\.pypirc$/i,
-  /^\.netrc$/i,
-  /^credentials(\.json)?$/i,
-  /\.dump$/i,
-];
-
-/**
- * Filtre utilisé par `tar.create`. Retourne `true` pour inclure le chemin,
- * `false` pour l'exclure.
- *
- * Exporté pour être testé directement : c'est une barrière de sécurité.
- */
-export function shouldIncludePath(entryPath: string): boolean {
-  // Normalise les séparateurs (Windows → Unix)
-  const normalized = entryPath.replace(/\\/g, "/").replace(/^\.\//, "");
-  if (normalized === "." || normalized === "") return true;
-
-  // Exclut les fichiers journaux
-  if (normalized.endsWith(".log")) return false;
-
-  const parts = normalized.split("/");
-  const basename = parts[parts.length - 1] ?? "";
-
-  // Exclut les noms de fichiers individuels
-  if (EXCLUDED_FILES.includes(basename)) return false;
-
-  // Les modèles d'environnement ne contiennent pas de secret réel.
-  if (SAFE_ENV_TEMPLATES.has(basename.toLowerCase())) return true;
-
-  // Exclut les secrets et matériaux cryptographiques
-  if (EXCLUDED_SECRET_PATTERNS.some((pattern) => pattern.test(basename))) {
-    return false;
-  }
-
-  // Exclut si un des segments du chemin est dans EXCLUDED_DIRS
-  for (const part of parts) {
-    if (EXCLUDED_DIRS.includes(part)) return false;
-  }
-
-  return true;
-}
 
 // ============================================================
 // GÉNÉRATION DU DOCKERFILE PAR DÉFAUT

@@ -52,6 +52,8 @@ export interface StepResult {
   error?: string;
   data?: Record<string, unknown>;
   blockDeployment?: boolean;
+  /** L'étape a été interrompue par une demande d'annulation. */
+  cancelled?: boolean;
 }
 
 export type StepHandler = (

@@ -60,6 +60,22 @@ type PipAuditOutput =
   | PipAuditDependency[];
 
 /**
+ * Sélectionne la cible pip-audit sans jamais auditer le projet lui-même.
+ * Exporté pour être testé : c'est une barrière contre l'exécution du
+ * backend de build du dépôt sur l'hôte.
+ */
+export function pickPipAuditTarget(input: {
+  hasFrozen: boolean;
+  hasRequirements: boolean;
+  hasVenv: boolean;
+}): string[] | null {
+  if (input.hasFrozen) return ["-r", ".devsecops/pip-freeze.txt"];
+  if (input.hasRequirements) return ["-r", "requirements.txt"];
+  if (input.hasVenv) return ["--path", ".venv"];
+  return null;
+}
+
+/**
  * Scanner SCA pour les projets Python.
  * S'appuie sur `pip-audit --format=json`.
  */
@@ -123,7 +139,7 @@ export class PipAuditScanner implements SecurityScanner {
     const started = Date.now();
     const logs: string[] = [];
 
-    // PrÃƒÂ©fÃƒÂ¨re pip-audit installÃƒÂ© dans le venv crÃƒÂ©ÃƒÂ© par INSTALL_DEPS.
+    // Préfère pip-audit installé dans le venv créé par INSTALL_DEPS.
     const venvPipAudit = this.venvPath(
       ctx.workspaceDir,
       process.platform === "win32" ? "pip-audit.exe" : "pip-audit",
@@ -140,7 +156,12 @@ export class PipAuditScanner implements SecurityScanner {
       ? venvPython
       : PYTHON_BIN;
 
-    // DÃƒÂ©termine la cible du scan : requirements.txt, venv local, ou projet.
+    // Cible du scan : freeze rapatrié de la sandbox, requirements.txt, ou
+    // venv local. On n'audite JAMAIS le projet lui-même (`.`), car pip-audit
+    // construirait le paquet et exécuterait son backend PEP 517 sur l'hôte.
+    const hasFrozen = await this.exists(
+      path.join(ctx.workspaceDir, ".devsecops", "pip-freeze.txt"),
+    );
     const hasRequirements = await this.exists(
       path.join(ctx.workspaceDir, "requirements.txt"),
     );
@@ -149,16 +170,21 @@ export class PipAuditScanner implements SecurityScanner {
       path.join(ctx.workspaceDir, "pyproject.toml"),
     );
 
-    if (!hasRequirements && !hasVenv && !hasPyproject) {
-      logs.push("[info] Aucun fichier de dÃƒÂ©pendances Python Ã¢â‚¬â€ SCA Python ignorÃƒÂ©");
+    const auditTargetArgs = pickPipAuditTarget({
+      hasFrozen,
+      hasRequirements,
+      hasVenv,
+    });
+
+    if (!auditTargetArgs) {
+      logs.push(
+        hasPyproject
+          ? "[warn] Projet pyproject sans freeze/requirements/venv auditable — " +
+              "SCA Python ignoré (aucune construction du projet sur l'hôte)"
+          : "[info] Aucune cible Python auditable — SCA Python ignoré",
+      );
       return this.emptyResult(started, logs, "SUCCESS");
     }
-
-    const auditTargetArgs = hasRequirements
-      ? ["-r", "requirements.txt"]
-      : hasVenv
-        ? ["--path", ".venv"]
-        : ["."];
 
     const auditArgs = [
       ...auditTargetArgs,
