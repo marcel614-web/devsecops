@@ -7,7 +7,7 @@ import { prisma } from "../../utils/prisma";
 import { decryptString } from "../../utils/crypto";
 import { logger } from "../../utils/logger";
 import { SshRunner } from "../../runners/ssh.runner";
-import { isValidGitSha, isTransientNetworkError } from "@devsecops/shared";
+import { isFullGitSha, isTransientNetworkError } from "@devsecops/shared";
 import type { StepContext, StepResult } from "../../orchestrator/step.executor";
 import { shouldIncludePath } from "../../utils/archive-filter";
 
@@ -274,7 +274,7 @@ export async function dockerBuildStep(
   //    On le valide ici (défense en profondeur : l'API le valide aussi,
   //    mais le worker ne doit jamais faire confiance à la base).
   // ----------------------------------------------------------
-  if (!isValidGitSha(ctx.commitSha)) {
+  if (!isFullGitSha(ctx.commitSha)) {
     return {
       success: false,
       exitCode: 1,
@@ -292,9 +292,13 @@ export async function dockerBuildStep(
   //   ne reste que 5 chiffres significatifs, ce qui produit des collisions
   //   régulières entre deux runs lancés à la même seconde. On utilise
   //   l'identifiant du pipeline, qui est unique par construction.
+  //
+  // Le suffixe pipeline garantit qu'une nouvelle exécution du même commit
+  // ne réutilise pas le tag d'un build antérieur : chaque artefact reste
+  // identifiable par son digest.
   const tagSuffix = ctx.commitSha.startsWith("manual-")
     ? ctx.pipelineId
-    : ctx.commitSha.slice(0, 12);
+    : `${ctx.commitSha.slice(0, 12)}-${ctx.pipelineId}`;
 
   const imageTag = `devsecops/${ctx.projectId}:${tagSuffix}`;
 
@@ -419,6 +423,7 @@ export async function dockerBuildStep(
       username: server.username,
       privateKey,
       passphrase,
+      hostKeyFingerprint: server.hostKeyFingerprint,
     });
 
     // ------------------------------------------------------
@@ -544,9 +549,10 @@ export async function dockerBuildStep(
     );
 
     // ------------------------------------------------------
-    // 9. Récupère l'ID et la taille de l'image
+    // 9. Récupère l'ID, le digest et la taille de l'image
     // ------------------------------------------------------
     let imageId: string | null = null;
+    let imageDigest: string | null = null;
     let sizeBytes: bigint | null = null;
 
     try {
@@ -555,6 +561,12 @@ export async function dockerBuildStep(
         30_000,
       );
       if (idResult.code === 0) imageId = idResult.stdout.trim();
+
+      // `.Id` est le digest immuable de l'image locale. Il sert de référence
+      // de promotion : le tag seul ne prouve jamais l'identité de l'artefact.
+      if (imageId && /^sha256:[a-f0-9]{64}$/u.test(imageId)) {
+        imageDigest = imageId;
+      }
 
       const sizeResult = await ssh.exec(
         `docker inspect --format '{{.Size}}' "${imageTag}"`,
@@ -568,9 +580,16 @@ export async function dockerBuildStep(
       await ctx.log("warn", "Impossible d'inspecter l'image");
     }
 
+    if (!imageDigest) {
+      throw new Error(
+        `Digest de l'image ${imageTag} introuvable après le build — ` +
+          "l'artefact ne peut pas être tracé jusqu'en production.",
+      );
+    }
+
     await ctx.log(
       "info",
-      `Image : ${imageTag}${
+      `Image : ${imageTag} — digest ${imageDigest}${
         sizeBytes ? ` (${(Number(sizeBytes) / 1024 / 1024).toFixed(1)} MB)` : ""
       }`,
     );
@@ -584,12 +603,18 @@ export async function dockerBuildStep(
         pipelineId: ctx.pipelineId,
         imageTag,
         imageId,
+        imageDigest,
+        digestAlgorithm: "sha256",
+        digestVerifiedAt: new Date(),
         sizeBytes,
         registry: "vm-local",
       },
       update: {
         imageTag,
         imageId,
+        imageDigest,
+        digestAlgorithm: "sha256",
+        digestVerifiedAt: new Date(),
         sizeBytes,
         registry: "vm-local",
       },
@@ -601,6 +626,7 @@ export async function dockerBuildStep(
       data: {
         imageTag,
         imageId,
+        imageDigest,
         sizeBytes: sizeBytes ? Number(sizeBytes) : null,
         buildDurationMs: buildDuration,
         builtOnVm: true,

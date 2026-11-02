@@ -75,3 +75,20 @@ export function useTestServer() {
     },
   });
 }
+
+export function useTrustHostKey() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: ({
+      id,
+      fingerprint,
+    }: {
+      id: string;
+      fingerprint: string;
+    }) => serverService.trustHostKey(id, fingerprint),
+    onSuccess: (_result, variables) => {
+      qc.invalidateQueries({ queryKey: ["servers"] });
+      qc.invalidateQueries({ queryKey: ["server", variables.id] });
+    },
+  });
+}

@@ -5,11 +5,14 @@ import fs from "node:fs/promises";
 import net from "node:net";
 import os from "node:os";
 import path from "node:path";
-import { ScanType } from "@prisma/client";
+import { ScanOutcome, ScanType } from "@prisma/client";
 import { prisma } from "../../utils/prisma";
 import { decryptString } from "../../utils/crypto";
 import { SshRunner } from "../../runners/ssh.runner";
-import { persistScanResult } from "../../orchestrator/scanner.helper";
+import {
+  persistScanFailure,
+  persistScanResult,
+} from "../../orchestrator/scanner.helper";
 import { parseZapReport, type ZapReport } from "@devsecops/scanners";
 import { shellQuote as sharedShellQuote, quoteForCmd } from "@devsecops/shared";
 import type { StepContext, StepResult } from "../../orchestrator/step.executor";
@@ -238,12 +241,29 @@ export async function zapStep(
   if (!deployment || !deployment.url) {
     await ctx.log(
       "warn",
-      "Aucun dÃƒÆ’Ã†â€™Ãƒâ€šÃ‚Â©ploiement rÃƒÆ’Ã†â€™Ãƒâ€šÃ‚Â©ussi pour ce pipeline ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬ÃƒÂ¢Ã¢â€šÂ¬Ã‚Â scan ZAP ignorÃƒÆ’Ã†â€™Ãƒâ€šÃ‚Â©",
+      "Aucun déploiement réussi pour ce pipeline — scan ZAP non applicable",
+    );
+    await persistScanFailure(
+      {
+        pipelineId: ctx.pipelineId,
+        projectId: ctx.projectId,
+        stepId: ctx.stepId,
+        type: ScanType.DAST,
+      },
+      {
+        scanner: "zap",
+        outcome: ScanOutcome.NOT_APPLICABLE,
+        reason: "no deployment",
+      },
     );
     return {
       success: true,
       exitCode: 0,
-      data: { skipped: true, technical: true, reason: "no deployment" },
+      data: {
+        skipped: true,
+        outcome: "NOT_APPLICABLE",
+        reason: "no deployment",
+      },
     };
   }
 
@@ -267,11 +287,28 @@ export async function zapStep(
     include: { server: true },
   });
   if (!project?.server) {
-    await ctx.log("warn", "Aucun serveur associÃƒÆ’Ã†â€™Ãƒâ€šÃ‚Â© ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬ÃƒÂ¢Ã¢â€šÂ¬Ã‚Â scan ZAP ignorÃƒÆ’Ã†â€™Ãƒâ€šÃ‚Â©");
+    await ctx.log("warn", "Aucun serveur associé — scan ZAP non applicable");
+    await persistScanFailure(
+      {
+        pipelineId: ctx.pipelineId,
+        projectId: ctx.projectId,
+        stepId: ctx.stepId,
+        type: ScanType.DAST,
+      },
+      {
+        scanner: "zap",
+        outcome: ScanOutcome.NOT_APPLICABLE,
+        reason: "no server",
+      },
+    );
     return {
       success: true,
       exitCode: 0,
-      data: { skipped: true, technical: true, reason: "no server" },
+      data: {
+        skipped: true,
+        outcome: "NOT_APPLICABLE",
+        reason: "no server",
+      },
     };
   }
   const server = project.server;
@@ -312,6 +349,7 @@ export async function zapStep(
       username: server.username,
       privateKey,
       passphrase,
+      hostKeyFingerprint: server.hostKeyFingerprint,
     });
 
     // 3. VÃƒÆ’Ã†â€™Ãƒâ€šÃ‚Â©rifie / tÃƒÆ’Ã†â€™Ãƒâ€šÃ‚Â©lÃƒÆ’Ã†â€™Ãƒâ€šÃ‚Â©charge l'image ZAP.
@@ -435,6 +473,10 @@ export async function zapStep(
       data: {
         scanner: "zap",
         targetUrl,
+        outcome:
+          result.vulnerabilityCount > 0
+            ? "SUCCESS_WITH_FINDINGS"
+            : "SUCCESS_NO_FINDINGS",
         vulnerabilityCount: result.vulnerabilityCount,
         severityCounts: result.severityCounts,
       },
@@ -442,6 +484,7 @@ export async function zapStep(
   } catch (err) {
     const msg = err instanceof Error ? err.message : String(err);
     await ctx.log("error", `ÃƒÆ’Ã†â€™ÃƒÂ¢Ã¢â€šÂ¬Ã‚Â°chec de ZAP : ${msg}`);
+    const parseFailure = msg.toLowerCase().includes("parser");
 
     // Persiste un scan FAILED pour que le Security Gate dÃƒÆ’Ã†â€™Ãƒâ€šÃ‚Â©tecte
     // l'ÃƒÆ’Ã†â€™Ãƒâ€šÃ‚Â©chec technique au lieu de considÃƒÆ’Ã†â€™Ãƒâ€šÃ‚Â©rer 0 vulnÃƒÆ’Ã†â€™Ãƒâ€šÃ‚Â©rabilitÃƒÆ’Ã†â€™Ãƒâ€šÃ‚Â©.
@@ -463,9 +506,22 @@ export async function zapStep(
         logs: [],
         error: msg,
       },
+      {
+        outcome: parseFailure
+          ? ScanOutcome.PARSE_ERROR
+          : ScanOutcome.INTERRUPTED,
+      },
     );
 
-    return { success: false, exitCode: 1, error: msg };
+    return {
+      success: false,
+      exitCode: 1,
+      error: msg,
+      data: {
+        outcome: parseFailure ? "PARSE_ERROR" : "INTERRUPTED",
+        reason: msg,
+      },
+    };
   } finally {
     await ssh.disconnect().catch(() => undefined);
   }
@@ -582,6 +638,10 @@ async function runLocalZapScan(
         scanner: "zap",
         mode: "local",
         targetUrl,
+        outcome:
+          result.vulnerabilityCount > 0
+            ? "SUCCESS_WITH_FINDINGS"
+            : "SUCCESS_NO_FINDINGS",
         vulnerabilityCount: result.vulnerabilityCount,
         severityCounts: result.severityCounts,
       },
@@ -589,6 +649,7 @@ async function runLocalZapScan(
   } catch (err) {
     const msg = err instanceof Error ? err.message : String(err);
     await ctx.log("error", `ÃƒÆ’Ã†â€™ÃƒÂ¢Ã¢â€šÂ¬Ã‚Â°chec de ZAP local : ${msg}`);
+    const parseFailure = msg.toLowerCase().includes("parser");
 
     await persistScanResult(
       {
@@ -608,9 +669,22 @@ async function runLocalZapScan(
         logs: [],
         error: msg,
       },
+      {
+        outcome: parseFailure
+          ? ScanOutcome.PARSE_ERROR
+          : ScanOutcome.INTERRUPTED,
+      },
     );
 
-    return { success: false, exitCode: 1, error: msg };
+    return {
+      success: false,
+      exitCode: 1,
+      error: msg,
+      data: {
+        outcome: parseFailure ? "PARSE_ERROR" : "INTERRUPTED",
+        reason: msg,
+      },
+    };
   } finally {
     await fs.rm(workDir, { recursive: true, force: true }).catch(() => undefined);
   }

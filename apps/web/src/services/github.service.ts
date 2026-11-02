@@ -47,6 +47,27 @@ export interface GitHubCommit {
   htmlUrl: string;
 }
 
+export interface BranchProtectionReport {
+  repository: string;
+  branch: string;
+  observedAt: string;
+  verifiable: boolean;
+  reason: string | null;
+  protectionEnabled: boolean | null;
+  rulesets: Array<{ id: number; name: string; enforcement: string }>;
+  rulesetsEnabled: boolean | null;
+  requiredStatusChecks: string[];
+  checkName: string;
+  devSecOpsCheckRequired: boolean | null;
+  strictUpToDate: boolean | null;
+  enforceAdmins: boolean | null;
+  requiredPermissions: string[];
+  appPermissions: Record<string, string>;
+  missingPermissions: string[];
+  correctiveSteps: string[];
+  note: string;
+}
+
 export const githubService = {
   // Démarre le flux d'installation (retourne l'URL GitHub)
   startInstall: () =>
@@ -98,4 +119,12 @@ export const githubService = {
         params: { branch },
       })
       .then((r) => r.data.commits),
+
+  getBranchProtection: (id: string, branch?: string) =>
+    api
+      .get<{ branchProtection: BranchProtectionReport }>(
+        `/api/github/repositories/${id}/branch-protection`,
+        { params: { branch } },
+      )
+      .then((r) => r.data.branchProtection),
 };

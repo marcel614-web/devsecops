@@ -1,8 +1,11 @@
 // apps/worker/src/steps/security-scans/semgrep.step.ts
-import { ScanType } from "@prisma/client";
+import { ScanOutcome, ScanType } from "@prisma/client";
 import { SemgrepScanner } from "@devsecops/scanners";
 import type { StepContext, StepResult } from "../../orchestrator/step.executor";
-import { persistScanResult } from "../../orchestrator/scanner.helper";
+import {
+  persistScanFailure,
+  persistScanResult,
+} from "../../orchestrator/scanner.helper";
 
 const scanner = new SemgrepScanner();
 
@@ -14,10 +17,28 @@ export async function semgrepStep(
 
   if (!(await scanner.isAvailable())) {
     await ctx.log("warn", "Semgrep non installé — étape ignorée (échec technique signalé au Security Gate)");
+    await persistScanFailure(
+      {
+        pipelineId: ctx.pipelineId,
+        projectId: ctx.projectId,
+        stepId: ctx.stepId,
+        type: ScanType.SAST,
+      },
+      {
+        scanner: "semgrep",
+        outcome: ScanOutcome.SCANNER_UNAVAILABLE,
+        reason: "semgrep not found",
+      },
+    );
     return {
       success: true,
       exitCode: 0,
-      data: { skipped: true, technical: true, reason: "semgrep not found" },
+      data: {
+        skipped: true,
+        technical: true,
+        outcome: "SCANNER_UNAVAILABLE",
+        reason: "semgrep not found",
+      },
     };
   }
 
@@ -54,6 +75,10 @@ export async function semgrepStep(
       success: false,
       exitCode: result.exitCode ?? 1,
       error: result.error ?? "Semgrep a échoué",
+      data: {
+        outcome: result.outcome ?? "INTERRUPTED",
+        reason: result.error ?? "Semgrep a échoué",
+      },
     };
   }
 
@@ -68,6 +93,10 @@ export async function semgrepStep(
     exitCode: 0,
     data: {
       scanner: "semgrep",
+      outcome:
+        result.vulnerabilityCount > 0
+          ? "SUCCESS_WITH_FINDINGS"
+          : "SUCCESS_NO_FINDINGS",
       vulnerabilityCount: result.vulnerabilityCount,
       severityCounts: result.severityCounts,
     },

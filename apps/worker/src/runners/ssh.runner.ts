@@ -6,6 +6,11 @@ import {
   type SFTPWrapper,
 } from "ssh2";
 import path from "node:path";
+import {
+  computeHostKeyFingerprint,
+  hostKeyMatches,
+  normalizeHostKeyFingerprint,
+} from "@devsecops/shared";
 import { logger } from "../utils/logger";
 
 export interface SshConnectOptions {
@@ -15,6 +20,12 @@ export interface SshConnectOptions {
   privateKey: string;
   passphrase?: string;
   readyTimeoutMs?: number;
+  /**
+   * Référence de confiance de la clé d'hôte (`SHA256:...`). Obligatoire :
+   * une valeur absente provoque un refus explicite, jamais une connexion
+   * sans vérification.
+   */
+  hostKeyFingerprint?: string | null;
 }
 
 export interface ExecResult {
@@ -25,8 +36,20 @@ export interface ExecResult {
 
 export class SshRunner {
   private conn: Client | null = null;
+  /** Empreinte réellement observée pendant le dernier handshake. */
+  public lastHostKeyFingerprint: string | null = null;
 
   async connect(opts: SshConnectOptions): Promise<void> {
+    const expected = normalizeHostKeyFingerprint(opts.hostKeyFingerprint);
+    if (!expected) {
+      throw new Error(
+        `Clé d'hôte SSH non configurée pour ${opts.host}:${opts.port} : ` +
+          "enregistrez son empreinte de confiance avant tout déploiement.",
+      );
+    }
+
+    let hostKeyError: string | null = null;
+
     const config: ConnectConfig = {
       host: opts.host,
       port: opts.port,
@@ -35,6 +58,21 @@ export class SshRunner {
       passphrase: opts.passphrase,
       readyTimeout: opts.readyTimeoutMs ?? 20_000,
       keepaliveInterval: 30_000,
+      hostVerifier: (key: Buffer) => {
+        const observed = computeHostKeyFingerprint(key);
+        this.lastHostKeyFingerprint = observed;
+        const ok = hostKeyMatches(observed, expected);
+        if (!ok) {
+          hostKeyError =
+            `Clé d'hôte SSH inconnue ou modifiée pour ${opts.host}:${opts.port} ` +
+            `(observée : ${observed}, attendue : ${expected}). Connexion refusée.`;
+          logger.warn(
+            { host: opts.host, port: opts.port, observed, expected },
+            "Clé d'hôte SSH refusée",
+          );
+        }
+        return ok;
+      },
     };
 
     const conn = new Client();
@@ -48,7 +86,9 @@ export class SshRunner {
       conn.on("error", (err) => {
         if (!ready) {
           reject(
-            new Error(`SSH ${opts.host}:${opts.port} — ${err.message}`),
+            new Error(
+              hostKeyError ?? `SSH ${opts.host}:${opts.port} — ${err.message}`,
+            ),
           );
           return;
         }
@@ -72,7 +112,14 @@ export class SshRunner {
       throw err;
     });
 
-    logger.debug({ host: opts.host, user: opts.username }, "SSH connecté");
+    logger.debug(
+      {
+        host: opts.host,
+        user: opts.username,
+        hostKeyFingerprint: this.lastHostKeyFingerprint,
+      },
+      "SSH connecté (clé d'hôte vérifiée)",
+    );
   }
 
   async exec(command: string, timeoutMs = 5 * 60_000): Promise<ExecResult> {

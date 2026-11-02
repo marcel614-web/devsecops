@@ -57,6 +57,7 @@ export class GitleaksScanner implements SecurityScanner {
           "--report-format", "json",
           "--report-path", reportPath,
           "--no-banner",
+          "--redact",
           "--exit-code", "0",
         ],
         {
@@ -71,11 +72,30 @@ export class GitleaksScanner implements SecurityScanner {
       let findings: GitleaksFinding[] = [];
       try {
         const content = await fs.readFile(reportPath, "utf8");
-        if (content.trim().length > 0) {
-          findings = JSON.parse(content) as GitleaksFinding[];
+        if (content.trim().length === 0) {
+          throw new Error("rapport JSON vide");
         }
-      } catch {
-        logs.push("[info] Aucun fichier de rapport Gitleaks produit");
+        const parsed = JSON.parse(content) as unknown;
+        if (!Array.isArray(parsed)) {
+          throw new Error("le rapport JSON n'est pas un tableau");
+        }
+        findings = parsed as GitleaksFinding[];
+      } catch (parseErr) {
+        const message =
+          parseErr instanceof Error ? parseErr.message : String(parseErr);
+        logs.push(`[error] Rapport Gitleaks illisible : ${message}`);
+        return {
+          scanner: this.name,
+          status: "FAILED",
+          outcome: "PARSE_ERROR",
+          durationMs: Date.now() - started,
+          exitCode: 0,
+          vulnerabilityCount: 0,
+          severityCounts: { critical: 0, high: 0, medium: 0, low: 0, info: 0 },
+          findings: [],
+          logs,
+          error: `Impossible de parser le rapport Gitleaks : ${message}`,
+        };
       }
 
       const normalized: NormalizedFinding[] = findings.map((f) => ({

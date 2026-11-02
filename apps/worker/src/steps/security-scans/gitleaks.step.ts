@@ -1,8 +1,11 @@
 // apps/worker/src/steps/security-scans/gitleaks.step.ts
-import { ScanType } from "@prisma/client";
+import { ScanOutcome, ScanType } from "@prisma/client";
 import { GitleaksScanner } from "@devsecops/scanners";
 import type { StepContext, StepResult } from "../../orchestrator/step.executor";
-import { persistScanResult } from "../../orchestrator/scanner.helper";
+import {
+  persistScanFailure,
+  persistScanResult,
+} from "../../orchestrator/scanner.helper";
 
 const scanner = new GitleaksScanner();
 
@@ -14,10 +17,28 @@ export async function gitleaksStep(
 
   if (!(await scanner.isAvailable())) {
     await ctx.log("warn", "Gitleaks non installé — étape ignorée (échec technique signalé au Security Gate)");
+    await persistScanFailure(
+      {
+        pipelineId: ctx.pipelineId,
+        projectId: ctx.projectId,
+        stepId: ctx.stepId,
+        type: ScanType.SECRET,
+      },
+      {
+        scanner: "gitleaks",
+        outcome: ScanOutcome.SCANNER_UNAVAILABLE,
+        reason: "gitleaks not found",
+      },
+    );
     return {
       success: true,
       exitCode: 0,
-      data: { skipped: true, technical: true, reason: "gitleaks not found" },
+      data: {
+        skipped: true,
+        technical: true,
+        outcome: "SCANNER_UNAVAILABLE",
+        reason: "gitleaks not found",
+      },
     };
   }
 
@@ -56,6 +77,10 @@ export async function gitleaksStep(
       success: false,
       exitCode: result.exitCode ?? 1,
       error: result.error ?? "Gitleaks a échoué",
+      data: {
+        outcome: result.outcome ?? "INTERRUPTED",
+        reason: result.error ?? "Gitleaks a échoué",
+      },
     };
   }
 
@@ -73,6 +98,10 @@ export async function gitleaksStep(
     exitCode: 0,
     data: {
       scanner: "gitleaks",
+      outcome:
+        result.vulnerabilityCount > 0
+          ? "SUCCESS_WITH_FINDINGS"
+          : "SUCCESS_NO_FINDINGS",
       vulnerabilityCount: result.vulnerabilityCount,
       severityCounts: result.severityCounts,
     },

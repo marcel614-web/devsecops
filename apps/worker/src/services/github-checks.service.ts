@@ -1,5 +1,6 @@
 // apps/worker/src/services/github-checks.service.ts
 import { PipelineStatus } from "@prisma/client";
+import { DEVSECOPS_CHECK_NAME } from "@devsecops/shared";
 import { logger } from "../utils/logger";
 import { getInstallationToken } from "./github-token.service";
 
@@ -14,15 +15,23 @@ export interface PullRequestCheckParams {
   pullRequestNumber?: number | null;
 }
 
-function conclusionFor(status: PipelineStatus): string {
+export function conclusionFor(status: PipelineStatus): string {
   switch (status) {
     case PipelineStatus.SUCCESS:
       return "success";
+    case PipelineStatus.SUCCESS_WITH_WARNINGS:
+      // Volontairement non bloquant : le gate était en mode WARNING ou une
+      // étape non critique a échoué. GitHub affiche le détail.
+      return "neutral";
     case PipelineStatus.FAILED:
     case PipelineStatus.SECURITY_BLOCKED:
       return "failure";
     case PipelineStatus.CANCELLED:
       return "cancelled";
+    case PipelineStatus.TIMED_OUT:
+      return "timed_out";
+    case PipelineStatus.WAITING_APPROVAL:
+      return "action_required";
     default:
       return "neutral";
   }
@@ -48,7 +57,7 @@ export async function postPullRequestCheck(
       : "Security Gate : non évalué";
 
     const body = {
-      name: "DevSecOps Manager / Security Gate",
+      name: DEVSECOPS_CHECK_NAME,
       head_sha: params.headSha,
       status: "completed",
       conclusion,
@@ -56,9 +65,11 @@ export async function postPullRequestCheck(
         title:
           conclusion === "success"
             ? "Pipeline DevSecOps réussi"
-            : conclusion === "failure"
-              ? "Pipeline DevSecOps échoué"
-              : `Pipeline DevSecOps : ${params.status}`,
+            : conclusion === "neutral"
+              ? "Pipeline DevSecOps réussi avec avertissements"
+              : conclusion === "failure"
+                ? "Pipeline DevSecOps échoué"
+                : `Pipeline DevSecOps : ${params.status}`,
         summary: [
           `Pipeline : \`${params.pipelineId}\``,
           `Statut : **${params.status}**`,

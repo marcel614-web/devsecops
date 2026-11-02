@@ -40,6 +40,9 @@ export async function finalReportStep(
         select: { id: true, name: true, repoFullName: true, technology: true },
       },
       gateResult: true,
+      gateEvaluations: { orderBy: { evaluatedAt: "asc" } },
+      securityPolicy: true,
+      steps: { select: { status: true, resultJson: true } },
       dockerImage: true,
       deployment: true,
       sbom: true,
@@ -117,13 +120,29 @@ export async function finalReportStep(
     : null;
 
   // Statut final estimé : le moteur met à jour le pipeline juste après
-  // cette étape, mais le rapport doit refléter la réalité.
+  // cette étape, mais le rapport doit refléter la réalité. On ne présente
+  // jamais un timeout ou des avertissements comme un succès total.
+  const hasTimeout = pipeline.steps.some((step) => step.status === "TIMED_OUT");
+  const hasWarnings =
+    pipeline.steps.some(
+      (step) =>
+        step.status === "SUCCESS_WITH_WARNINGS" ||
+        (step.status === "SKIPPED" &&
+          (step.resultJson as { technical?: boolean } | null)?.technical ===
+            true),
+    ) ||
+    pipeline.gateResult?.status === "WARNING" ||
+    pipeline.gateEvaluations.some((gate) => gate.status === "WARNING");
   const reportStatus =
     ctx.pipelineSecurityBlocked || pipeline.gateResult?.blocked
       ? "SECURITY_BLOCKED"
-      : ctx.pipelineAborted
-        ? "FAILED"
-        : "SUCCESS";
+      : hasTimeout
+        ? "TIMED_OUT"
+        : ctx.pipelineAborted
+          ? "FAILED"
+          : hasWarnings
+            ? "SUCCESS_WITH_WARNINGS"
+            : "SUCCESS";
 
   // 6. Construit le résumé JSON.
   const summary: ReportSummary = {
@@ -157,6 +176,31 @@ export async function finalReportStep(
           rules: pipeline.gateResult.rulesJson,
         }
       : null,
+    securityPolicy: pipeline.securityPolicy
+      ? {
+          version: pipeline.securityPolicy.version,
+          policyHash: pipeline.securityPolicy.policyHash,
+          mode: (
+            pipeline.securityPolicy.policyJson as {
+              mode?: string;
+            }
+          ).mode ?? "WARNING",
+          enforcementAt:
+            (
+              pipeline.securityPolicy.policyJson as {
+                enforcementAt?: string | null;
+              }
+            ).enforcementAt ?? null,
+        }
+      : null,
+    gates: pipeline.gateEvaluations.map((gate) => ({
+      gateKey: gate.gateKey,
+      status: gate.status,
+      mode: gate.mode,
+      blocked: gate.blocked,
+      reason: gate.reason,
+      evaluatedAt: gate.evaluatedAt.toISOString(),
+    })),
     dockerImage: pipeline.dockerImage
       ? {
           imageTag: pipeline.dockerImage.imageTag,

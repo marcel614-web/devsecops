@@ -46,6 +46,15 @@ export const updateUserSchema = z
   .object({
     name: z.string().trim().min(NAME_MIN_LENGTH).max(NAME_MAX_LENGTH).optional(),
     email: z.string().trim().toLowerCase().email().optional(),
+    password: z
+      .string()
+      .min(PASSWORD_MIN_LENGTH)
+      .max(PASSWORD_MAX_LENGTH)
+      .regex(/[A-Z]/, "Une majuscule est requise")
+      .regex(/[a-z]/, "Une minuscule est requise")
+      .regex(/[0-9]/, "Un chiffre est requis")
+      .regex(/[^A-Za-z0-9]/, "Un caractère spécial est requis")
+      .optional(),
     role: z.nativeEnum(Role).optional(),
     isActive: z.boolean().optional(),
   })

@@ -20,24 +20,36 @@ export function getPipelineFailure(pipeline: PipelineDetail): FailureInfo | null
       stepName: "Security Gate",
       stepType: "SECURITY_GATE",
       error: pipeline.gateResult.reason ?? "Seuils de sécurité dépassés",
-      hint: "Réduis les vulnérabilités détectées ou ajuste les seuils dans Configuration du projet.",
+      hint: "Réduis les vulnérabilités détectées, ajoute une exception ciblée justifiée, ou ajuste la politique dans Configuration du projet.",
       severity: "blocked",
     };
   }
 
   // 2. Chercher la première étape qui n'est pas SUCCESS
   const failingStep = pipeline.steps.find(
-    (s) => s.status === "FAILED" || s.status === "SECURITY_BLOCKED",
+    (s) =>
+      s.status === "FAILED" ||
+      s.status === "SECURITY_BLOCKED" ||
+      s.status === "TIMED_OUT",
   );
 
   if (!failingStep) {
-    // 3. Statut global FAILED mais aucune étape ne matche → fallback
+    // 3. Statut global FAILED/TIMED_OUT mais aucune étape ne matche → fallback
     if (pipeline.status === "FAILED") {
       return {
         stepName: "Pipeline",
         stepType: "UNKNOWN",
         error: "Échec du pipeline (raison non détaillée)",
         hint: "Consulte les logs pour identifier l'étape en cause.",
+        severity: "failed",
+      };
+    }
+    if (pipeline.status === "TIMED_OUT") {
+      return {
+        stepName: "Pipeline",
+        stepType: "UNKNOWN",
+        error: "Le pipeline a dépassé un délai maximal",
+        hint: "Consulte les logs et les délais des étapes.",
         severity: "failed",
       };
     }
@@ -118,7 +130,7 @@ function getHintForStep(step: PipelineStep): string | null {
     step.type === "SAST" ||
     step.type === "SCA"
   ) {
-    return "Ces analyses ne bloquent pas le pipeline. Vérifie les logs pour un problème d'outil.";
+    return "Vérifie les logs. Le Security Gate peut bloquer après ces analyses selon la politique du pipeline.";
   }
 
   // Security Gate

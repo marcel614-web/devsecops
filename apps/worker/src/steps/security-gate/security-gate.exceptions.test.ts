@@ -3,7 +3,7 @@ import { describe, expect, it } from "vitest";
 import {
   emptySeverityCounts,
   exceptionMatchesFinding,
-} from "./security-gate.step";
+} from "./security-gate.policy";
 
 const finding = {
   severity: "CRITICAL",

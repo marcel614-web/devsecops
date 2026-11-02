@@ -8,6 +8,7 @@ import * as projectsController from "./projects.controller";
 import {
   createGateExceptionSchema,
   createProjectSchema,
+  gateExceptionDecisionSchema,
   gateExceptionParamSchema,
   projectIdParamSchema,
   projectListQuerySchema,
@@ -90,6 +91,21 @@ projectsRouter.post(
   "/:id/gate-exceptions",
   validate({ params: projectIdParamSchema, body: createGateExceptionSchema }),
   projectsController.createGateException,
+);
+
+projectsRouter.get(
+  "/:id/gate-exceptions/:exceptionId",
+  validate({ params: gateExceptionParamSchema }),
+  projectsController.getGateException,
+);
+
+projectsRouter.post(
+  "/:id/gate-exceptions/:exceptionId/decision",
+  validate({
+    params: gateExceptionParamSchema,
+    body: gateExceptionDecisionSchema,
+  }),
+  projectsController.decideGateException,
 );
 
 projectsRouter.delete(

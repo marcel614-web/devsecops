@@ -32,17 +32,23 @@ const STATUS_COLORS: Record<PipelineStatus, string> = {
   QUEUED: "#64748b",
   RUNNING: "#2563eb",
   SUCCESS: "#059669",
+  SUCCESS_WITH_WARNINGS: "#f59e0b",
   FAILED: "#dc2626",
   SECURITY_BLOCKED: "#d97706",
   CANCELLED: "#94a3b8",
+  TIMED_OUT: "#ea580c",
+  WAITING_APPROVAL: "#0ea5e9",
 };
 const STATUS_LABELS: Record<PipelineStatus, string> = {
   QUEUED: "En attente",
   RUNNING: "En cours",
   SUCCESS: "Réussis",
+  SUCCESS_WITH_WARNINGS: "Avec avertissements",
   FAILED: "Échoués",
   SECURITY_BLOCKED: "Bloqués",
   CANCELLED: "Annulés",
+  TIMED_OUT: "Délais dépassés",
+  WAITING_APPROVAL: "Attente validation",
 };
 
 function ChartTooltip({ active, payload }: { active?: boolean; payload?: Array<{ name?: string; value?: number; payload?: { label?: string } }> }) {
@@ -91,8 +97,14 @@ export function DashboardPage() {
     key: k, label: STATUS_LABELS[k] ?? k, value: pipelinesByStatus[k], color: STATUS_COLORS[k],
   }));
 
-  const finished = pipelinesByStatus.SUCCESS + pipelinesByStatus.FAILED + pipelinesByStatus.SECURITY_BLOCKED;
-  const successRate = finished > 0 ? Math.round((pipelinesByStatus.SUCCESS / finished) * 100) : null;
+  const successful =
+    pipelinesByStatus.SUCCESS + pipelinesByStatus.SUCCESS_WITH_WARNINGS;
+  const finished =
+    successful +
+    pipelinesByStatus.FAILED +
+    pipelinesByStatus.SECURITY_BLOCKED +
+    pipelinesByStatus.TIMED_OUT;
+  const successRate = finished > 0 ? Math.round((successful / finished) * 100) : null;
   const active = (pipelinesByStatus.RUNNING ?? 0) + (pipelinesByStatus.QUEUED ?? 0);
   const criticals = vulnerabilitiesBySeverity.CRITICAL;
 
@@ -138,8 +150,28 @@ export function DashboardPage() {
 
       <section aria-label="Résultats des pipelines" className="grid grid-cols-2 gap-4 lg:grid-cols-4">
         <StatCard icon={TrendingUp} label="Taux de réussite" value={successRate === null ? "—" : `${successRate} %`} subtitle={`sur ${finished} pipeline${finished > 1 ? "s" : ""} terminé${finished > 1 ? "s" : ""}`} tone={successRate !== null && successRate < 70 ? "warning" : "success"} />
-        <StatCard icon={CheckCircle2} label="Réussis" value={pipelinesByStatus.SUCCESS} tone="success" />
-        <StatCard icon={XCircle} label="Échoués" value={pipelinesByStatus.FAILED} tone="danger" />
+        <StatCard
+          icon={CheckCircle2}
+          label="Réussis"
+          value={pipelinesByStatus.SUCCESS}
+          subtitle={
+            pipelinesByStatus.SUCCESS_WITH_WARNINGS > 0
+              ? `+ ${pipelinesByStatus.SUCCESS_WITH_WARNINGS} avec avertissements`
+              : undefined
+          }
+          tone="success"
+        />
+        <StatCard
+          icon={XCircle}
+          label="Échoués"
+          value={pipelinesByStatus.FAILED + pipelinesByStatus.TIMED_OUT}
+          subtitle={
+            pipelinesByStatus.TIMED_OUT > 0
+              ? `dont ${pipelinesByStatus.TIMED_OUT} délais dépassés`
+              : undefined
+          }
+          tone="danger"
+        />
         <StatCard icon={ShieldX} label="Bloqués (Security Gate)" value={pipelinesByStatus.SECURITY_BLOCKED} tone="warning" />
       </section>
 

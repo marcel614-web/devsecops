@@ -35,7 +35,7 @@ export function SecurityGatePanel({ gate }: { gate: SecurityGateResult | null })
             label: "WARNING",
             tone: "border-amber-500/40 bg-amber-500/5",
             iconColor: "text-amber-500",
-            desc: "Seuils dépassés — déploiement autorisé (mode avertissement)",
+            desc: "Avertissement — déploiement autorisé tant qu'aucun contrôle obligatoire n'a échoué",
           }
         : gate.status === "BLOCKED"
           ? {
@@ -77,13 +77,37 @@ export function SecurityGatePanel({ gate }: { gate: SecurityGateResult | null })
   ];
 
   const technicalFailures = gate.technicalFailures ?? [];
-  const exceptions = gate.exceptionsApplied ?? [];
+  const exceptions = Array.isArray(gate.exceptionsApplied)
+    ? gate.exceptionsApplied
+    : gate.exceptionsApplied?.applied ?? [];
+  const controls = gate.rulesJson?.controls ?? [];
+  const policyVersion = gate.rulesJson?.policyVersion;
+  const rawCounts = gate.rulesJson?.rawCounts;
+
+  const controlLabels: Record<string, string> = {
+    SUCCESS_NO_FINDINGS: "Aucun finding",
+    SUCCESS_WITH_FINDINGS: "Findings détectés",
+    INTERRUPTED: "Interrompu",
+    TIMED_OUT: "Délai dépassé",
+    SCANNER_UNAVAILABLE: "Scanner indisponible",
+    PARSE_ERROR: "Rapport illisible",
+    NOT_APPLICABLE: "Non applicable",
+    DISABLED: "Désactivé",
+    REQUIRED_NOT_RUN: "Obligatoire non exécuté",
+  };
 
   return (
     <Card className={cn("border-2", config.tone)}>
       <CardHeader>
         <div className="flex items-center justify-between gap-2">
-          <CardTitle>Security Gate</CardTitle>
+          <CardTitle>
+            Security Gate
+            {policyVersion !== undefined && (
+              <span className="ml-2 text-xs font-normal text-muted">
+                politique v{policyVersion}
+              </span>
+            )}
+          </CardTitle>
           <div className="flex items-center gap-2">
             <span className="rounded-md border border-border bg-surface px-1.5 py-0.5 text-[10px] font-semibold uppercase tracking-wide text-muted">
               {gate.mode === "ENFORCEMENT" ? "Enforcement" : "Avertissement"}
@@ -124,6 +148,44 @@ export function SecurityGatePanel({ gate }: { gate: SecurityGateResult | null })
           })}
         </div>
 
+        {controls.length > 0 && (
+          <div>
+            <p className="mb-1 text-xs font-medium text-muted">
+              État des contrôles
+            </p>
+            <ul className="grid grid-cols-1 gap-1 sm:grid-cols-2">
+              {controls.map((control) => {
+                const failed = [
+                  "INTERRUPTED",
+                  "TIMED_OUT",
+                  "SCANNER_UNAVAILABLE",
+                  "PARSE_ERROR",
+                  "REQUIRED_NOT_RUN",
+                ].includes(control.state);
+                return (
+                  <li
+                    key={control.category}
+                    className={cn(
+                      "flex items-center justify-between gap-2 rounded border px-2 py-1 text-[11px]",
+                      failed
+                        ? "border-red-500/30 bg-red-500/5 text-red-700 dark:text-red-400"
+                        : "border-border bg-surface text-muted",
+                    )}
+                  >
+                    <span className="font-medium">
+                      {control.category}
+                      {control.mandatory ? " · obligatoire" : ""}
+                    </span>
+                    <span title={control.reason ?? undefined}>
+                      {controlLabels[control.state] ?? control.state}
+                    </span>
+                  </li>
+                );
+              })}
+            </ul>
+          </div>
+        )}
+
         {technicalFailures.length > 0 && (
           <div className="rounded border border-amber-500/30 bg-amber-500/10 p-2 text-xs text-amber-700 dark:text-amber-400">
             <strong className="mb-0.5 block">
@@ -132,7 +194,8 @@ export function SecurityGatePanel({ gate }: { gate: SecurityGateResult | null })
             <ul className="space-y-0.5">
               {technicalFailures.map((f, i) => (
                 <li key={`${f.step}-${i}`}>
-                  {f.category} · {f.step} : {f.reason}
+                  {f.category}
+                  {f.mandatory ? " (obligatoire)" : ""} · {f.step} : {f.reason}
                 </li>
               ))}
             </ul>
@@ -159,9 +222,37 @@ export function SecurityGatePanel({ gate }: { gate: SecurityGateResult | null })
           </div>
         )}
 
+        {rawCounts &&
+          Object.values(rawCounts).some(
+            (value) => typeof value === "number" && value > 0,
+          ) &&
+          Object.keys(rawCounts).some(
+            (key) =>
+              typeof rawCounts[key] === "number" &&
+              rawCounts[key] !==
+                (gate as unknown as Record<string, number>)[key],
+          ) && (
+            <p className="text-[11px] text-muted">
+              Comptage brut avant exclusions (exceptions / faux positifs) :{" "}
+              {Object.entries(rawCounts)
+                .filter(([, value]) => typeof value === "number")
+                .map(([key, value]) => `${key} ${value}`)
+                .join(" · ")}
+            </p>
+          )}
+
         {gate.reason && (
-          <div className="text-xs text-red-600 dark:text-red-400 bg-red-500/10 border border-red-500/30 rounded p-2">
-            <strong className="block mb-0.5">Motif du blocage</strong>
+          <div
+            className={cn(
+              "rounded border p-2 text-xs",
+              gate.blocked
+                ? "border-red-500/30 bg-red-500/10 text-red-600 dark:text-red-400"
+                : "border-amber-500/30 bg-amber-500/10 text-amber-700 dark:text-amber-400",
+            )}
+          >
+            <strong className="mb-0.5 block">
+              {gate.blocked ? "Motif du blocage" : "Détail de l'évaluation"}
+            </strong>
             {gate.reason}
           </div>
         )}

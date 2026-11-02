@@ -156,6 +156,9 @@ async function runPipelineInternal(pipelineId: string): Promise<void> {
   let aborted = false;         // arrêt dû à un échec critique OU à une annulation
   let cancelled = false;       // annulation demandée par l'utilisateur
   let securityBlocked = false; // Security Gate bloqué
+  let timedOut = false;        // au moins une étape a dépassé son délai
+  let hadWarnings = false;     // gate en WARNING ou étape non critique en échec
+  let waitingApproval = false; // promotion en attente d'une décision humaine
   let abortReason: string | null = null;
 
   try {
@@ -193,9 +196,13 @@ async function runPipelineInternal(pipelineId: string): Promise<void> {
       !securityBlocked &&
       !(isReportStep && !cancelled)
     ) {
-      await markStepFinished(step.id, StepStatus.CANCELLED, {
-        error: abortReason ?? "Pipeline interrompu",
-      });
+      await markStepFinished(
+        step.id,
+        cancelled ? StepStatus.CANCELLED : StepStatus.SKIPPED,
+        {
+          error: abortReason ?? "Pipeline interrompu",
+        },
+      );
       if (step.type === "PROMOTE") {
         await markPromotionSkipped(
           pipelineId,
@@ -216,7 +223,7 @@ async function runPipelineInternal(pipelineId: string): Promise<void> {
     //    PAS Final Report.
     // ------------------------------------------------------------
     if (securityBlocked && step.type !== "REPORT") {
-      await markStepFinished(step.id, StepStatus.CANCELLED, {
+      await markStepFinished(step.id, StepStatus.SKIPPED, {
         error: "Déploiement bloqué par le Security Gate",
       });
       if (step.type === "PROMOTE") {
@@ -364,42 +371,111 @@ async function runPipelineInternal(pipelineId: string): Promise<void> {
     }
 
     // ------------------------------------------------------------
-    // 5. Cas normal : succès
+    // 4ter. Attente d'approbation humaine : on arrête le pipeline sans
+    //       le considérer comme un échec. Le staging reste en place et la
+    //       reprise repartira de cette même étape après décision.
+    // ------------------------------------------------------------
+    if (result.waitingApproval === true) {
+      await markStepFinished(step.id, StepStatus.WAITING_APPROVAL, {
+        exitCode: result.exitCode ?? 0,
+        error: result.error ?? "Approbation requise",
+        resultJson: result.data,
+      });
+      waitingApproval = true;
+      abortReason = result.error ?? "Approbation de production requise";
+      await logStep(
+        pipelineId,
+        step.id,
+        "warn",
+        `Pipeline en attente d'approbation : ${step.name}`,
+      );
+      await logStep(
+        pipelineId,
+        null,
+        "info",
+        "Aucune promotion ne sera effectuée avant une décision explicite liée à ce commit et à ce digest.",
+      );
+      break;
+    }
+
+    // ------------------------------------------------------------
+    // 5. Cas normal : succès (éventuellement avec avertissements)
     // ------------------------------------------------------------
     if (result.success) {
-      await markStepFinished(step.id, StepStatus.SUCCESS, {
+      const gateWarning = result.data?.gate === "WARNING";
+      const technicalWarning = result.data?.technical === true;
+      // Un scanner indisponible n'est PAS un scan réussi : l'étape est
+      // marquée SKIPPED, l'échec technique est conservé dans resultJson et
+      // le Security Gate décide ensuite (obligatoire = blocage).
+      const technicalSkipped =
+        technicalWarning && result.data?.skipped === true;
+      if (gateWarning || technicalWarning) hadWarnings = true;
+      const stepStatus = technicalSkipped
+        ? StepStatus.SKIPPED
+        : gateWarning ||
+            result.data?.outcome === "SUCCESS_WITH_WARNINGS"
+          ? StepStatus.SUCCESS_WITH_WARNINGS
+          : StepStatus.SUCCESS;
+      await markStepFinished(step.id, stepStatus, {
         exitCode: result.exitCode ?? 0,
         resultJson: result.data
           ? { ...(step.resultJson as object), ...result.data }
           : undefined,
       });
-      await logStep(pipelineId, step.id, "info", `Étape réussie : ${step.name}`);
+      await logStep(
+        pipelineId,
+        step.id,
+        gateWarning || technicalSkipped ? "warn" : "info",
+        technicalSkipped
+          ? `Étape sautée pour échec technique : ${step.name}`
+          : `Étape ${gateWarning ? "réussie avec avertissements" : "réussie"} : ${step.name}`,
+      );
       continue;
     }
 
     // ------------------------------------------------------------
-    // 6. Cas normal : échec
+    // 6. Cas normal : échec ou timeout
     // ------------------------------------------------------------
-    await markStepFinished(step.id, StepStatus.FAILED, {
-      exitCode: result.exitCode ?? 1,
-      error: result.error ?? "Échec",
-    });
+    const timeoutFailure =
+      result.timedOut === true ||
+      /timed?\s*out|timeout|délai maximal|deadline/i.test(result.error ?? "");
+    if (timeoutFailure) {
+      timedOut = true;
+      hadWarnings = true;
+    }
+    await markStepFinished(
+      step.id,
+      timeoutFailure ? StepStatus.TIMED_OUT : StepStatus.FAILED,
+      {
+        exitCode: result.exitCode ?? 1,
+        error: result.error ?? "Échec",
+        resultJson: result.data
+          ? { ...(step.resultJson as object), ...result.data }
+          : undefined,
+      },
+    );
     await logStep(
       pipelineId,
       step.id,
       "error",
-      `Étape échouée : ${step.name} — ${result.error ?? ""}`,
+      `Étape ${timeoutFailure ? "expirée" : "échouée"} : ${step.name} — ${result.error ?? ""}`,
     );
 
     if (isCritical) {
       aborted = true;
-      abortReason = `Étape critique échouée : ${step.name}`;
+      abortReason = timeoutFailure
+        ? `Étape critique expirée : ${step.name}`
+        : `Étape critique échouée : ${step.name}`;
       await logStep(
         pipelineId,
         null,
         "error",
         `Pipeline interrompu (étape critique) : ${step.name}`,
       );
+    } else if (!timeoutFailure) {
+      // Une étape non critique en échec est une exécution partielle : elle
+      // ne doit pas être présentée comme un succès total.
+      hadWarnings = true;
     }
     }
   } finally {
@@ -414,13 +490,23 @@ async function runPipelineInternal(pipelineId: string): Promise<void> {
   // ------------------------------------------------------------
   // Détermine le statut final
   // ------------------------------------------------------------
+  // Priorité des issues : une annulation utilisateur prime toujours, puis un
+  // blocage de sécurité. Un dépassement de délai est distingué d'un échec
+  // fonctionnel, et une exécution partielle ne doit jamais être présentée
+  // comme un succès total.
   const finalStatus = cancelled
     ? PipelineStatus.CANCELLED
     : securityBlocked
       ? PipelineStatus.SECURITY_BLOCKED
-      : aborted
-        ? PipelineStatus.FAILED
-        : PipelineStatus.SUCCESS;
+      : waitingApproval
+        ? PipelineStatus.WAITING_APPROVAL
+        : timedOut
+          ? PipelineStatus.TIMED_OUT
+          : aborted
+            ? PipelineStatus.FAILED
+            : hadWarnings
+              ? PipelineStatus.SUCCESS_WITH_WARNINGS
+              : PipelineStatus.SUCCESS;
 
   // ------------------------------------------------------------
   // Ne réécrit PAS le statut si l'API l'a déjà positionné à CANCELLED.

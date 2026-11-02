@@ -1,9 +1,12 @@
 // apps/worker/src/steps/image-scan/trivy.step.ts
-import { ScanType } from "@prisma/client";
+import { ScanOutcome, ScanType } from "@prisma/client";
 import { prisma } from "../../utils/prisma";
 import { decryptString } from "../../utils/crypto";
 import { SshRunner } from "../../runners/ssh.runner";
-import { persistScanResult } from "../../orchestrator/scanner.helper";
+import {
+  persistScanFailure,
+  persistScanResult,
+} from "../../orchestrator/scanner.helper";
 import type { StepContext, StepResult } from "../../orchestrator/step.executor";
 import type {
   ScanResult,
@@ -96,11 +99,29 @@ export async function trivyStep(
   });
 
   if (!image) {
-    await ctx.log("warn", "Aucune image Docker associÃ©e â€” Ã©tape Trivy ignorÃ©e");
+    await ctx.log("warn", "Aucune image Docker associée — échec technique Trivy");
+    await persistScanFailure(
+      {
+        pipelineId: ctx.pipelineId,
+        projectId: ctx.projectId,
+        stepId: ctx.stepId,
+        type: ScanType.IMAGE,
+      },
+      {
+        scanner: "trivy",
+        outcome: ScanOutcome.REQUIRED_NOT_RUN,
+        reason: "no docker image",
+      },
+    );
     return {
       success: true,
       exitCode: 0,
-      data: { skipped: true, technical: true, reason: "no docker image" },
+      data: {
+        skipped: true,
+        technical: true,
+        outcome: "REQUIRED_NOT_RUN",
+        reason: "no docker image",
+      },
     };
   }
 
@@ -157,6 +178,7 @@ export async function trivyStep(
       username: server.username,
       privateKey,
       passphrase,
+      hostKeyFingerprint: server.hostKeyFingerprint,
     });
 
     // 5. VÃ©rifie la prÃ©sence de l'image Trivy (pull si absent)
@@ -241,11 +263,13 @@ export async function trivyStep(
     );
 
     // 8. Parse le JSON
-    let parsed: TrivyOutput = {};
+    let parsed: TrivyOutput;
     try {
       parsed = JSON.parse(scanResult.stdout) as TrivyOutput;
-    } catch {
-      logs.push("[warn] Impossible de parser le JSON Trivy");
+    } catch (parseErr) {
+      const message =
+        parseErr instanceof Error ? parseErr.message : String(parseErr);
+      throw new Error(`Impossible de parser le JSON Trivy : ${message}`);
     }
 
     const findings: NormalizedFinding[] = [];
@@ -309,6 +333,10 @@ export async function trivyStep(
       exitCode: 0,
       data: {
         scanner: "trivy",
+        outcome:
+          findings.length > 0
+            ? "SUCCESS_WITH_FINDINGS"
+            : "SUCCESS_NO_FINDINGS",
         vulnerabilityCount: findings.length,
         severityCounts,
         scannedOnVm: true,
@@ -317,6 +345,7 @@ export async function trivyStep(
   } catch (err) {
     const msg = err instanceof Error ? err.message : String(err);
     await ctx.log("error", `Ã‰chec de Trivy : ${msg}`);
+    const parseFailure = msg.toLowerCase().includes("parser");
 
     await persistScanResult(
       {
@@ -336,9 +365,22 @@ export async function trivyStep(
         logs,
         error: msg,
       },
+      {
+        outcome: parseFailure
+          ? ScanOutcome.PARSE_ERROR
+          : ScanOutcome.INTERRUPTED,
+      },
     );
 
-    return { success: false, exitCode: 1, error: msg };
+    return {
+      success: false,
+      exitCode: 1,
+      error: msg,
+      data: {
+        outcome: parseFailure ? "PARSE_ERROR" : "INTERRUPTED",
+        reason: msg,
+      },
+    };
   } finally {
     await ssh.disconnect().catch(() => undefined);
   }

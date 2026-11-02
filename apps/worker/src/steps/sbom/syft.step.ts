@@ -79,6 +79,7 @@ export async function syftStep(
       username: server.username,
       privateKey,
       passphrase,
+      hostKeyFingerprint: server.hostKeyFingerprint,
     });
 
     const imageCheck = await ssh.exec(

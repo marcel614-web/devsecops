@@ -6,6 +6,7 @@ import * as repoService from "../github/repositories.service";
 import type {
   CreateGateExceptionInput,
   CreateProjectInput,
+  GateExceptionDecisionInput,
   ProjectListQuery,
   UpdateProjectConfigInput,
   UpdateProjectInput,
@@ -163,6 +164,45 @@ export async function createGateException(
       req.body as CreateGateExceptionInput,
     );
     res.status(201).json({ exception });
+  } catch (err) {
+    next(err);
+  }
+}
+
+export async function getGateException(
+  req: Request,
+  res: Response,
+  next: NextFunction,
+): Promise<void> {
+  try {
+    const actor = actorFrom(req);
+    const exception = await projectsService.getGateException(
+      actor,
+      req.params.id,
+      req.params.exceptionId,
+    );
+    res.json({ exception });
+  } catch (err) {
+    next(err);
+  }
+}
+
+export async function decideGateException(
+  req: Request,
+  res: Response,
+  next: NextFunction,
+): Promise<void> {
+  try {
+    const actor = actorFrom(req);
+    const body = req.body as GateExceptionDecisionInput;
+    const exception = await projectsService.decideGateException(
+      actor,
+      req.params.id,
+      req.params.exceptionId,
+      body.decision,
+      body.comment,
+    );
+    res.json({ exception });
   } catch (err) {
     next(err);
   }

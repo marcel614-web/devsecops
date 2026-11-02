@@ -7,6 +7,14 @@ export { ComposerAuditScanner } from "./scanners/composer-audit.scanner";
 export { PipAuditScanner } from "./scanners/pip-audit.scanner";
 export { TrivyScanner } from "./scanners/trivy.scanner";
 export {
+  AnsibleLintScanner,
+  AnsibleSyntaxScanner,
+  mapAnsibleSeverity,
+  normalizeAnsibleSyntaxFailures,
+  parseAnsibleLintOutput,
+  type AnsibleSyntaxFailure,
+} from "./scanners/ansible.scanner";
+export {
   SyftScanner,
   parseSyftReport,
   type SyftReport,

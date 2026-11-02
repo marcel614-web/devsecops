@@ -38,6 +38,7 @@ export interface SandboxSshConfig {
   username: string;
   privateKeyPath: string;
   passphrase?: string;
+  hostKeyFingerprint?: string;
   readyTimeoutMs: number;
 }
 
@@ -199,6 +200,10 @@ export function loadSandboxConfig(
       username: sshUser,
       privateKeyPath: sshKey,
       passphrase: optionalString(source, "SANDBOX_SSH_PASSPHRASE"),
+      hostKeyFingerprint: optionalString(
+        source,
+        "SANDBOX_SSH_HOST_KEY_FINGERPRINT",
+      ),
       readyTimeoutMs: intEnv(
         source,
         "SANDBOX_SSH_READY_TIMEOUT_MS",

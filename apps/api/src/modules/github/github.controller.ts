@@ -6,6 +6,7 @@ import { logError } from "../../utils/logger";
 import * as appService from "./github-app.service";
 import * as installService from "./installations.service";
 import * as repoService from "./repositories.service";
+import * as branchProtectionService from "./branch-protection.service";
 
 function actorFrom(req: Request) {
   if (!req.user) throw new UnauthorizedError();
@@ -236,6 +237,30 @@ export async function listCommits(
       branch,
     );
     res.json({ commits });
+  } catch (err) {
+    next(err);
+  }
+}
+
+// ------------------------------------------------------------
+// GET /api/github/repositories/:id/branch-protection?branch=...
+// Vérifie la protection réelle et les rulesets, sans déduire un
+// blocage de fusion du seul Check Run.
+// ------------------------------------------------------------
+export async function getBranchProtection(
+  req: Request,
+  res: Response,
+  next: NextFunction,
+): Promise<void> {
+  try {
+    const actor = actorFrom(req);
+    const { branch } = req.query as { branch?: string };
+    const report = await branchProtectionService.inspectBranchProtection(
+      actor.id,
+      req.params.id,
+      branch,
+    );
+    res.json({ branchProtection: report });
   } catch (err) {
     next(err);
   }

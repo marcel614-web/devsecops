@@ -1,6 +1,7 @@
 // apps/api/src/modules/pipelines/pipelines.schema.ts
 import { z } from "zod";
 import { PipelineStatus, Severity } from "@prisma/client";
+import { FULL_GIT_SHA_PATTERN } from "@devsecops/shared";
 import { DEFAULT_PAGE_SIZE, MAX_PAGE_SIZE } from "../../config/constants";
 
 export const projectIdParamSchema = z.object({
@@ -32,8 +33,8 @@ export const runPipelineSchema = z.object({
     .string()
     .trim()
     .regex(
-      /^[0-9a-f]{7,40}$/i,
-      "Le commit SHA doit être hexadécimal (7 à 40 caractères)",
+      FULL_GIT_SHA_PATTERN,
+      "Le commit SHA doit être complet (40 ou 64 caractères hexadécimal)",
     )
     .optional(),
   branch: z.string().trim().min(1).max(120).optional(),

@@ -2,8 +2,10 @@
 import { describe, it, expect } from "vitest";
 import {
   isValidGitSha,
+  isFullGitSha,
   assertValidGitSha,
   GIT_SHA_PATTERN,
+  FULL_GIT_SHA_PATTERN,
   MANUAL_SHA_PATTERN,
 } from "./git";
 
@@ -45,6 +47,19 @@ describe("isValidGitSha", () => {
     "a".repeat(41),
   ])("refuse la valeur hostile %s", (value) => {
     expect(isValidGitSha(value)).toBe(false);
+  });
+});
+
+describe("isFullGitSha", () => {
+  it("accepte uniquement un SHA complet de 40 ou 64 caractères", () => {
+    expect(isFullGitSha("e83c5163316f89bfbde7d9ab23ca2e25604af290")).toBe(
+      true,
+    );
+    expect(isFullGitSha("a".repeat(64))).toBe(true);
+    expect(isFullGitSha("e83c516")).toBe(false);
+    expect(isFullGitSha("manual-1717171717171")).toBe(false);
+    expect(isFullGitSha("a".repeat(39))).toBe(false);
+    expect(isFullGitSha("a".repeat(41))).toBe(false);
   });
 });
 

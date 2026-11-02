@@ -2,6 +2,7 @@
 import { z } from "zod";
 import {
   GitProvider,
+  SecurityGateExceptionMatchType,
   SecurityGateMode,
   Severity,
   Technology,
@@ -79,6 +80,49 @@ export const updateProjectConfigSchema = z
     stagingPort: z.number().int().min(1).max(65535).nullable().optional(),
     productionPort: z.number().int().min(1).max(65535).nullable().optional(),
     autoRollback: z.boolean().optional(),
+    requireProductionApproval: z.boolean().optional(),
+    mandatoryControls: z
+      .array(z.enum(["SECRET", "SAST", "SCA", "IMAGE", "IAC", "DAST"]))
+      .optional(),
+    requireExceptionApproval: z.boolean().optional(),
+    // Contrôles Ansible : uniquement statiques, jamais d'exécution de
+    // playbook via cette configuration.
+    ansibleLintEnabled: z.boolean().optional(),
+    ansibleSyntaxCheckEnabled: z.boolean().optional(),
+    ansibleTimeoutMs: z
+      .number()
+      .int()
+      .min(10_000)
+      .max(30 * 60_000)
+      .optional(),
+    ansibleMaxPlaybooks: z.number().int().min(1).max(100).optional(),
+    postDeployChecksEnabled: z.boolean().optional(),
+    healthcheckPath: z
+      .string()
+      .trim()
+      .min(1)
+      .max(512)
+      .regex(/^\/(?!\/)[^\r\n\\\u0000-\u001f]*$/u, {
+        message: "Chemin local requis, commençant par / (sans destination externe)",
+      })
+      .refine((value) => !value.split("/").includes(".."), {
+        message: "Le chemin de healthcheck ne peut pas contenir ..",
+      })
+      .optional(),
+    healthcheckTimeoutMs: z.number().int().min(1000).max(60_000).optional(),
+    // Le rescan réutilise BullMQ et n'exécute aujourd'hui que le contrôle
+    // IMAGE sur le digest déployé. Aucun autre contrôle n'est prétendu.
+    rescanEnabled: z.boolean().optional(),
+    rescanIntervalHours: z.number().int().min(1).max(24 * 30).optional(),
+    rescanControls: z.array(z.enum(["IMAGE"])).min(1).max(1).optional(),
+    rescanTimeoutMs: z
+      .number()
+      .int()
+      .min(30_000)
+      .max(60 * 60_000)
+      .optional(),
+    rescanMaxRunsPerDay: z.number().int().min(1).max(24).optional(),
+    rescanRemediationEnabled: z.boolean().optional(),
   })
   .refine((d) => Object.keys(d).length > 0, {
     message: "Au moins un champ à modifier est requis",
@@ -91,8 +135,14 @@ export const createGateExceptionSchema = z.object({
   severity: z.nativeEnum(Severity).nullable().optional(),
   // Cible obligatoire : CVE, GHSA, règle ou empreinte du finding.
   fingerprint: z.string().trim().min(1).max(300),
-  reason: z.string().trim().min(1).max(1000),
+  matchType: z.nativeEnum(SecurityGateExceptionMatchType).default("ANY"),
+  reason: z.string().trim().min(10).max(1000),
   expiresAt: z.coerce.date().nullable().optional(),
+});
+
+export const gateExceptionDecisionSchema = z.object({
+  decision: z.enum(["APPROVE", "REJECT", "REVOKE"]),
+  comment: z.string().trim().max(1000).optional(),
 });
 
 export const gateExceptionParamSchema = z.object({
@@ -105,3 +155,6 @@ export type UpdateProjectInput = z.infer<typeof updateProjectSchema>;
 export type ProjectListQuery = z.infer<typeof projectListQuerySchema>;
 export type UpdateProjectConfigInput = z.infer<typeof updateProjectConfigSchema>;
 export type CreateGateExceptionInput = z.infer<typeof createGateExceptionSchema>;
+export type GateExceptionDecisionInput = z.infer<
+  typeof gateExceptionDecisionSchema
+>;

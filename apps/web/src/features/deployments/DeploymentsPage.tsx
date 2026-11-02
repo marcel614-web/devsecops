@@ -14,6 +14,7 @@ import { deploymentService } from "@/services/deployment.service";
 import { getErrorMessage } from "@/services/api";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import { timeAgo } from "@/lib/utils";
+import { DeploymentApprovalsPanel } from "./DeploymentApprovalsPanel";
 
 type DeploymentItem = {
   id: string;
@@ -22,6 +23,7 @@ type DeploymentItem = {
   status: string;
   environment: string;
   imageTag: string | null;
+  imageDigest: string | null;
   releaseVersion: string | null;
   url: string | null;
   stagingUrl: string | null;
@@ -29,6 +31,8 @@ type DeploymentItem = {
   productionUrl: string | null;
   productionStatus: string | null;
   rollbackImageTag: string | null;
+  rollbackImageDigest: string | null;
+  approval?: { status: string } | null;
   createdAt: string;
   startedAt: string | null;
   finishedAt: string | null;
@@ -112,6 +116,10 @@ export function DeploymentsPage() {
           </Button>
         }
       />
+
+      <div className="mb-5">
+        <DeploymentApprovalsPanel />
+      </div>
 
       {hasFilter && (
         <div className="mb-4 flex flex-wrap items-center justify-between gap-2 rounded-lg border border-primary-500/30 bg-primary-500/5 px-3 py-2 text-sm">
@@ -199,9 +207,25 @@ export function DeploymentsPage() {
                           </span>
                         </div>
                         <div className="text-xs text-muted">{d.imageTag ?? "—"}</div>
+                        {d.imageDigest && (
+                          <div
+                            className="truncate font-mono text-[10px] text-muted"
+                            title={d.imageDigest}
+                          >
+                            digest {d.imageDigest.slice(0, 19)}…
+                          </div>
+                        )}
                         {d.rollbackImageTag && (
                           <div className="text-xs text-amber-600">
                             rollback : {d.rollbackImageTag}
+                            {d.rollbackImageDigest
+                              ? ` (${d.rollbackImageDigest.slice(0, 12)}…)`
+                              : ""}
+                          </div>
+                        )}
+                        {d.approval?.status === "PENDING" && (
+                          <div className="text-xs text-sky-600 dark:text-sky-400">
+                            Approbation en attente
                           </div>
                         )}
                       </td>

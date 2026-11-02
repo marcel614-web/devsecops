@@ -44,6 +44,27 @@ const privateKeySchema = z
     "Format PEM attendu (-----BEGIN ... PRIVATE KEY-----)",
   );
 
+const hostKeyFingerprintSchema = z
+  .string()
+  .trim()
+  .regex(
+    /^SHA256:[A-Za-z0-9+/]{43}$/,
+    "Empreinte attendue au format OpenSSH SHA256:<base64 sans padding>",
+  );
+
+export const trustHostKeySchema = z.object({
+  fingerprint: hostKeyFingerprintSchema,
+  algorithm: z.string().trim().min(1).max(64).optional(),
+  /// Double confirmation explicite : l'empreinte doit être vérifiée hors bande.
+  confirm: z.literal(true, {
+    errorMap: () => ({
+      message: "Confirmation explicite requise pour enregistrer la clé d'hôte",
+    }),
+  }),
+});
+
+export type TrustHostKeyInput = z.infer<typeof trustHostKeySchema>;
+
 export const createServerSchema = z
   .object({
     name: nameSchema,
@@ -53,6 +74,8 @@ export const createServerSchema = z
     authType: z.nativeEnum(ServerAuthType).default(ServerAuthType.SSH_KEY),
     privateKey: privateKeySchema.optional(),
     passphrase: z.string().min(1).max(256).optional(),
+    hostKeyFingerprint: hostKeyFingerprintSchema.optional(),
+    hostKeyAlgorithm: z.string().trim().min(1).max(64).optional(),
   })
   .refine(
     (d) => d.authType !== ServerAuthType.SSH_KEY || !!d.privateKey,
@@ -67,6 +90,8 @@ export const updateServerSchema = z
     username: usernameSchema.optional(),
     privateKey: privateKeySchema.optional(),
     passphrase: z.string().min(1).max(256).optional(),
+    hostKeyFingerprint: hostKeyFingerprintSchema.optional(),
+    hostKeyAlgorithm: z.string().trim().min(1).max(64).optional(),
   })
   .refine((d) => Object.keys(d).length > 0, {
     message: "Au moins un champ à modifier est requis",

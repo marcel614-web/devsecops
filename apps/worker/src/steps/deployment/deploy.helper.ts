@@ -1,5 +1,6 @@
 // apps/worker/src/steps/deployment/deploy.helper.ts
 import { SshRunner } from "../../runners/ssh.runner";
+import { shellQuote } from "@devsecops/shared";
 import type { StepContext } from "../../orchestrator/step.executor";
 
 // Ports exposés par l'application selon la techno.
@@ -19,12 +20,15 @@ export interface DeployComposeOptions {
   externalPort: number;
   environment: "STAGING" | "PRODUCTION";
   serverHost: string;
+  /** Digest attendu (sha256:...). La VM doit posséder exactement cet artefact. */
+  expectedDigest?: string | null;
 }
 
 export interface DeployComposeResult {
   url: string;
   httpCode: string;
   healthy: boolean;
+  imageDigest: string;
 }
 
 // ============================================================
@@ -40,6 +44,7 @@ export function buildComposeFile(
   return `services:
   app:
     image: ${imageTag}
+    pull_policy: never
     restart: unless-stopped
     expose:
       - "${appPort}"
@@ -66,6 +71,13 @@ networks:
     name: ${projectName}-devsecops
     driver: bridge
 `;
+}
+
+/** Nom de projet Docker Compose stable pour un répertoire distant. */
+export function composeProjectName(remoteDir: string): string {
+  const segments = remoteDir.split("/").filter(Boolean);
+  const unique = segments.slice(-2).join("-");
+  return `devsecops-${unique.replace(/[^a-zA-Z0-9_-]/g, "-")}`;
 }
 
 export function buildNginxConf(appPort: number): string {
@@ -130,11 +142,31 @@ export async function deployCompose(
     externalPort,
     environment,
     serverHost,
+    expectedDigest,
   } = opts;
 
   await ctx.log(
     "info",
     `Déploiement ${environment} de ${imageTag} sur le port ${externalPort}...`,
+  );
+
+  // ------------------------------------------------------------
+  // Vérification d'intégrité : on refuse de déployer un tag qui ne
+  // résout pas exactement vers le digest validé par le pipeline.
+  // ------------------------------------------------------------
+  const inspectDigest = await ssh.exec(
+    `docker image inspect --format '{{.Id}}' ${shellQuote(imageTag)} 2>/dev/null`,
+    30_000,
+  );
+  const resolvedDigest = assertImageDigestVerified({
+    resolved: inspectDigest.stdout.trim(),
+    expected: expectedDigest,
+    imageTag,
+    exitCode: inspectDigest.code,
+  });
+  await ctx.log(
+    "info",
+    `Digest vérifié : ${resolvedDigest}${expectedDigest ? " (identique au build validé)" : ""}`,
   );
 
   const prep = await ssh.exec(
@@ -145,11 +177,7 @@ export async function deployCompose(
     throw new Error(`Préparation dossier distant échouée : ${prep.stderr}`);
   }
 
-  const projectName = (() => {
-    const segments = remoteDir.split("/").filter(Boolean);
-    const unique = segments.slice(-2).join("-");
-    return `devsecops-${unique.replace(/[^a-zA-Z0-9_-]/g, "-")}`;
-  })();
+  const projectName = composeProjectName(remoteDir);
 
   await ssh.writeRemoteFile(
     `${remoteDir}/docker-compose.yml`,
@@ -194,7 +222,7 @@ export async function deployCompose(
     httpCode = health.stdout.trim();
     if (isHealthyHttpCode(httpCode)) {
       await ctx.log("info", `Healthcheck OK (HTTP ${httpCode})`);
-      return { url: appUrl, httpCode, healthy: true };
+      return { url: appUrl, httpCode, healthy: true, imageDigest: resolvedDigest };
     }
 
     await ctx.log(
@@ -204,7 +232,60 @@ export async function deployCompose(
   }
 
   await ctx.log("error", `Healthcheck échoué après 6 tentatives (${httpCode})`);
-  return { url: appUrl, httpCode, healthy: false };
+  return { url: appUrl, httpCode, healthy: false, imageDigest: resolvedDigest };
+}
+
+/** Une promotion n'est possible qu'après un staging réussi. */
+export function isStagingReadyForPromotion(
+  status: string | null | undefined,
+): boolean {
+  return status === "SUCCESS";
+}
+
+/**
+ * Le rollback n'a de sens que vers une version précédente identifiable et
+ * différente de l'artefact qui vient d'échouer.
+ */
+export function canRollbackToPrevious(params: {
+  autoRollback?: boolean;
+  previousImageTag?: string | null;
+  previousImageDigest?: string | null;
+  currentImageDigest?: string | null;
+}): boolean {
+  return (
+    params.autoRollback !== false &&
+    !!params.previousImageTag &&
+    !!params.previousImageDigest &&
+    params.previousImageDigest !== params.currentImageDigest
+  );
+}
+
+/**
+ * Vérifie que l'artefact présent sur la VM est exactement celui validé.
+ * Aucun déploiement n'est autorisé si le digest est illisible ou diffère.
+ */
+export function assertImageDigestVerified(params: {
+  resolved: string;
+  expected?: string | null;
+  imageTag: string;
+  exitCode: number;
+}): string {
+  const resolvedDigest = params.resolved.trim();
+  if (
+    params.exitCode !== 0 ||
+    !/^sha256:[a-f0-9]{64}$/u.test(resolvedDigest)
+  ) {
+    throw new Error(
+      `Image ${params.imageTag} introuvable ou digest illisible sur la VM — déploiement refusé`,
+    );
+  }
+  if (params.expected && resolvedDigest !== params.expected) {
+    throw new Error(
+      `Digest de l'image ${params.imageTag} différent de l'artefact validé ` +
+        `(attendu ${params.expected}, résolu ${resolvedDigest}) — déploiement refusé`,
+    );
+  }
+  return resolvedDigest;
 }
 
 /**

@@ -13,6 +13,7 @@ import {
   XCircle,
   ChevronDown,
   ChevronUp,
+  ShieldAlert,
 } from "lucide-react";
 import { PageHeader } from "@/components/layout/PageHeader";
 import { Button } from "@/components/ui/Button";
@@ -27,6 +28,7 @@ import {
   useDeleteServer,
   useServers,
   useTestServer,
+  useTrustHostKey,
 } from "@/hooks/useServers";
 import { CreateServerModal } from "./CreateServerModal";
 import { EditServerModal } from "./EditServerModal";
@@ -34,18 +36,15 @@ import { ServerTestResultPanel } from "./ServerTestResultPanel";
 import { ServerResourcesPanel } from "./ServerResourcesPanel";
 import { timeAgo } from "@/lib/utils";
 import { getErrorMessage } from "@/services/api";
-import { serverService, type ServerResources } from "@/services/server.service";
+import {
+  serverService,
+  type ServerResources,
+  type ServerTestResult,
+} from "@/services/server.service";
 import type { DeploymentServer } from "@/types/api";
 import { useMutation, useQueryClient } from "@tanstack/react-query";
 
-interface TestResultCache {
-  [serverId: string]: {
-    ssh: { ok: boolean; error?: string; latencyMs?: number };
-    docker: { ok: boolean; version?: string; error?: string };
-    dockerCompose: { ok: boolean; version?: string; error?: string };
-    nginx: { ok: boolean; version?: string; error?: string };
-  };
-}
+type TestResultCache = Record<string, ServerTestResult>;
 
 export function ServersPage() {
   const [search, setSearch] = useState("");
@@ -125,6 +124,24 @@ export function ServersPage() {
       toast.show("error", getErrorMessage(err));
     } finally {
       setTestingId(null);
+    }
+  };
+
+  const trustMutation = useTrustHostKey();
+
+  const handleTrustHostKey = async (
+    server: DeploymentServer,
+    fingerprint: string,
+  ) => {
+    try {
+      await trustMutation.mutateAsync({ id: server.id, fingerprint });
+      toast.show(
+        "success",
+        `Empreinte enregistrée pour "${server.name}" — nouvelle vérification…`,
+      );
+      await handleTest(server.id, server.name);
+    } catch (err) {
+      toast.show("error", getErrorMessage(err));
     }
   };
 
@@ -250,6 +267,28 @@ export function ServersPage() {
                       )}
                     </dd>
                   </div>
+                  <div className="flex justify-between gap-3">
+                    <dt className="shrink-0 text-muted">Clé d'hôte</dt>
+                    <dd className="min-w-0 text-right">
+                      {s.hostKeyFingerprint ? (
+                        <span
+                          className="inline-flex items-center gap-1 font-mono text-[11px] text-emerald-600 dark:text-emerald-400"
+                          title={s.hostKeyFingerprint}
+                        >
+                          <ShieldCheck className="h-3 w-3 shrink-0" />
+                          {s.hostKeyFingerprint.slice(0, 18)}…
+                        </span>
+                      ) : (
+                        <span
+                          className="inline-flex items-center gap-1 text-[11px] text-amber-600 dark:text-amber-400"
+                          title="Aucun déploiement n'est autorisé tant que l'empreinte n'est pas enregistrée"
+                        >
+                          <ShieldAlert className="h-3 w-3" />
+                          Non enregistrée
+                        </span>
+                      )}
+                    </dd>
+                  </div>
                   {s._count && (
                     <div className="flex justify-between">
                       <dt className="text-muted">Projets</dt>
@@ -366,7 +405,16 @@ export function ServersPage() {
 
                 {/* Panneau de résultat */}
                 {testResult && isExpanded && (
-                  <ServerTestResultPanel result={testResult} />
+                  <ServerTestResultPanel
+                    result={testResult}
+                    trusting={
+                      trustMutation.isPending &&
+                      trustMutation.variables?.id === s.id
+                    }
+                    onTrustHostKey={(fingerprint) =>
+                      handleTrustHostKey(s, fingerprint)
+                    }
+                  />
                 )}
 
                 {resources && isResourcesExpanded && (

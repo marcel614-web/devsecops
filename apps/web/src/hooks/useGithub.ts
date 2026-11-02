@@ -35,6 +35,20 @@ export function useGithubBranches(repositoryId: string | null) {
   });
 }
 
+export function useBranchProtection(
+  repositoryId: string | null,
+  branch: string | null,
+  enabled = true,
+) {
+  return useQuery({
+    queryKey: ["github", "branch-protection", repositoryId, branch],
+    queryFn: () => githubService.getBranchProtection(repositoryId!, branch ?? undefined),
+    enabled: !!repositoryId && enabled,
+    retry: false,
+    staleTime: 30_000,
+  });
+}
+
 export function useRevokeInstallation() {
   const qc = useQueryClient();
   return useMutation({

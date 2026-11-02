@@ -37,8 +37,16 @@ export interface ServerSshStatus {
   latencyMs?: number;
 }
 
+export interface ServerHostKeyStatus {
+  observedFingerprint: string | null;
+  trustedFingerprint: string | null;
+  matches: boolean;
+  trusted: boolean;
+}
+
 export interface ServerTestResult {
   ssh: ServerSshStatus;
+  hostKey: ServerHostKeyStatus;
   docker: ServerToolStatus;
   dockerCompose: ServerToolStatus;
   nginx: ServerToolStatus;
@@ -131,6 +139,18 @@ export const serverService = {
     api
       .post<ServerTestResponse>(`/api/servers/${id}/test`)
       .then((r) => r.data),
+
+  /**
+   * Enregistre la référence de confiance de la clé d'hôte après vérification
+   * hors bande. Aucun déploiement n'est possible sans cette empreinte.
+   */
+  trustHostKey: (id: string, fingerprint: string) =>
+    api
+      .put<{ server: DeploymentServer }>(`/api/servers/${id}/host-key`, {
+        fingerprint,
+        confirm: true,
+      })
+      .then((r) => r.data.server),
 
   cleanupImages: (id: string) =>
     api

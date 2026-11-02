@@ -16,11 +16,13 @@ import { ProjectOverviewTab } from "./tabs/ProjectOverviewTab";
 import { ProjectPipelinesTab } from "./tabs/ProjectPipelinesTab";
 import { ProjectConfigTab } from "./tabs/ProjectConfigTab";
 import { ProjectVulnerabilitiesTab } from "./tabs/ProjectVulnerabilitiesTab";
+import { ProjectResilienceTab } from "./tabs/ProjectResilienceTab";
 
 const TABS = [
   { key: "overview", label: "Vue d'ensemble" },
   { key: "pipelines", label: "Pipelines" },
   { key: "vulnerabilities", label: "Vulnérabilités" },
+  { key: "resilience", label: "Résilience" },
   { key: "config", label: "Configuration" },
 ];
 
@@ -166,6 +168,7 @@ export function ProjectDetailPage() {
         {active === "overview" && <ProjectOverviewTab project={project} />}
         {active === "pipelines" && <ProjectPipelinesTab projectId={project.id} />}
         {active === "vulnerabilities" && <ProjectVulnerabilitiesTab projectId={project.id} />}
+        {active === "resilience" && <ProjectResilienceTab project={project} />}
         {active === "config" && <ProjectConfigTab project={project} />}
       </div>
     </div>

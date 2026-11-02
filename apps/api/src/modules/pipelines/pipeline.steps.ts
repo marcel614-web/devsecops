@@ -8,6 +8,15 @@ export interface StepDef {
   critical: boolean;
 }
 
+export interface BuildStepsOptions {
+  /**
+   * Pipeline de Pull Request : il valide le code et publie un Check Run,
+   * mais ne déploie jamais. Seuls les pipelines de branche surveillée
+   * (push) ou manuels peuvent atteindre le déploiement.
+   */
+  pullRequest?: boolean;
+}
+
 /**
  * Construit la liste des étapes d'un pipeline.
  *
@@ -15,7 +24,10 @@ export interface StepDef {
  * les webhooks GitHub (push et pull_request). Les étapes sont ensuite
  * exécutées par le worker via `step.executor.ts`.
  */
-export function buildDefaultSteps(config: ProjectConfiguration): StepDef[] {
+export function buildDefaultSteps(
+  config: ProjectConfiguration,
+  options: BuildStepsOptions = {},
+): StepDef[] {
   const steps: StepDef[] = [
     { name: "Checkout", type: "CHECKOUT", order: 1, critical: true },
     { name: "Technology Detection", type: "DETECTION", order: 2, critical: true },
@@ -41,7 +53,7 @@ export function buildDefaultSteps(config: ProjectConfiguration): StepDef[] {
   }
   if (config.iacEnabled) {
     steps.push({
-      name: "Trivy config (IaC)",
+      name: "IaC & Ansible",
       type: "IAC_SCAN",
       order: order++,
       critical: false,
@@ -55,12 +67,12 @@ export function buildDefaultSteps(config: ProjectConfiguration): StepDef[] {
     critical: true,
   });
 
-  if (config.cosignEnabled) {
+  if (config.cosignMode && config.cosignMode !== "DISABLED") {
     steps.push({
       name: "Cosign Sign",
       type: "SIGN",
       order: order++,
-      critical: true,
+      critical: config.cosignMode === "REQUIRED",
     });
   }
 
@@ -89,39 +101,83 @@ export function buildDefaultSteps(config: ProjectConfiguration): StepDef[] {
     critical: true,
   });
 
-  const stagingStrategy = config.deploymentStrategy === "staging_then_production";
+  // Une Pull Request ne déploie jamais, même si le projet est configuré
+  // pour un déploiement direct. Le pipeline PR sert à valider le commit et
+  // à publier le Check Run ; la promotion reste réservée au push sur la
+  // branche surveillée (ou à un déclenchement manuel explicite).
+  if (!options.pullRequest) {
+    const stagingStrategy =
+      config.deploymentStrategy === "staging_then_production";
 
-  steps.push({
-    name: stagingStrategy ? "Deployment (staging)" : "Deployment",
-    type: "DEPLOYMENT",
-    order: order++,
-    critical: false,
-  });
-
-  if (config.zapEnabled) {
     steps.push({
-      name: "OWASP ZAP",
-      type: "DAST",
+      name: stagingStrategy ? "Deployment (staging)" : "Deployment",
+      type: "DEPLOYMENT",
       order: order++,
-      critical: false,
-    });
-  }
-
-  if (stagingStrategy) {
-    // Deuxième gate : les résultats DAST doivent être évalués avant
-    // toute promotion en production.
-    steps.push({
-      name: "Security Gate (post-DAST)",
-      type: "SECURITY_GATE",
-      order: order++,
+      // Un échec de déploiement doit arrêter le pipeline : sans cela, une
+      // production non déployée pourrait être présentée comme un simple
+      // avertissement.
       critical: true,
     });
-    steps.push({
-      name: "Promotion production",
-      type: "PROMOTE",
-      order: order++,
-      critical: true,
-    });
+
+    if (config.postDeployChecksEnabled !== false) {
+      steps.push({
+        name: stagingStrategy
+          ? "Post-déploiement (staging)"
+          : "Post-déploiement (production)",
+        type: "POST_DEPLOY",
+        order: order++,
+        // Le déploiement peut réussir puis régresser (conteneur arrêté,
+        // digest remplacé). Ce constat doit interrompre le pipeline.
+        critical: true,
+      });
+    }
+
+    if (config.zapEnabled) {
+      steps.push({
+        name: "OWASP ZAP",
+        type: "DAST",
+        order: order++,
+        critical: false,
+      });
+    }
+
+    if (config.zapEnabled) {
+      // Deuxième gate : les résultats DAST doivent être évalués après ZAP.
+      // En stratégie staging, il bloque la promotion en production ; en
+      // déploiement direct, il force une décision de sécurité finale visible
+      // avant le rapport (même si le déploiement a déjà eu lieu).
+      steps.push({
+        name: "Security Gate (post-DAST)",
+        type: "SECURITY_GATE",
+        order: order++,
+        critical: true,
+      });
+    }
+
+    if (stagingStrategy) {
+      if (config.requireProductionApproval) {
+        steps.push({
+          name: "Approbation production",
+          type: "APPROVAL",
+          order: order++,
+          critical: true,
+        });
+      }
+      steps.push({
+        name: "Promotion production",
+        type: "PROMOTE",
+        order: order++,
+        critical: true,
+      });
+      if (config.postDeployChecksEnabled !== false) {
+        steps.push({
+          name: "Post-déploiement (production)",
+          type: "POST_DEPLOY",
+          order: order++,
+          critical: true,
+        });
+      }
+    }
   }
 
   steps.push({
@@ -130,6 +186,15 @@ export function buildDefaultSteps(config: ProjectConfiguration): StepDef[] {
     order: order++,
     critical: false,
   });
+
+  if (config.defectDojoEnabled) {
+    steps.push({
+      name: "DefectDojo Export",
+      type: "DEFECTDOJO_EXPORT",
+      order: order++,
+      critical: false,
+    });
+  }
 
   return steps;
 }

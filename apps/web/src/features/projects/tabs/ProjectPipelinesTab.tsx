@@ -152,7 +152,11 @@ export function ProjectPipelinesTab({ projectId }: { projectId: string }) {
                     <td className="px-4 py-3 text-right text-muted">{timeAgo(p.createdAt)}</td>
                     <td className="px-4 py-3 text-right">
                       <div className="inline-flex items-center gap-1">
-                        {p.steps?.[0] && p.status !== "QUEUED" && p.status !== "RUNNING" && (
+                        {p.steps?.[0] &&
+                          (p.status === "FAILED" ||
+                            p.status === "SECURITY_BLOCKED" ||
+                            p.status === "TIMED_OUT" ||
+                            p.status === "CANCELLED") && (
                           <button
                             type="button"
                             className="rounded-md p-1.5 text-muted hover:bg-primary-500/10 hover:text-primary-500 focus-visible:ring-2 focus-visible:ring-primary-500 disabled:cursor-not-allowed disabled:opacity-50"
@@ -167,7 +171,10 @@ export function ProjectPipelinesTab({ projectId }: { projectId: string }) {
                             <PlayCircle className={`h-4 w-4 ${resumeMutation.isPending && resumeMutation.variables?.pipelineId === p.id ? "animate-spin" : ""}`} />
                           </button>
                         )}
-                        {(p.status === "FAILED" || p.status === "SECURITY_BLOCKED") && (
+                        {(p.status === "FAILED" ||
+                          p.status === "SECURITY_BLOCKED" ||
+                          p.status === "TIMED_OUT" ||
+                          p.status === "SUCCESS_WITH_WARNINGS") && (
                           <button
                             type="button"
                             className="rounded-md p-1.5 text-muted hover:bg-primary-500/10 hover:text-primary-500 focus-visible:ring-2 focus-visible:ring-primary-500 disabled:cursor-not-allowed disabled:opacity-50"

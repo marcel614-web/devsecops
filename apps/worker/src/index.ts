@@ -2,6 +2,11 @@
 import { logger } from "./utils/logger";
 import { prisma } from "./utils/prisma";
 import { startPipelineWorker } from "./orchestrator/pipeline.worker";
+import { startRescanWorker } from "./rescan/rescan.worker";
+import {
+  ensureRescanScheduler,
+  rescanQueue,
+} from "./rescan/rescan.queue";
 import {
   destroyAllSandboxes,
   sweepOrphanSandboxes,
@@ -21,6 +26,12 @@ async function main() {
     const worker = startPipelineWorker();
     logger.info("Worker : en écoute sur la queue pipeline-runs");
 
+    const rescanWorker = startRescanWorker();
+    await ensureRescanScheduler();
+    logger.info(
+      "Worker : rescan périodique en écoute (queue rescan-runs, scheduler BullMQ)",
+    );
+
     // Nettoyage best-effort des sandboxes orphelines d'un arrêt brutal.
     void sweepOrphanSandboxes(sandboxLogger).catch(() => undefined);
 
@@ -30,6 +41,8 @@ async function main() {
       // doit pas retarder indéfiniment l'arrêt.
       await destroyAllSandboxes().catch(() => undefined);
       await worker.close();
+      await rescanWorker.close();
+      await rescanQueue.close().catch(() => undefined);
       await prisma.$disconnect();
       process.exit(0);
     };

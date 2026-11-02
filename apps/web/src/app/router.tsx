@@ -19,6 +19,7 @@ import { ReportsPage } from "@/features/reports/ReportsPage";
 import { UsersPage } from "@/features/users/UsersPage";
 import { AuditPage } from "@/features/audit/AuditPage";
 import { SettingsPage } from "@/features/settings/SettingsPage";
+import { DefectDojoSettingsPage } from "@/features/settings/DefectDojoSettingsPage";
 import { GithubSettingsPage } from "@/features/settings/GithubSettingsPage";
 import { ProfilePage } from "@/features/settings/ProfilePage";
 import { SecurityPage as SettingsSecurityPage } from "@/features/settings/SecurityPage";
@@ -147,6 +148,14 @@ export function AppRouter() {
           element={
             <RoleGuard roles={["ADMIN"]}>
               <GithubSettingsPage />
+            </RoleGuard>
+          }
+        />
+        <Route
+          path="settings/defectdojo"
+          element={
+            <RoleGuard roles={["ADMIN"]}>
+              <DefectDojoSettingsPage />
             </RoleGuard>
           }
         />

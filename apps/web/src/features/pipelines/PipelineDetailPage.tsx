@@ -33,7 +33,11 @@ export function PipelineDetailPage() {
 
   const { data: pipeline, isLoading, isError, error, refetch, isFetching } = usePipelineDetail(projectId, pipelineId);
   const isRunning = pipeline?.status === "QUEUED" || pipeline?.status === "RUNNING";
-  const resumeIndex = pipeline?.steps.findIndex((step) => step.status !== "SUCCESS") ?? -1;
+  const resumeIndex =
+    pipeline?.steps.findIndex(
+      (step) =>
+        step.status !== "SUCCESS" && step.status !== "SUCCESS_WITH_WARNINGS",
+    ) ?? -1;
   const resumeStep = resumeIndex >= 0 ? pipeline?.steps[resumeIndex] ?? null : null;
   const { data: scans } = usePipelineScans(projectId, pipelineId, !isRunning && !!pipeline);
   const cancelMutation = useCancelPipeline(projectId ?? "", pipelineId ?? "");
@@ -43,7 +47,12 @@ export function PipelineDetailPage() {
   useEffect(() => {
     if (!pipeline || selectedStepId) return;
     const running = pipeline.steps.find((s) => s.status === "RUNNING");
-    const failed = pipeline.steps.find((s) => s.status === "FAILED" || s.status === "SECURITY_BLOCKED");
+    const failed = pipeline.steps.find(
+      (s) =>
+        s.status === "FAILED" ||
+        s.status === "SECURITY_BLOCKED" ||
+        s.status === "TIMED_OUT",
+    );
     setSelectedStepId(running?.id ?? failed?.id ?? pipeline.steps[0]?.id ?? null);
   }, [pipeline, selectedStepId]);
 
@@ -120,8 +129,14 @@ export function PipelineDetailPage() {
 
   const failure = getPipelineFailure(pipeline);
   const canRerun =
-    pipeline.status === "FAILED" || pipeline.status === "SECURITY_BLOCKED";
-  const canResume = !!resumeStep && !isRunning;
+    pipeline.status === "FAILED" ||
+    pipeline.status === "SECURITY_BLOCKED" ||
+    pipeline.status === "TIMED_OUT" ||
+    pipeline.status === "SUCCESS_WITH_WARNINGS";
+  const waitingApproval = pipeline.status === "WAITING_APPROVAL";
+  // Une reprise manuelle ne remplace jamais une approbation : le moteur
+  // relirait la demande PENDING et s'arrêterait à nouveau.
+  const canResume = !!resumeStep && !isRunning && !waitingApproval;
 
   const copySha = async () => {
     try {
@@ -233,6 +248,37 @@ export function PipelineDetailPage() {
         </div>
       </div>
 
+      {waitingApproval && (
+        <Card className="border-sky-500/40 bg-sky-500/5">
+          <CardContent className="flex flex-col gap-2 py-3 sm:flex-row sm:items-center sm:justify-between">
+            <div>
+              <p className="text-sm font-medium text-sky-700 dark:text-sky-300">
+                Promotion en attente d'approbation
+              </p>
+              <p className="mt-0.5 text-xs text-muted">
+                Le staging est conservé. La production ne sera remplacée
+                qu'après une décision explicite liée au commit{" "}
+                <span className="font-mono">
+                  {pipeline.commitSha.slice(0, 12)}
+                </span>{" "}
+                et au digest{" "}
+                <span className="font-mono">
+                  {pipeline.dockerImage?.imageDigest?.slice(0, 19) ?? "inconnu"}
+                  …
+                </span>
+                .
+              </p>
+            </div>
+            <Link
+              to={`/deployments?pipelineId=${pipeline.id}`}
+              className="inline-flex shrink-0 items-center gap-1 text-sm font-medium text-primary-500 hover:underline"
+            >
+              Examiner la demande <ExternalLink className="h-3.5 w-3.5" />
+            </Link>
+          </CardContent>
+        </Card>
+      )}
+
       {failure && <PipelineFailureBanner failure={failure} projectId={projectId} />}
 
       {pipeline.status === "CANCELLED" && (
@@ -285,6 +331,14 @@ export function PipelineDetailPage() {
             <Info icon={Package} label="Image Docker"
               value={`${pipeline.dockerImage.imageTag.split(":").pop()} · ${formatBytes(pipeline.dockerImage.sizeBytes)}`} mono />
           )}
+          {pipeline.dockerImage?.imageDigest && (
+            <Info
+              icon={ShieldCheck}
+              label="Digest image"
+              value={pipeline.dockerImage.imageDigest}
+              mono
+            />
+          )}
         </CardContent>
       </Card>
 
@@ -292,6 +346,89 @@ export function PipelineDetailPage() {
         <SecurityGatePanel gate={pipeline.gateResult} />
         {scans && <ScanSummary scans={scans} />}
       </div>
+
+      {pipeline.securityPolicy && (
+        <Card>
+          <CardHeader>
+            <CardTitle className="flex items-center gap-2">
+              <ShieldCheck className="h-4 w-4 text-primary-500" /> Politique de
+              sécurité appliquée
+            </CardTitle>
+          </CardHeader>
+          <CardContent className="space-y-3">
+            <div className="grid grid-cols-1 gap-3 text-sm sm:grid-cols-3">
+              <Info
+                icon={ShieldCheck}
+                label="Version"
+                value={`v${pipeline.securityPolicy.version}`}
+              />
+              <Info
+                icon={ShieldCheck}
+                label="Mode"
+                value={
+                  pipeline.securityPolicy.policyJson.mode === "ENFORCEMENT"
+                    ? "Enforcement"
+                    : "Avertissement"
+                }
+              />
+              <Info
+                icon={Clock}
+                label="Empreinte"
+                value={pipeline.securityPolicy.policyHash.slice(0, 12)}
+                mono
+              />
+            </div>
+            <p className="text-[11px] text-muted">
+              Cette politique a été figée à la création du pipeline. Ses
+              décisions ne sont pas recalculées avec la configuration actuelle
+              du projet.
+            </p>
+            {pipeline.gateEvaluations &&
+              pipeline.gateEvaluations.length > 0 && (
+                <div>
+                  <p className="mb-1 text-xs font-medium text-muted">
+                    Gates évalués
+                  </p>
+                  <ul className="space-y-1">
+                    {pipeline.gateEvaluations.map((evaluation) => (
+                      <li
+                        key={evaluation.id}
+                        className="flex flex-wrap items-center gap-2 rounded border border-border px-2 py-1.5 text-xs"
+                      >
+                        <span className="font-mono font-medium">
+                          {evaluation.gateKey}
+                        </span>
+                        <span
+                          className={cn(
+                            "rounded px-1.5 py-0.5 text-[10px] font-semibold uppercase",
+                            evaluation.status === "PASSED"
+                              ? "bg-emerald-500/15 text-emerald-700 dark:text-emerald-400"
+                              : evaluation.status === "WARNING"
+                                ? "bg-amber-500/15 text-amber-700 dark:text-amber-400"
+                                : "bg-red-500/15 text-red-700 dark:text-red-400",
+                          )}
+                        >
+                          {evaluation.status}
+                        </span>
+                        <span className="text-muted">
+                          {evaluation.mode} ·{" "}
+                          {new Date(evaluation.evaluatedAt).toLocaleString(
+                            "fr-FR",
+                          )}
+                        </span>
+                        {evaluation.reason && (
+                          <span className="basis-full text-muted">
+                            {evaluation.reason}
+                          </span>
+                        )}
+                      </li>
+                    ))}
+                  </ul>
+                </div>
+              )}
+          </CardContent>
+        </Card>
+      )}
 
       {(pipeline.dockerImage || pipeline.sbom || pipeline.deployment) && (
         <Card>
@@ -334,8 +471,27 @@ export function PipelineDetailPage() {
             <Info
               icon={Rocket}
               label="Déploiement"
-              value={pipeline.deployment?.status ?? "—"}
+              value={pipeline.deployment?.status ?? "-"}
             />
+
+            {pipeline.dockerImage?.imageDigest && (
+              <Info
+                icon={ShieldCheck}
+                label="Digest promu"
+                value={pipeline.dockerImage.imageDigest}
+                mono
+              />
+            )}
+
+            {(pipeline.approval ?? pipeline.deployment?.approval) && (
+              <Info
+                icon={ShieldCheck}
+                label="Approbation production"
+                value={
+                  (pipeline.approval ?? pipeline.deployment?.approval)!.status
+                }
+              />
+            )}
 
             {pipeline.deployment?.stagingUrl && (
               <Info

@@ -1,15 +1,22 @@
 // apps/worker/src/steps/deployment/promotion.step.ts
-import { DeploymentStatus } from "@prisma/client";
+import { DeploymentApprovalStatus, DeploymentStatus } from "@prisma/client";
 import { prisma } from "../../utils/prisma";
 import { decryptString } from "../../utils/crypto";
 import { SshRunner } from "../../runners/ssh.runner";
 import type { StepContext, StepResult } from "../../orchestrator/step.executor";
 import {
   APP_PORT_BY_TECH,
+  canRollbackToPrevious,
   deployCompose,
+  isStagingReadyForPromotion,
   stopLegacyDeployment,
 } from "./deploy.helper";
 import { resolveProjectPorts, type ProjectPorts } from "./ports";
+import {
+  acquireDeploymentLock,
+  assertPipelineIsCurrent,
+  releaseDeploymentLock,
+} from "./deployment.lock";
 
 /**
  * Promotion staging → production.
@@ -69,13 +76,21 @@ export async function promotionStep(
 
   const image = await prisma.dockerImage.findUnique({
     where: { pipelineId: ctx.pipelineId },
-    select: { imageTag: true },
+    select: { imageTag: true, imageDigest: true },
   });
   if (!image) {
     return {
       success: false,
       exitCode: 1,
       error: "Aucune image Docker trouvée pour ce pipeline",
+    };
+  }
+  if (!image.imageDigest) {
+    return {
+      success: false,
+      exitCode: 1,
+      error:
+        "Digest de l'image introuvable : promotion refusée (artefact non traçable)",
     };
   }
 
@@ -97,12 +112,44 @@ export async function promotionStep(
     };
   }
 
-  if (deployment.stagingStatus !== DeploymentStatus.SUCCESS) {
+  if (!isStagingReadyForPromotion(deployment.stagingStatus)) {
     return {
       success: false,
       exitCode: 1,
       error: "Le déploiement de staging n'a pas réussi — promotion refusée",
     };
+  }
+
+  // Défense en profondeur : même si l'étape APPROVAL a été contournée ou si
+  // la décision a été révoquée entre-temps, la promotion vérifie elle-même
+  // que l'approbation porte sur ce commit et ce digest, et qu'elle est encore
+  // valide. Une approbation n'est jamais réutilisable pour un autre artefact.
+  if (project.config?.requireProductionApproval) {
+    const approval = await prisma.deploymentApproval.findUnique({
+      where: { pipelineId: ctx.pipelineId },
+    });
+    const now = new Date();
+    const valid =
+      approval?.status === DeploymentApprovalStatus.APPROVED &&
+      approval.commitSha === ctx.commitSha &&
+      approval.imageDigest === image.imageDigest &&
+      (!approval.expiresAt || approval.expiresAt > now);
+
+    if (!valid) {
+      return {
+        success: false,
+        exitCode: 1,
+        error:
+          "Promotion refusée : aucune approbation valide pour ce commit et ce digest",
+      };
+    }
+
+    await ctx.log(
+      "info",
+      `Approbation valide (${approval.id}) — décidée le ` +
+        `${approval.decidedAt?.toISOString() ?? "date inconnue"} par ` +
+        `${approval.decidedById ?? "utilisateur inconnu"}`,
+    );
   }
 
   const appPort = APP_PORT_BY_TECH[project.technology] ?? 80;
@@ -147,8 +194,36 @@ export async function promotionStep(
       imageTag: { not: null },
     },
     orderBy: { finishedAt: "desc" },
-    select: { imageTag: true, url: true },
+    select: { id: true, imageTag: true, imageDigest: true, url: true },
   });
+
+  // Un pipeline plus récent sur la même branche rend cette promotion
+  // obsolète : on ne remplace pas la production avec un artefact dépassé.
+  try {
+    await assertPipelineIsCurrent(ctx.pipelineId);
+  } catch (err) {
+    const msg = err instanceof Error ? err.message : String(err);
+    await ctx.log("error", msg);
+    return { success: false, exitCode: 1, error: msg };
+  }
+
+  let lockAcquired = false;
+  try {
+    await acquireDeploymentLock(
+      project.id,
+      ctx.pipelineId,
+      "PRODUCTION_PROMOTION",
+    );
+    lockAcquired = true;
+    await ctx.log(
+      "info",
+      "Verrou de production acquis — promotion exclusive",
+    );
+  } catch (err) {
+    const msg = err instanceof Error ? err.message : String(err);
+    await ctx.log("error", msg);
+    return { success: false, exitCode: 1, error: msg };
+  }
 
   const ssh = new SshRunner();
 
@@ -160,6 +235,7 @@ export async function promotionStep(
       username: server.username,
       privateKey,
       passphrase,
+      hostKeyFingerprint: server.hostKeyFingerprint,
     });
 
     await stopLegacyDeployment(
@@ -177,6 +253,7 @@ export async function promotionStep(
         ctx,
         remoteDir,
         imageTag: image.imageTag,
+        expectedDigest: image.imageDigest,
         appPort,
         externalPort: productionPort,
         environment: "PRODUCTION",
@@ -204,12 +281,15 @@ export async function promotionStep(
           productionUrl,
           productionStatus: DeploymentStatus.SUCCESS,
           url: productionUrl,
+          imageDigest: image.imageDigest,
+          previousDeploymentId: previous?.id ?? null,
           finishedAt,
           durationMs,
           // Une promotion qui reussit ne doit pas conserver l'erreur d'une
           // tentative precedente (reprise de pipeline apres timeout SSH).
           error: null,
           rollbackImageTag: null,
+          rollbackImageDigest: null,
         },
       });
 
@@ -247,17 +327,21 @@ export async function promotionStep(
     // ----------------------------------------------------------
     await ctx.log("error", `Promotion échouée : ${deployError}`);
 
-    const canRollback =
-      project.config?.autoRollback !== false &&
-      previous?.imageTag &&
-      previous.imageTag !== image.imageTag;
+    const canRollback = canRollbackToPrevious({
+      autoRollback: project.config?.autoRollback,
+      previousImageTag: previous?.imageTag,
+      previousImageDigest: previous?.imageDigest,
+      currentImageDigest: image.imageDigest,
+    });
 
     let rollbackImageTag: string | null = null;
+    let rollbackImageDigest: string | null = null;
 
-    if (canRollback) {
+    if (canRollback && previous) {
       await ctx.log(
         "warn",
-        `Tentative de rollback vers l'image ${previous.imageTag}...`,
+        `Tentative de rollback vers l'image ${previous.imageTag} ` +
+          `(digest ${previous.imageDigest})...`,
       );
       try {
         const rollback = await deployCompose({
@@ -265,6 +349,7 @@ export async function promotionStep(
           ctx,
           remoteDir,
           imageTag: previous.imageTag!,
+          expectedDigest: previous.imageDigest,
           appPort,
           externalPort: productionPort,
           environment: "PRODUCTION",
@@ -273,6 +358,7 @@ export async function promotionStep(
 
         if (rollback.healthy) {
           rollbackImageTag = previous.imageTag!;
+          rollbackImageDigest = rollback.imageDigest;
           await ctx.log(
             "info",
             `Rollback réussi : ${previous.imageTag} (${rollback.url})`,
@@ -307,6 +393,7 @@ export async function promotionStep(
         durationMs,
         error: deployError,
         rollbackImageTag,
+        rollbackImageDigest,
       },
     });
 
@@ -321,7 +408,9 @@ export async function promotionStep(
         metadataJson: {
           error: deployError,
           rollbackImageTag,
+          rollbackImageDigest,
           failedImageTag: image.imageTag,
+          failedImageDigest: image.imageDigest,
         },
       },
     });
@@ -335,5 +424,10 @@ export async function promotionStep(
     };
   } finally {
     await ssh.disconnect().catch(() => undefined);
+    if (lockAcquired) {
+      await releaseDeploymentLock(ctx.projectId, ctx.pipelineId).catch(
+        () => undefined,
+      );
+    }
   }
 }

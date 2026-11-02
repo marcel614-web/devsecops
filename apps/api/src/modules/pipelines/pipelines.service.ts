@@ -1,6 +1,10 @@
 // apps/api/src/modules/pipelines/pipelines.service.ts
 import fs from "node:fs/promises";
+import path from "node:path";
+import { execFile } from "node:child_process";
+import { promisify } from "node:util";
 import { PipelineStatus, Prisma, Role, StepStatus } from "@prisma/client";
+import { isFullGitSha } from "@devsecops/shared";
 import { prisma } from "../../utils/prisma";
 import {
   ConflictError,
@@ -12,6 +16,7 @@ import { redisConnection } from "../../queues/connection";
 import { listCommits } from "../github/repositories.service";
 import { logWarn } from "../../utils/logger";
 import { buildDefaultSteps } from "./pipeline.steps";
+import { createPipelineSecurityPolicy } from "./policy-snapshot";
 import type {
   PipelineListQuery,
   PipelineLogsQuery,
@@ -24,6 +29,8 @@ import type {
 // PIPELINE_CANCEL_PREFIX dans apps/worker/src/utils/cancellation.ts
 const PIPELINE_CANCEL_PREFIX = "pipeline:cancel:";
 const PIPELINE_CANCEL_TTL_SEC = 3600; // 1 h
+
+const execFileAsync = promisify(execFile);
 
 export interface ActorContext {
   id: string;
@@ -95,6 +102,83 @@ async function resolveGitHubRepositoryId(project: {
   });
 
   return repo?.id ?? null;
+}
+
+/**
+ * Résout le HEAD réel d'un dépôt local (`local:<chemin>`), afin qu'un
+ * lancement manuel conserve un SHA complet vérifiable sans dépendre de
+ * GitHub.
+ */
+async function resolveLocalHead(repoFullName: string): Promise<string | null> {
+  if (!repoFullName.startsWith("local:")) return null;
+
+  const localPath = path.resolve(repoFullName.slice("local:".length));
+  const { stdout } = await execFileAsync(
+    "git",
+    ["-C", localPath, "rev-parse", "HEAD"],
+    { timeout: 15_000, windowsHide: true, encoding: "utf8" },
+  );
+  const sha = stdout.trim().toLowerCase();
+  return isFullGitSha(sha) ? sha : null;
+}
+
+/**
+ * Résout le HEAD courant sans créer de pipeline. Utilisé par la remédiation
+ * explicite d'un rescan : on refuse de relancer la même révision, qui ne
+ * pourrait pas corriger l'artefact déjà analysé.
+ */
+export async function resolveProjectHead(
+  projectId: string,
+  branchOverride?: string,
+): Promise<{ sha: string; branch: string; author?: string } | null> {
+  const project = await prisma.project.findUnique({
+    where: { id: projectId },
+    select: {
+      ownerId: true,
+      repoId: true,
+      repoFullName: true,
+      defaultBranch: true,
+      githubRepositoryId: true,
+    },
+  });
+  if (!project) return null;
+
+  const branch = branchOverride ?? project.defaultBranch;
+
+  try {
+    const local = await resolveLocalHead(project.repoFullName);
+    if (local) return { sha: local, branch };
+  } catch (err) {
+    logWarn("Remédiation : lecture du HEAD local impossible", {
+      projectId,
+      error: err instanceof Error ? err.message : String(err),
+    });
+  }
+
+  const repositoryId = await resolveGitHubRepositoryId(project);
+  if (repositoryId) {
+    try {
+      const [latest] = await listCommits(project.ownerId, repositoryId, branch);
+      if (latest?.sha && isFullGitSha(latest.sha)) {
+        return {
+          sha: latest.sha.toLowerCase(),
+          branch,
+          author:
+            latest.authorName && latest.authorName !== "inconnu"
+              ? latest.authorName
+              : undefined,
+        };
+      }
+    } catch (err) {
+      logWarn("Remédiation : récupération du HEAD GitHub impossible", {
+        projectId,
+        branch,
+        error: err instanceof Error ? err.message : String(err),
+      });
+    }
+  }
+
+  return null;
 }
 
 // ============================================================
@@ -170,8 +254,19 @@ export async function getPipeline(
     include: {
       steps: { orderBy: { order: "asc" } },
       gateResult: true,
-      deployment: true,
+      gateEvaluations: { orderBy: { evaluatedAt: "asc" } },
+      securityPolicy: true,
+      deployment: {
+        include: {
+          verifications: { orderBy: { createdAt: "desc" } },
+        },
+      },
       dockerImage: true,
+      approval: {
+        include: {
+          decidedBy: { select: { id: true, name: true, email: true } },
+        },
+      },
       sbom: true,
       _count: { select: { logs: true, scans: true } },
     },
@@ -204,6 +299,17 @@ export async function runPipeline(
   // Un lancement manuel sans SHA doit utiliser le dernier commit réel
   // de la branche, et non un identifiant synthétique "manual-...".
   if (!commitSha) {
+    try {
+      commitSha = (await resolveLocalHead(project.repoFullName)) ?? undefined;
+    } catch (err) {
+      logWarn("Impossible de lire le HEAD du dépôt local", {
+        projectId,
+        error: err instanceof Error ? err.message : String(err),
+      });
+    }
+  }
+
+  if (!commitSha) {
     const githubRepositoryId = await resolveGitHubRepositoryId(project);
     if (githubRepositoryId) {
       try {
@@ -220,7 +326,7 @@ export async function runPipeline(
         }
       } catch (err) {
         logWarn(
-          "Impossible de récupérer le dernier commit GitHub — repli sur un SHA local",
+          "Impossible de récupérer le dernier commit GitHub pour le lancement manuel",
           {
             projectId,
             branch,
@@ -231,7 +337,15 @@ export async function runPipeline(
     }
   }
 
-  commitSha = commitSha ?? `manual-${Date.now()}`;
+  // Aucun SHA synthétique : sans commit réel, le build, les scans et
+  // l'image ne seraient rattachés à aucune révision vérifiable.
+  if (!commitSha || !isFullGitSha(commitSha)) {
+    throw new ConflictError(
+      "Impossible de déterminer un SHA de commit complet pour ce pipeline. " +
+        "Sélectionnez un commit réel ou vérifiez l'accès GitHub au dépôt.",
+    );
+  }
+  commitSha = commitSha.toLowerCase();
   author = author ?? actor.id;
 
   const pipeline = await prisma.$transaction(async (tx) => {
@@ -287,6 +401,14 @@ export async function runPipeline(
     });
 
     const stepDefs = buildDefaultSteps(config);
+
+    // La politique est figée avec le pipeline : une modification de la
+    // configuration après ce point ne doit pas changer ses décisions.
+    await createPipelineSecurityPolicy(tx, {
+      pipelineId: created.id,
+      projectId,
+      config,
+    });
 
     await tx.pipelineStep.createMany({
       data: stepDefs.map((s) => ({
@@ -356,10 +478,12 @@ export async function rerunPipeline(
 
   if (
     source.status !== PipelineStatus.FAILED &&
-    source.status !== PipelineStatus.SECURITY_BLOCKED
+    source.status !== PipelineStatus.SECURITY_BLOCKED &&
+    source.status !== PipelineStatus.SUCCESS_WITH_WARNINGS &&
+    source.status !== PipelineStatus.TIMED_OUT
   ) {
     throw new ConflictError(
-      "Seul un pipeline échoué ou bloqué par le Security Gate peut être relancé",
+      "Seul un pipeline échoué, bloqué, terminé avec avertissements ou expiré peut être relancé",
     );
   }
 
@@ -440,7 +564,9 @@ export async function resumePipeline(
   }
 
   const resumeIndex = pipeline.steps.findIndex(
-    (step) => step.status !== StepStatus.SUCCESS,
+    (step) =>
+      step.status !== StepStatus.SUCCESS &&
+      step.status !== StepStatus.SUCCESS_WITH_WARNINGS,
   );
   if (resumeIndex === -1) {
     throw new ConflictError("Toutes les étapes de ce pipeline ont déjà réussi");

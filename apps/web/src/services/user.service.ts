@@ -18,9 +18,11 @@ export const userService = {
     api.get<{ user: ApiUser }>(`/api/users/${id}`).then((r) => r.data.user),
   create: (data: { email: string; name: string; password: string; role: "ADMIN" | "DEVELOPER" }) =>
     api.post<{ user: ApiUser }>("/api/users", data).then((r) => r.data.user),
-  update: (id: string, data: Partial<{ name: string; email: string; role: "ADMIN" | "DEVELOPER"; isActive: boolean }>) =>
+  update: (id: string, data: Partial<{ name: string; email: string; role: "ADMIN" | "DEVELOPER"; isActive: boolean; password: string }>) =>
     api.patch<{ user: ApiUser }>(`/api/users/${id}`, data).then((r) => r.data.user),
-  deactivate: (id: string) => api.delete(`/api/users/${id}`),
   setActive: (id: string, isActive: boolean) =>
     api.patch<{ user: ApiUser }>(`/api/users/${id}`, { isActive }).then((r) => r.data.user),
+  deactivate: (id: string) =>
+    api.patch<{ user: ApiUser }>(`/api/users/${id}`, { isActive: false }).then((r) => r.data.user),
+  delete: (id: string) => api.delete(`/api/users/${id}`),
 };

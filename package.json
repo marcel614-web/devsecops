@@ -18,7 +18,9 @@
     "prisma:migrate": "prisma migrate dev",
     "prisma:studio": "prisma studio",
     "db:seed": "tsx prisma/seed.ts",
-    "db:backfill-fingerprints": "node scripts/backfill-fingerprints.mjs"
+    "db:backfill-fingerprints": "node scripts/backfill-fingerprints.mjs",
+    "hooks:install": "node scripts/install-gitleaks-hook.mjs",
+    "secrets:history": "gitleaks git --log-opts=\"--all\" --redact --no-banner --exit-code 0"
   },
   "devDependencies": {
     "prisma": "^5.20.0",

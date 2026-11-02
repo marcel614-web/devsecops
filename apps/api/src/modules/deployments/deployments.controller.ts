@@ -1,6 +1,11 @@
 import type { NextFunction, Request, Response } from "express";
 import { UnauthorizedError } from "../../utils/errors";
 import * as deploymentsService from "./deployments.service";
+import * as approvalsService from "./approvals.service";
+import type {
+  ApprovalDecisionInput,
+  ApprovalListQuery,
+} from "./approvals.schema";
 
 function actorFrom(req: Request) {
   if (!req.user) throw new UnauthorizedError();
@@ -83,6 +88,33 @@ export async function uninstallDeployment(req: Request, res: Response, next: Nex
     const actor = actorFrom(req);
     await deploymentsService.uninstallDeployment(actor, req.params.id);
     res.status(204).end();
+  } catch (err) {
+    next(err);
+  }
+}
+
+export async function listApprovals(req: Request, res: Response, next: NextFunction) {
+  try {
+    const actor = actorFrom(req);
+    const result = await approvalsService.listApprovals(
+      actor,
+      req.query as unknown as ApprovalListQuery,
+    );
+    res.json(result);
+  } catch (err) {
+    next(err);
+  }
+}
+
+export async function decideApproval(req: Request, res: Response, next: NextFunction) {
+  try {
+    const actor = actorFrom(req);
+    const approval = await approvalsService.decideApproval(
+      actor,
+      req.params.id,
+      req.body as ApprovalDecisionInput,
+    );
+    res.json({ approval });
   } catch (err) {
     next(err);
   }

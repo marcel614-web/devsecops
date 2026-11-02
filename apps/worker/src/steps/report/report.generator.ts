@@ -60,6 +60,20 @@ export interface ReportSummary {
     reason: string | null;
     rules?: unknown;
   } | null;
+  securityPolicy?: {
+    version: number;
+    policyHash: string;
+    mode: string;
+    enforcementAt: string | null;
+  } | null;
+  gates?: Array<{
+    gateKey: string;
+    status: string;
+    mode: string;
+    blocked: boolean;
+    reason: string | null;
+    evaluatedAt: string;
+  }>;
   dockerImage: {
     imageTag: string;
     imageId: string | null;
@@ -223,6 +237,40 @@ export function generateHtml(summary: ReportSummary): string {
       : `<p class="muted">Aucun résultat de gate.</p>`
   }
 
+  ${
+    summary.securityPolicy
+      ? `<h2>Politique de sécurité appliquée</h2>
+        <div class="banner" style="border-left-color:#0ea5e9;background:#0ea5e912">
+          <strong>Version ${summary.securityPolicy.version}</strong>
+          · mode ${escapeHtml(summary.securityPolicy.mode)}
+          ${summary.securityPolicy.enforcementAt ? ` · enforcement à partir du ${escapeHtml(new Date(summary.securityPolicy.enforcementAt).toLocaleString("fr-FR"))}` : ""}
+          <div class="muted" style="margin-top:6px">Empreinte : <span class="mono">${escapeHtml(summary.securityPolicy.policyHash)}</span></div>
+          <div class="muted">Politique figée à la création du pipeline ; les décisions ne sont pas recalculées avec la configuration actuelle.</div>
+        </div>`
+      : ""
+  }
+
+  ${
+    summary.gates && summary.gates.length > 0
+      ? `<h2>Gates évalués</h2>
+        <table>
+          <thead><tr><th>Gate</th><th>Statut</th><th>Mode</th><th>Bloqué</th><th>Évalué le</th><th>Raison</th></tr></thead>
+          <tbody>${summary.gates
+            .map(
+              (g) => `<tr>
+                <td class="mono">${escapeHtml(g.gateKey)}</td>
+                <td><span class="badge ${escapeHtml(g.status.toLowerCase())}">${escapeHtml(g.status)}</span></td>
+                <td>${escapeHtml(g.mode)}</td>
+                <td>${g.blocked ? "Oui" : "Non"}</td>
+                <td>${escapeHtml(new Date(g.evaluatedAt).toLocaleString("fr-FR"))}</td>
+                <td>${escapeHtml(g.reason ?? "—")}</td>
+              </tr>`,
+            )
+            .join("")}</tbody>
+        </table>`
+      : ""
+  }
+
   <h2>Synthèse par scanner</h2>
   <table>
     <thead><tr><th>Scanner</th><th>Statut</th><th class="num">Crit.</th><th class="num">Élev.</th><th class="num">Moy.</th><th class="num">Faible</th><th class="num">Info</th><th class="num">Durée</th></tr></thead>
@@ -315,6 +363,32 @@ export async function generatePdf(
       }
     } else {
       doc.text("Aucun résultat de gate.");
+    }
+    if (summary.securityPolicy) {
+      doc.text(
+        `Politique : v${summary.securityPolicy.version} · ${summary.securityPolicy.mode}`,
+      );
+      doc.text(`Empreinte : ${summary.securityPolicy.policyHash}`, {
+        width: 495,
+      });
+      if (summary.securityPolicy.enforcementAt) {
+        doc.text(
+          `Enforcement à partir du : ${new Date(
+            summary.securityPolicy.enforcementAt,
+          ).toLocaleString("fr-FR")}`,
+        );
+      }
+    }
+    if (summary.gates?.length) {
+      for (const g of summary.gates) {
+        doc.text(
+          `${g.gateKey} : ${g.status} · ${g.mode} · ${
+            g.blocked ? "bloqué" : "non bloqué"
+          }`,
+          { width: 495 },
+        );
+        if (g.reason) doc.text(`  ${g.reason}`, { width: 495 });
+      }
     }
     doc.moveDown(0.6);
 

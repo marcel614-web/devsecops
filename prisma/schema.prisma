@@ -34,18 +34,52 @@ enum PipelineStatus {
   QUEUED
   RUNNING
   SUCCESS
+  SUCCESS_WITH_WARNINGS
   FAILED
   SECURITY_BLOCKED
   CANCELLED
+  TIMED_OUT
+  WAITING_APPROVAL
 }
 
 enum StepStatus {
   QUEUED
   RUNNING
   SUCCESS
+  SUCCESS_WITH_WARNINGS
   FAILED
   SECURITY_BLOCKED
   CANCELLED
+  SKIPPED
+  TIMED_OUT
+  WAITING_APPROVAL
+}
+
+enum ScanOutcome {
+  SUCCESS_NO_FINDINGS
+  SUCCESS_WITH_FINDINGS
+  INTERRUPTED
+  SCANNER_UNAVAILABLE
+  PARSE_ERROR
+  NOT_APPLICABLE
+  DISABLED
+  REQUIRED_NOT_RUN
+}
+
+enum SecurityGateExceptionStatus {
+  PENDING
+  APPROVED
+  REJECTED
+  EXPIRED
+  REVOKED
+}
+
+enum SecurityGateExceptionMatchType {
+  ANY
+  FINGERPRINT
+  CVE
+  RULE
+  REFERENCE
 }
 
 enum Severity {
@@ -99,11 +133,44 @@ enum ServerAuthType {
   PASSWORD
 }
 
+/// Décision humaine explicite avant toute promotion en production.
+enum DeploymentApprovalStatus {
+  PENDING
+  APPROVED
+  REJECTED
+  EXPIRED
+  REVOKED
+}
+
 enum NotificationKind {
   SUCCESS
   WARNING
   DANGER
   INFO
+}
+
+/// Cycle de réévaluation périodique d'un artefact déjà déployé.
+/// Un rescan ne crée jamais de livraison : il produit un rapport de risque.
+enum CosignMode {
+  DISABLED
+  WARNING
+  REQUIRED
+}
+
+enum RescanStatus {
+  QUEUED
+  RUNNING
+  SUCCESS
+  FAILED
+  TIMED_OUT
+  CANCELLED
+}
+
+/// Résultat déterministe des contrôles exécutés après un déploiement.
+enum DeploymentVerificationStatus {
+  PASSED
+  FAILED
+  SKIPPED
 }
 
 // ============================================================
@@ -120,13 +187,17 @@ model User {
   createdAt    DateTime @default(now())
   updatedAt    DateTime @updatedAt
 
-  projects            Project[]
-  githubInstallations GitHubInstallation[]
-  servers             DeploymentServer[]
-  auditLogs           AuditLog[]
-  securityGateExceptions SecurityGateException[]
-  assignedVulnerabilities Vulnerability[]
-  notifications       Notification[]
+  projects                     Project[]
+  githubInstallations          GitHubInstallation[]
+  servers                      DeploymentServer[]
+  auditLogs                    AuditLog[]
+  securityGateExceptions       SecurityGateException[]      @relation("GateExceptionRequester")
+  approvedGateExceptions       SecurityGateException[]      @relation("GateExceptionApprover")
+  securityGateExceptionEvents  SecurityGateExceptionEvent[]
+  assignedVulnerabilities      Vulnerability[]
+  notifications                Notification[]
+  deploymentApprovalsRequested DeploymentApproval[]         @relation("DeploymentApprovalRequester")
+  deploymentApprovalsDecided   DeploymentApproval[]         @relation("DeploymentApprovalDecider")
 
   @@index([email])
   @@index([role])
@@ -191,32 +262,37 @@ model GitHubRepository {
 // ============================================================
 
 model Project {
-  id                String      @id @default(cuid())
-  ownerId           String
-  name              String
-  description       String?
-  provider          GitProvider @default(GITHUB)
-  repoFullName      String // gardé pour compat + affichage rapide
-  repoId            String // ID GitHub du repository (garde pour compat)
-  defaultBranch     String      @default("main")
-  technology        Technology  @default(UNKNOWN)
-  deploymentEnabled Boolean     @default(false)
-  serverId          String?
+  id                 String      @id @default(cuid())
+  ownerId            String
+  name               String
+  description        String?
+  provider           GitProvider @default(GITHUB)
+  repoFullName       String // gardé pour compat + affichage rapide
+  repoId             String // ID GitHub du repository (garde pour compat)
+  defaultBranch      String      @default("main")
+  technology         Technology  @default(UNKNOWN)
+  deploymentEnabled  Boolean     @default(false)
+  serverId           String?
   githubRepositoryId String? // FK vers GitHubRepository
-  monitoredBranch   String? // branche surveillée par les webhooks
-  createdAt         DateTime    @default(now())
-  updatedAt         DateTime    @updatedAt
+  monitoredBranch    String? // branche surveillée par les webhooks
+  createdAt          DateTime    @default(now())
+  updatedAt          DateTime    @updatedAt
 
-  owner            User                @relation(fields: [ownerId], references: [id], onDelete: Cascade)
-  server           DeploymentServer?   @relation(fields: [serverId], references: [id], onDelete: SetNull)
-  githubRepository GitHubRepository?   @relation(fields: [githubRepositoryId], references: [id], onDelete: SetNull)
-  config           ProjectConfiguration?
-  pipelines        Pipeline[]
-  scans            SecurityScan[]
-  deployments      Deployment[]
-  reports          SecurityReport[]
-  securityGateExceptions SecurityGateException[]
-  sboms            Sbom[]
+  owner                   User                     @relation(fields: [ownerId], references: [id], onDelete: Cascade)
+  server                  DeploymentServer?        @relation(fields: [serverId], references: [id], onDelete: SetNull)
+  githubRepository        GitHubRepository?        @relation(fields: [githubRepositoryId], references: [id], onDelete: SetNull)
+  config                  ProjectConfiguration?
+  pipelines               Pipeline[]
+  scans                   SecurityScan[]
+  deployments             Deployment[]
+  reports                 SecurityReport[]
+  securityGateExceptions  SecurityGateException[]
+  securityPolicies        PipelineSecurityPolicy[]
+  sboms                   Sbom[]
+  deploymentApprovals     DeploymentApproval[]
+  deploymentLock          DeploymentLock?
+  rescanRuns              RescanRun[]
+  deploymentVerifications DeploymentVerification[]
 
   @@unique([ownerId, repoFullName])
   @@index([ownerId])
@@ -225,35 +301,76 @@ model Project {
 }
 
 model ProjectConfiguration {
-  id                   String   @id @default(cuid())
-  projectId            String   @unique
-  triggerBranches      String[]
-  gitleaksEnabled      Boolean  @default(true)
-  semgrepEnabled       Boolean  @default(true)
-  scaEnabled           Boolean  @default(true)
-  iacEnabled           Boolean  @default(true)
-  trivyEnabled         Boolean  @default(true)
-  syftEnabled          Boolean  @default(true)
-  zapEnabled           Boolean  @default(true)
-  cosignEnabled        Boolean  @default(false)
-  securityGateCritical Int      @default(0)
-  securityGateHigh     Int      @default(2)
-  securityGateMedium   Int      @default(10)
-  securityGateLow      Int      @default(-1)
-  gateMode             SecurityGateMode @default(WARNING)
-  gateEnforcementAt    DateTime?
-  gateSecretsEnabled   Boolean  @default(true)
-  gateSastEnabled      Boolean  @default(true)
-  gateScaEnabled       Boolean  @default(true)
-  gateIacEnabled       Boolean  @default(true)
-  gateImageEnabled     Boolean  @default(true)
-  gateDastEnabled      Boolean  @default(true)
-  deploymentStrategy   String   @default("direct") // direct | staging_then_production
-  stagingPort          Int?     // null = allocation automatique au déploiement
-  productionPort       Int?     // null = allocation automatique au déploiement
-  autoRollback         Boolean  @default(true)
-  createdAt            DateTime @default(now())
-  updatedAt            DateTime @updatedAt
+  id                        String           @id @default(cuid())
+  projectId                 String           @unique
+  triggerBranches           String[]
+  gitleaksEnabled           Boolean          @default(true)
+  semgrepEnabled            Boolean          @default(true)
+  scaEnabled                Boolean          @default(true)
+  iacEnabled                Boolean          @default(true)
+  trivyEnabled              Boolean          @default(true)
+  syftEnabled               Boolean          @default(true)
+  zapEnabled                Boolean          @default(true)
+  cosignEnabled             Boolean          @default(false)
+  cosignMode               CosignMode       @default(DISABLED)
+  securityGateCritical      Int              @default(0)
+  securityGateHigh          Int              @default(2)
+  securityGateMedium        Int              @default(10)
+  securityGateLow           Int              @default(-1)
+  gateMode                  SecurityGateMode @default(WARNING)
+  gateEnforcementAt         DateTime?
+  gateSecretsEnabled        Boolean          @default(true)
+  gateSastEnabled           Boolean          @default(true)
+  gateScaEnabled            Boolean          @default(true)
+  gateIacEnabled            Boolean          @default(true)
+  gateImageEnabled          Boolean          @default(true)
+  gateDastEnabled           Boolean          @default(true)
+  deploymentStrategy        String           @default("direct") // direct | staging_then_production
+  stagingPort               Int? // null = allocation automatique au déploiement
+  productionPort            Int? // null = allocation automatique au déploiement
+  autoRollback              Boolean          @default(true)
+  /// Exige une décision humaine (utilisateur autorisé) liée au commit et au
+  /// digest de l'image avant la promotion staging → production.
+  requireProductionApproval Boolean          @default(false)
+  /// Contrôles protégés : un DEVELOPER ne peut pas les désactiver.
+  mandatoryControls         String[]         @default(["SECRET", "SCA"])
+  /// Une exception doit être approuvée par un ADMIN avant d'être appliquée.
+  requireExceptionApproval  Boolean          @default(true)
+  /// Contrôles Ansible : lint statique et syntax-check, sans exécution des
+  /// playbooks. Ils complètent `trivy config`, ils ne le remplacent pas.
+  ansibleLintEnabled        Boolean          @default(true)
+  ansibleSyntaxCheckEnabled Boolean          @default(true)
+  ansibleTimeoutMs          Int              @default(300000)
+  ansibleMaxPlaybooks       Int              @default(20)
+  /// Vérifications déterministes après déploiement (conteneur, endpoint,
+  /// port, digest). Elles constatent l'état réel, elles ne le modifient pas.
+  postDeployChecksEnabled   Boolean          @default(true)
+  healthcheckPath           String           @default("/")
+  healthcheckTimeoutMs      Int              @default(5000)
+  /// Réévaluation périodique des artefacts déployés. Désactivé par défaut
+  /// pour ne pas consommer les ressources du worker sans décision explicite.
+  rescanEnabled             Boolean          @default(false)
+  rescanIntervalHours       Int              @default(24)
+  /// Contrôles supportés pour un artefact déjà livré. Aujourd'hui IMAGE
+  /// (Trivy sur la VM, via le digest immuable).
+  rescanControls            String[]         @default(["IMAGE"])
+  rescanTimeoutMs           Int              @default(1200000)
+  rescanMaxRunsPerDay       Int              @default(1)
+  rescanNextRunAt           DateTime?
+  rescanLastRunAt           DateTime?
+  /// Autorise explicitement la création d'un pipeline de correction sur un
+  /// nouveau commit. Aucun déploiement automatique n'est déclenché.
+  rescanRemediationEnabled  Boolean          @default(false)
+  /// Intégration DefectDojo optionnelle au niveau projet.
+  defectDojoEnabled         Boolean          @default(false)
+  defectDojoProductId       Int?
+  defectDojoEngagementId    Int?
+  /// Incrémentée à chaque modification de la politique de sécurité.
+  policyVersion             Int              @default(1)
+  policyUpdatedAt           DateTime         @default(now())
+  policyUpdatedById         String?
+  createdAt                 DateTime         @default(now())
+  updatedAt                 DateTime         @updatedAt
 
   project Project @relation(fields: [projectId], references: [id], onDelete: Cascade)
 }
@@ -263,31 +380,37 @@ model ProjectConfiguration {
 // ============================================================
 
 model Pipeline {
-  id         String         @id @default(cuid())
-  projectId  String
-  commitSha  String
-  branch     String
-  author     String
-  trigger    String         @default("push")
-  status     PipelineStatus @default(QUEUED)
+  id                String         @id @default(cuid())
+  projectId         String
+  commitSha         String
+  branch            String
+  author            String
+  trigger           String         @default("push")
+  status            PipelineStatus @default(QUEUED)
   pullRequestNumber Int?
   pullRequestUrl    String?
   baseBranch        String?
-  startedAt  DateTime?
-  finishedAt DateTime?
-  durationMs Int?
-  createdAt  DateTime       @default(now())
-  updatedAt  DateTime       @updatedAt
+  startedAt         DateTime?
+  finishedAt        DateTime?
+  durationMs        Int?
+  createdAt         DateTime       @default(now())
+  updatedAt         DateTime       @updatedAt
 
-  project     Project              @relation(fields: [projectId], references: [id], onDelete: Cascade)
-  steps       PipelineStep[]
-  logs        PipelineLog[]
-  scans       SecurityScan[]
-  gateResult  SecurityGateResult?
-  deployment  Deployment?
-  report      SecurityReport?
-  dockerImage DockerImage?
-  sbom        Sbom?
+  project                 Project                  @relation(fields: [projectId], references: [id], onDelete: Cascade)
+  steps                   PipelineStep[]
+  logs                    PipelineLog[]
+  scans                   SecurityScan[]
+  gateResult              SecurityGateResult?
+  gateEvaluations         PipelineGateEvaluation[]
+  securityPolicy          PipelineSecurityPolicy?
+  deployment              Deployment?
+  report                  SecurityReport?
+  dockerImage             DockerImage?
+  sbom                    Sbom?
+  approval                DeploymentApproval?
+  deploymentLock          DeploymentLock?
+  rescanRuns              RescanRun[]
+  deploymentVerifications DeploymentVerification[]
 
   @@index([projectId])
   @@index([status])
@@ -314,9 +437,9 @@ model PipelineStep {
   pipeline Pipeline      @relation(fields: [pipelineId], references: [id], onDelete: Cascade)
   logs     PipelineLog[]
 
+  @@unique([pipelineId, order])
   @@index([pipelineId])
   @@index([status])
-  @@unique([pipelineId, order])
 }
 
 model PipelineLog {
@@ -341,35 +464,44 @@ model PipelineLog {
 // ============================================================
 
 model SecurityScan {
-  id            String     @id @default(cuid())
-  pipelineId    String
-  projectId     String
-  scanner       String
-  type          ScanType
-  status        StepStatus @default(QUEUED)
-  criticalCount Int        @default(0)
-  highCount     Int        @default(0)
-  mediumCount   Int        @default(0)
-  lowCount      Int        @default(0)
-  infoCount     Int        @default(0)
-  rawResultJson Json?
-  startedAt     DateTime?
-  finishedAt    DateTime?
-  durationMs    Int?
-  exitCode      Int?
-  createdAt     DateTime   @default(now())
+  id             String       @id @default(cuid())
+  /// Un scan de pipeline possède un pipelineId. Un rescan périodique n'est
+  /// rattaché à aucun pipeline : il porte uniquement `rescanRunId`.
+  pipelineId     String?
+  rescanRunId    String?
+  projectId      String
+  scanner        String
+  /// Version de l'outil réellement exécutée (traçabilité des résultats).
+  scannerVersion String?
+  type           ScanType
+  status         StepStatus   @default(QUEUED)
+  /// Résultat normalisé du scanner, distinct du statut de l'étape.
+  outcome        ScanOutcome?
+  criticalCount  Int          @default(0)
+  highCount      Int          @default(0)
+  mediumCount    Int          @default(0)
+  lowCount       Int          @default(0)
+  infoCount      Int          @default(0)
+  rawResultJson  Json?
+  startedAt      DateTime?
+  finishedAt     DateTime?
+  durationMs     Int?
+  exitCode       Int?
+  createdAt      DateTime     @default(now())
 
-  pipeline        Pipeline        @relation(fields: [pipelineId], references: [id], onDelete: Cascade)
+  pipeline        Pipeline?       @relation(fields: [pipelineId], references: [id], onDelete: Cascade)
+  rescanRun       RescanRun?      @relation(fields: [rescanRunId], references: [id], onDelete: Cascade)
   project         Project         @relation(fields: [projectId], references: [id], onDelete: Cascade)
   vulnerabilities Vulnerability[]
 
   @@index([pipelineId])
+  @@index([rescanRunId])
   @@index([projectId])
   @@index([scanner])
 }
 
 model Vulnerability {
-  id           String   @id @default(cuid())
+  id           String              @id @default(cuid())
   scanId       String
   tool         String
   technology   String?
@@ -382,14 +514,14 @@ model Vulnerability {
   reference    String?
   fingerprint  String?
   status       VulnerabilityStatus @default(OPEN)
-  firstSeenAt  DateTime @default(now())
-  lastSeenAt   DateTime @default(now())
-  occurrences  Int      @default(1)
+  firstSeenAt  DateTime            @default(now())
+  lastSeenAt   DateTime            @default(now())
+  occurrences  Int                 @default(1)
   assignedToId String?
   notes        String?
   dueDate      DateTime?
-  detectedAt   DateTime @default(now())
-  updatedAt    DateTime @updatedAt @default(now())
+  detectedAt   DateTime            @default(now())
+  updatedAt    DateTime            @default(now()) @updatedAt
 
   scan       SecurityScan @relation(fields: [scanId], references: [id], onDelete: Cascade)
   assignedTo User?        @relation(fields: [assignedToId], references: [id], onDelete: SetNull)
@@ -403,38 +535,90 @@ model Vulnerability {
 }
 
 model SecurityGateResult {
-  id         String             @id @default(cuid())
-  pipelineId String             @unique
-  status     SecurityGateStatus
-  mode       SecurityGateMode   @default(WARNING)
-  rulesJson  Json
-  critical   Int                @default(0)
-  high       Int                @default(0)
-  medium     Int                @default(0)
-  low        Int                @default(0)
-  blocked    Boolean            @default(false)
-  reason     String?
+  id                String             @id @default(cuid())
+  pipelineId        String             @unique
+  status            SecurityGateStatus
+  mode              SecurityGateMode   @default(WARNING)
+  rulesJson         Json
+  critical          Int                @default(0)
+  high              Int                @default(0)
+  medium            Int                @default(0)
+  low               Int                @default(0)
+  blocked           Boolean            @default(false)
+  reason            String?
   technicalFailures Json?
   exceptionsApplied Json?
-  createdAt  DateTime           @default(now())
+  createdAt         DateTime           @default(now())
 
   pipeline Pipeline @relation(fields: [pipelineId], references: [id], onDelete: Cascade)
 
   @@index([status])
 }
 
-model DockerImage {
+/// Instantané immuable de la politique utilisée par un pipeline.
+/// Aucune API de mise à jour n'est exposée : une nouvelle exécution crée un
+/// nouvel instantané. Les décisions passées ne sont jamais recalculées.
+model PipelineSecurityPolicy {
   id         String   @id @default(cuid())
   pipelineId String   @unique
-  imageTag   String
-  imageId    String?
-  sizeBytes  BigInt?
-  registry   String?
-  signed     Boolean  @default(false)
-  signatureRef String?
+  projectId  String
+  version    Int
+  policyHash String
+  policyJson Json
   createdAt  DateTime @default(now())
 
+  pipeline    Pipeline                 @relation(fields: [pipelineId], references: [id], onDelete: Cascade)
+  project     Project                  @relation(fields: [projectId], references: [id], onDelete: Cascade)
+  evaluations PipelineGateEvaluation[]
+
+  @@index([projectId])
+  @@index([policyHash])
+}
+
+/// Résultat d'un gate précis (avant déploiement, après DAST, etc.).
+model PipelineGateEvaluation {
+  id                String             @id @default(cuid())
+  pipelineId        String
+  policySnapshotId  String?
+  gateKey           String // PRE_DEPLOY | POST_DAST
+  status            SecurityGateStatus
+  mode              SecurityGateMode
+  blocked           Boolean            @default(false)
+  thresholdsJson    Json
+  controlsJson      Json
+  exceptionsJson    Json?
+  technicalFailures Json?
+  countsJson        Json
+  reason            String?
+  evaluatedAt       DateTime           @default(now())
+
+  pipeline       Pipeline                @relation(fields: [pipelineId], references: [id], onDelete: Cascade)
+  policySnapshot PipelineSecurityPolicy? @relation(fields: [policySnapshotId], references: [id], onDelete: SetNull)
+
+  @@unique([pipelineId, gateKey])
+  @@index([pipelineId])
+  @@index([status])
+}
+
+model DockerImage {
+  id               String    @id @default(cuid())
+  pipelineId       String    @unique
+  imageTag         String
+  imageId          String?
+  /// Digest immuable de l'image construite (sha256:...). C'est la référence
+  /// promue en production : le tag seul n'est jamais considéré comme fiable.
+  imageDigest      String?
+  digestAlgorithm  String    @default("sha256")
+  digestVerifiedAt DateTime?
+  sizeBytes        BigInt?
+  registry         String?
+  signed           Boolean   @default(false)
+  signatureRef     String?
+  createdAt        DateTime  @default(now())
+
   pipeline Pipeline @relation(fields: [pipelineId], references: [id], onDelete: Cascade)
+
+  @@index([imageDigest])
 }
 
 model Sbom {
@@ -454,25 +638,53 @@ model Sbom {
 
 /// Exception de Security Gate : justifiée, limitée dans le temps et auditée.
 model SecurityGateException {
-  id          String   @id @default(cuid())
-  projectId   String
-  category    String   @default("ALL") // ALL | SECRET | SAST | SCA | IMAGE | IAC | DAST
-  severity    String?  // null = toutes les sévérités
+  id           String                         @id @default(cuid())
+  projectId    String
+  category     String                         @default("ALL") // ALL | SECRET | SAST | SCA | IMAGE | IAC | DAST
+  severity     String? // null = toutes les sévérités
   /// CVE, GHSA, règle Semgrep, référence ou empreinte du finding.
-  /// Obligatoire pour les nouvelles exceptions : une exception limitée à
-  /// une catégorie/sévérité masquait sinon TOUS les findings du bucket.
-  fingerprint String?
-  reason      String
-  createdById String?
-  expiresAt   DateTime?
-  createdAt   DateTime @default(now())
+  /// Obligatoire : une exception limitée à une catégorie/sévérité masquait
+  /// sinon TOUS les findings du bucket.
+  fingerprint  String?
+  matchType    SecurityGateExceptionMatchType @default(ANY)
+  reason       String
+  status       SecurityGateExceptionStatus    @default(PENDING)
+  createdById  String?
+  approvedById String?
+  approvedAt   DateTime?
+  rejectedAt   DateTime?
+  revokedAt    DateTime?
+  expiresAt    DateTime?
+  createdAt    DateTime                       @default(now())
+  updatedAt    DateTime                       @updatedAt
 
-  project   Project @relation(fields: [projectId], references: [id], onDelete: Cascade)
-  createdBy User?   @relation(fields: [createdById], references: [id], onDelete: SetNull)
+  project    Project                      @relation(fields: [projectId], references: [id], onDelete: Cascade)
+  createdBy  User?                        @relation("GateExceptionRequester", fields: [createdById], references: [id], onDelete: SetNull)
+  approvedBy User?                        @relation("GateExceptionApprover", fields: [approvedById], references: [id], onDelete: SetNull)
+  events     SecurityGateExceptionEvent[]
 
   @@index([projectId])
   @@index([fingerprint])
   @@index([expiresAt])
+  @@index([status])
+}
+
+/// Historique append-only des modifications d'une exception.
+model SecurityGateExceptionEvent {
+  id           String   @id @default(cuid())
+  exceptionId  String
+  actorId      String?
+  action       String // REQUESTED | APPROVED | REJECTED | REVOKED | EXPIRED | UPDATED
+  fromStatus   String?
+  toStatus     String?
+  metadataJson Json?
+  createdAt    DateTime @default(now())
+
+  exception SecurityGateException @relation(fields: [exceptionId], references: [id], onDelete: Cascade)
+  actor     User?                 @relation(fields: [actorId], references: [id], onDelete: SetNull)
+
+  @@index([exceptionId])
+  @@index([createdAt])
 }
 
 // ============================================================
@@ -489,6 +701,11 @@ model DeploymentServer {
   authType            ServerAuthType @default(SSH_KEY)
   encryptedPrivateKey String?
   encryptedPassphrase String?
+  /// Référence de confiance de la clé d'hôte SSH, au format OpenSSH
+  /// `SHA256:<base64 sans padding>`. Absente = aucune connexion autorisée.
+  hostKeyFingerprint  String?
+  hostKeyAlgorithm    String?
+  hostKeyTrustedAt    DateTime?
   status              String         @default("unknown")
   lastCheckedAt       DateTime?
   createdAt           DateTime       @default(now())
@@ -497,39 +714,173 @@ model DeploymentServer {
   owner       User         @relation(fields: [ownerId], references: [id], onDelete: Cascade)
   projects    Project[]
   deployments Deployment[]
+  rescanRuns  RescanRun[]
 
   @@unique([ownerId, name])
   @@index([ownerId])
 }
 
 model Deployment {
-  id             String           @id @default(cuid())
-  pipelineId     String           @unique
-  projectId      String
-  serverId       String
-  status         DeploymentStatus @default(QUEUED)
-  environment    String           @default("PRODUCTION") // STAGING | PRODUCTION
-  imageTag       String?
-  releaseVersion String?
-  url            String?
-  stagingUrl     String?
-  stagingStatus  DeploymentStatus?
-  productionUrl  String?
-  productionStatus DeploymentStatus?
-  rollbackImageTag String?
-  startedAt      DateTime?
-  finishedAt     DateTime?
-  durationMs     Int?
-  error          String?
-  createdAt      DateTime         @default(now())
+  id                   String            @id @default(cuid())
+  pipelineId           String            @unique
+  projectId            String
+  serverId             String
+  status               DeploymentStatus  @default(QUEUED)
+  environment          String            @default("PRODUCTION") // STAGING | PRODUCTION
+  imageTag             String?
+  /// Digest exact de l'artefact validé puis promu. La promotion ne
+  /// reconstruit jamais l'image et vérifie ce digest sur la VM.
+  imageDigest          String?
+  releaseVersion       String?
+  url                  String?
+  stagingUrl           String?
+  stagingStatus        DeploymentStatus?
+  productionUrl        String?
+  productionStatus     DeploymentStatus?
+  rollbackImageTag     String?
+  rollbackImageDigest  String?
+  previousDeploymentId String?
+  startedAt            DateTime?
+  finishedAt           DateTime?
+  durationMs           Int?
+  error                String?
 
-  pipeline Pipeline         @relation(fields: [pipelineId], references: [id], onDelete: Cascade)
-  project  Project          @relation(fields: [projectId], references: [id], onDelete: Cascade)
-  server   DeploymentServer @relation(fields: [serverId], references: [id], onDelete: Restrict)
+  createdAt DateTime @default(now())
+
+  pipeline      Pipeline                 @relation(fields: [pipelineId], references: [id], onDelete: Cascade)
+  project       Project                  @relation(fields: [projectId], references: [id], onDelete: Cascade)
+  server        DeploymentServer         @relation(fields: [serverId], references: [id], onDelete: Restrict)
+  approval      DeploymentApproval?
+  rescanRuns    RescanRun[]
+  verifications DeploymentVerification[]
 
   @@index([projectId])
   @@index([serverId])
   @@index([status])
+  @@index([imageDigest])
+}
+
+/// Constat déterministe de l'état d'un déploiement (conteneur, endpoint,
+/// port, version/digest). Aucun scan IaC ne peut produire ce constat.
+model DeploymentVerification {
+  id           String                       @id @default(cuid())
+  projectId    String
+  deploymentId String
+  pipelineId   String
+  environment  String
+  status       DeploymentVerificationStatus @default(FAILED)
+  imageTag     String?
+  imageDigest  String?
+  checksJson   Json
+  summaryJson  Json?
+  error        String?
+  startedAt    DateTime                     @default(now())
+  finishedAt   DateTime?
+  durationMs   Int?
+  createdAt    DateTime                     @default(now())
+
+  project    Project    @relation(fields: [projectId], references: [id], onDelete: Cascade)
+  deployment Deployment @relation(fields: [deploymentId], references: [id], onDelete: Cascade)
+  pipeline   Pipeline   @relation(fields: [pipelineId], references: [id], onDelete: Cascade)
+
+  @@unique([deploymentId, environment])
+  @@index([projectId, createdAt])
+  @@index([status])
+}
+
+/// Exécution de réévaluation d'un artefact déjà déployé. `cycleKey` et
+/// `deploymentId` sont uniques ensemble : deux tâches planifiées concurrentes
+/// ne peuvent pas créer deux rescans pour la même version et le même cycle.
+model RescanRun {
+  id             String       @id @default(cuid())
+  projectId      String
+  deploymentId   String
+  pipelineId     String?
+  serverId       String
+  environment    String
+  commitSha      String
+  branch         String
+  imageTag       String?
+  imageDigest    String
+  cycleKey       String
+  trigger        String       @default("SCHEDULED") // SCHEDULED | MANUAL
+  status         RescanStatus @default(QUEUED)
+  controls       String[]     @default(["IMAGE"])
+  timeoutMs      Int          @default(1200000)
+  scannerVersion String?
+  summaryJson    Json?
+  /// Rapport d'évolution : nouveaux findings, changements de sévérité,
+  /// findings résolus et référence à la baseline utilisée.
+  comparisonJson Json?
+  error          String?
+  queuedAt       DateTime     @default(now())
+  startedAt      DateTime?
+  finishedAt     DateTime?
+  durationMs     Int?
+  createdAt      DateTime     @default(now())
+  updatedAt      DateTime     @updatedAt
+
+  project    Project          @relation(fields: [projectId], references: [id], onDelete: Cascade)
+  deployment Deployment       @relation(fields: [deploymentId], references: [id], onDelete: Cascade)
+  pipeline   Pipeline?        @relation(fields: [pipelineId], references: [id], onDelete: SetNull)
+  server     DeploymentServer @relation(fields: [serverId], references: [id], onDelete: Restrict)
+  scans      SecurityScan[]
+
+  @@unique([deploymentId, cycleKey])
+  @@index([projectId, createdAt])
+  @@index([status])
+  @@index([imageDigest])
+  @@index([status, startedAt])
+}
+
+/// Verrou de déploiement par projet : empêche deux pipelines de modifier
+/// simultanément le même environnement. Le verrou est libéré explicitement
+/// et possède une expiration de secours en cas de crash du worker.
+model DeploymentLock {
+  id          String   @id @default(cuid())
+  projectId   String   @unique
+  pipelineId  String   @unique
+  environment String
+  acquiredAt  DateTime @default(now())
+  expiresAt   DateTime
+
+  project  Project  @relation(fields: [projectId], references: [id], onDelete: Cascade)
+  pipeline Pipeline @relation(fields: [pipelineId], references: [id], onDelete: Cascade)
+
+  @@index([expiresAt])
+  @@index([pipelineId])
+}
+
+/// Approbation humaine liée à un pipeline, un commit et un digest précis.
+/// Une décision ne peut jamais être réutilisée pour un autre artefact.
+model DeploymentApproval {
+  id            String                   @id @default(cuid())
+  pipelineId    String                   @unique
+  projectId     String
+  deploymentId  String?                  @unique
+  environment   String                   @default("PRODUCTION")
+  commitSha     String
+  imageTag      String
+  imageDigest   String
+  status        DeploymentApprovalStatus @default(PENDING)
+  requestedById String?
+  requestedAt   DateTime                 @default(now())
+  decidedById   String?
+  decidedAt     DateTime?
+  comment       String?
+  expiresAt     DateTime?
+  createdAt     DateTime                 @default(now())
+  updatedAt     DateTime                 @updatedAt
+
+  pipeline    Pipeline    @relation(fields: [pipelineId], references: [id], onDelete: Cascade)
+  project     Project     @relation(fields: [projectId], references: [id], onDelete: Cascade)
+  deployment  Deployment? @relation(fields: [deploymentId], references: [id], onDelete: SetNull)
+  requestedBy User?       @relation("DeploymentApprovalRequester", fields: [requestedById], references: [id], onDelete: SetNull)
+  decidedBy   User?       @relation("DeploymentApprovalDecider", fields: [decidedById], references: [id], onDelete: SetNull)
+
+  @@index([projectId, status])
+  @@index([status])
+  @@index([expiresAt])
 }
 
 // ============================================================
@@ -549,6 +900,22 @@ model SecurityReport {
   project  Project  @relation(fields: [projectId], references: [id], onDelete: Cascade)
 
   @@index([projectId])
+}
+
+model DefectDojoImport {
+  id           String    @id @default(cuid())
+  projectId    String
+  pipelineId   String?
+  engagementId Int
+  status       String    @default("PENDING") // PENDING, SUCCESS, FAILED
+  externalId   String?
+  error        String?
+  createdAt    DateTime  @default(now())
+  updatedAt    DateTime  @updatedAt
+
+  @@index([projectId])
+  @@index([pipelineId])
+  @@index([createdAt])
 }
 
 model AuditLog {
@@ -600,24 +967,34 @@ model WebhookEvent {
 /// Configuration globale de la plateforme (singleton).
 /// Idéalement un seul enregistrement avec id="singleton".
 model SystemConfig {
-  id      String   @id @default(cuid())
+  id               String  @id @default(cuid())
   /// Clé logique pour identifier le singleton : toujours "default"
-  key     String   @unique
+  key              String  @unique
   /// true si l'intégration GitHub App est complètement configurée
   githubConfigured Boolean @default(false)
 
   /// App ID GitHub (visible sur la page settings/apps)
-  githubAppId     String?
+  githubAppId                  String?
   /// Slug de l'App (utilisé dans les URLs d'installation)
-  githubAppSlug   String?
+  githubAppSlug                String?
   /// Clé privée PEM chiffrée (AES-256-GCM)
-  githubPrivateKeyEncrypted String?
+  githubPrivateKeyEncrypted    String?
   /// Webhook secret chiffré
   githubWebhookSecretEncrypted String?
   /// Client ID (optionnel, pour flux user-to-server)
-  githubClientId     String?
+  githubClientId               String?
   /// Client Secret chiffré (optionnel)
-  githubClientSecretEncrypted String?
+  githubClientSecretEncrypted  String?
+
+  /// Intégration DefectDojo (optionnelle, désactivée par défaut)
+  defectDojoConfigured         Boolean @default(false)
+  defectDojoUrl                String?
+  defectDojoApiTokenEncrypted  String?
+
+  /// Intégration Dependency-Track (optionnelle, désactivée par défaut)
+  dependencyTrackConfigured     Boolean @default(false)
+  dependencyTrackUrl            String?
+  dependencyTrackApiKeyEncrypted String?
 
   /// Métadonnées
   updatedBy String?

@@ -13,6 +13,13 @@
 export const GIT_SHA_PATTERN = /^[0-9a-f]{7,40}$/i;
 
 /**
+ * SHA de commit complet : 40 caractères (SHA-1) ou 64 caractères
+ * (SHA-256). Les pipelines, images et approbations doivent toujours être
+ * rattachés à cette forme, jamais à un SHA abrégé ou synthétique.
+ */
+export const FULL_GIT_SHA_PATTERN = /^(?:[0-9a-f]{40}|[0-9a-f]{64})$/i;
+
+/**
  * SHA de substitution utilisé par l'API quand l'utilisateur ne fournit
  * pas de commit : `manual-<epoch ms>`. Réservé à un usage interne.
  */
@@ -24,6 +31,15 @@ export const MANUAL_SHA_PATTERN = /^manual-[0-9]{10,20}$/;
 export function isValidGitSha(value: string): boolean {
   const raw = value.trim();
   return GIT_SHA_PATTERN.test(raw) || MANUAL_SHA_PATTERN.test(raw);
+}
+
+/**
+ * Indique si une valeur est un SHA de commit complet (40 ou 64 caractères).
+ * Utilisé pour les pipelines : un SHA abrégé ne permet pas de vérifier que
+ * le code extrait est exactement celui qui a été validé.
+ */
+export function isFullGitSha(value: string): boolean {
+  return FULL_GIT_SHA_PATTERN.test(value.trim());
 }
 
 /**

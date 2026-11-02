@@ -168,6 +168,7 @@ export async function updateUser(
     data: {
       ...(input.name !== undefined ? { name: input.name } : {}),
       ...(input.email !== undefined ? { email: input.email } : {}),
+      ...(input.password !== undefined ? { passwordHash: await argon2.hash(input.password, argonOptions) } : {}),
       ...(input.role !== undefined ? { role: input.role } : {}),
       ...(input.isActive !== undefined ? { isActive: input.isActive } : {}),
     },
@@ -201,23 +202,20 @@ export async function deleteUser(actor: ActorContext, userId: string) {
   });
   if (!target) throw new NotFoundError("Utilisateur introuvable");
 
-  // Suppression logique : on désactive au lieu de supprimer.
-  // Évite de casser les relations (projets, pipelines, etc.).
-  const updated = await prisma.user.update({
+  // Suppression physique (irréversible).
+  await prisma.user.delete({
     where: { id: userId },
-    data: { isActive: false },
-    select: PUBLIC_SELECT,
   });
 
   await prisma.auditLog.create({
     data: {
       userId: actor.id,
-      action: "USER_UPDATED_BY_ADMIN",
+      action: "USER_DELETED_BY_ADMIN",
       targetType: "User",
-      targetId: updated.id,
+      targetId: target.id,
       metadataJson: { email: target.email },
     },
   });
 
-  return updated;
+  return target;
 }

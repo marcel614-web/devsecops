@@ -5,7 +5,9 @@ import type {
   Project,
   ProjectConfiguration,
   ProjectDetail,
+  SecurityGateCategory,
   SecurityGateException,
+  SecurityGateExceptionMatchType,
   SecurityGateMode,
   Severity,
   Technology,
@@ -79,6 +81,22 @@ export interface UpdateProjectConfigInput {
   stagingPort?: number | null;
   productionPort?: number | null;
   autoRollback?: boolean;
+  requireProductionApproval?: boolean;
+  mandatoryControls?: SecurityGateCategory[];
+  requireExceptionApproval?: boolean;
+  ansibleLintEnabled?: boolean;
+  ansibleSyntaxCheckEnabled?: boolean;
+  ansibleTimeoutMs?: number;
+  ansibleMaxPlaybooks?: number;
+  postDeployChecksEnabled?: boolean;
+  healthcheckPath?: string;
+  healthcheckTimeoutMs?: number;
+  rescanEnabled?: boolean;
+  rescanIntervalHours?: number;
+  rescanControls?: Array<"IMAGE">;
+  rescanTimeoutMs?: number;
+  rescanMaxRunsPerDay?: number;
+  rescanRemediationEnabled?: boolean;
 }
 
 export interface CreateGateExceptionInput {
@@ -86,8 +104,14 @@ export interface CreateGateExceptionInput {
   severity?: Severity | null;
   /** CVE, GHSA, règle ou empreinte du finding ciblé. */
   fingerprint: string;
+  matchType?: SecurityGateExceptionMatchType;
   reason: string;
   expiresAt?: string | null;
+}
+
+export interface GateExceptionDecisionInput {
+  decision: "APPROVE" | "REJECT" | "REVOKE";
+  comment?: string;
 }
 
 // ============================================================
@@ -154,6 +178,19 @@ export const projectService = {
       )
       .then((r) => r.data.exception),
 
+  decideGateException: (
+    id: string,
+    exceptionId: string,
+    data: GateExceptionDecisionInput,
+  ) =>
+    api
+      .post<{ exception: SecurityGateException }>(
+        `/api/projects/${id}/gate-exceptions/${exceptionId}/decision`,
+        data,
+      )
+      .then((r) => r.data.exception),
+
+  /** Révocation logique : l'historique et la justification sont conservés. */
   deleteGateException: (id: string, exceptionId: string) =>
     api.delete(`/api/projects/${id}/gate-exceptions/${exceptionId}`),
 

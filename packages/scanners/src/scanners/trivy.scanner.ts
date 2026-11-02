@@ -63,16 +63,26 @@ export interface TrivyScanOptions extends ScanContext {
 
 export class TrivyScanner implements SecurityScanner {
   public readonly name = "trivy";
+  private version: string | null = null;
 
   async isAvailable(): Promise<boolean> {
     try {
-      await execTool(TRIVY_BIN, ["--version"], {
+      const result = await execTool(TRIVY_BIN, ["--version"], {
         timeout: 30_000,
       });
+      this.version =
+        result.stdout
+          .split(/\r?\n/u)
+          .map((line) => line.trim())
+          .find(Boolean) ?? null;
       return true;
     } catch {
       return false;
     }
+  }
+
+  getVersion(): string | null {
+    return this.version;
   }
 
   async scanImage(opts: TrivyScanOptions): Promise<ScanResult> {
@@ -148,6 +158,7 @@ export class TrivyScanner implements SecurityScanner {
         status: "SUCCESS",
         durationMs: Date.now() - started,
         exitCode: 0,
+        scannerVersion: this.version ?? undefined,
         vulnerabilityCount: findings.length,
         severityCounts,
         findings,
@@ -266,6 +277,7 @@ export class TrivyScanner implements SecurityScanner {
         status: "SUCCESS",
         durationMs: Date.now() - started,
         exitCode: 0,
+        scannerVersion: this.version ?? undefined,
         vulnerabilityCount: findings.length,
         severityCounts,
         findings,
@@ -279,6 +291,7 @@ export class TrivyScanner implements SecurityScanner {
         status: "FAILED",
         durationMs: Date.now() - started,
         exitCode: null,
+        scannerVersion: this.version ?? undefined,
         vulnerabilityCount: 0,
         severityCounts: { critical: 0, high: 0, medium: 0, low: 0, info: 0 },
         findings: [],

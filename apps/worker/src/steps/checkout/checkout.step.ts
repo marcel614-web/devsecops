@@ -10,6 +10,7 @@ import { getGithubAppConfig } from "../../services/github-config.service";
 import { execFileAsync } from "../../orchestrator/step.executor";
 import type { StepContext, StepResult } from "../../orchestrator/step.executor";
 import { buildSandboxEnv } from "../../utils/sandbox-env";
+import { isFullGitSha } from "@devsecops/shared";
 
 const WORKSPACES_ROOT = path.join(os.tmpdir(), "devsecops-workspaces");
 const MAX_ATTEMPTS = 3;
@@ -168,11 +169,101 @@ async function tryClone(
 // ============================================================
 // Ãƒâ€°TAPE CHECKOUT
 // ============================================================
+/**
+ * Positionne le workspace sur le SHA exact annoncé par le pipeline.
+ *
+ * Un `git clone --branch` ne garantit pas que HEAD reste le commit de
+ * l'événement : la branche peut avoir avancé entre le webhook et le clone.
+ * On récupère donc explicitement le commit demandé (même s'il n'est plus la
+ * tête de branche), puis on vérifie que HEAD correspond exactement. Sans
+ * cette vérification, les scans, le digest et la promotion pourraient porter
+ * sur un code différent du SHA affiché.
+ */
+async function checkoutExactCommit(
+  source: CloneSource,
+  workspaceDir: string,
+  commitSha: string,
+  timeoutMs: number,
+): Promise<{ ok: boolean; headSha?: string; error?: string }> {
+  const env = buildSandboxEnv(process.env, {
+    GIT_TERMINAL_PROMPT: "0",
+    GIT_HTTP_LOW_SPEED_LIMIT: "1000",
+    GIT_HTTP_LOW_SPEED_TIME: "60",
+  });
+
+  try {
+    // Le commit peut être absent d'un clone superficiel si la branche a
+    // avancé. Dans ce cas, on le récupère par SHA.
+    try {
+      await execFileAsync(
+        "git",
+        ["cat-file", "-e", `${commitSha}^{commit}`],
+        { cwd: workspaceDir },
+      );
+    } catch {
+      const authArgs: string[] = [];
+      if (source.authHeader) {
+        authArgs.push("-c", `http.extraheader=${source.authHeader}`);
+      }
+      try {
+        await execFileAsync(
+          "git",
+          [...authArgs, "fetch", "--depth", "1", "origin", commitSha],
+          { cwd: workspaceDir, timeout: timeoutMs, env },
+        );
+      } catch {
+        // Certains serveurs refusent le fetch d'un objet non annoncé. On
+        // récupère alors l'historique complet pour garantir que le SHA
+        // demandé est bien extrait, plutôt que de bâtir la mauvaise tête.
+        await execFileAsync(
+          "git",
+          [...authArgs, "fetch", "--unshallow", "origin"],
+          { cwd: workspaceDir, timeout: timeoutMs, env },
+        );
+      }
+    }
+
+    await execFileAsync("git", ["checkout", "--detach", commitSha], {
+      cwd: workspaceDir,
+    });
+
+    const { stdout } = await execFileAsync("git", ["rev-parse", "HEAD"], {
+      cwd: workspaceDir,
+    });
+    const headSha = stdout.trim();
+    if (headSha !== commitSha) {
+      return {
+        ok: false,
+        error: `Le commit extrait (${headSha}) ne correspond pas au SHA du pipeline (${commitSha})`,
+      };
+    }
+    return { ok: true, headSha };
+  } catch (err) {
+    return {
+      ok: false,
+      error: redactGithubSecrets(
+        err instanceof Error ? err.message : String(err),
+      ),
+    };
+  }
+}
+
 export async function checkoutStep(
   _step: unknown,
   ctx: StepContext,
 ): Promise<StepResult> {
   await ctx.log("info", `Workspace : ${ctx.workspaceDir}`);
+
+  // Le pipeline doit toujours référencer un SHA Git complet : on refuse un
+  // identifiant synthétique ou tronqué, qui rendrait le build intraçable.
+  if (!isFullGitSha(ctx.commitSha)) {
+    return {
+      success: false,
+      exitCode: 1,
+      error: `SHA de commit invalide (${ctx.commitSha}) : un SHA Git complet est requis`,
+    };
+  }
+
   await fs.mkdir(WORKSPACES_ROOT, { recursive: true });
 
   const source = await resolveCloneSource(ctx.repoFullName, ctx.projectId);
@@ -228,31 +319,36 @@ export async function checkoutStep(
         `Clonage rÃƒÂ©ussi en ${duration}ms (tentative ${attempt})`,
       );
 
-      try {
-        const { stdout } = await execFileAsync(
-          "git",
-          ["rev-parse", "HEAD"],
-          { cwd: ctx.workspaceDir },
+      // Le clone par branche peut avoir récupéré une tête plus récente que
+      // le commit de l'événement : on force le SHA exact avant tout scan.
+      const exact = await checkoutExactCommit(
+        source,
+        ctx.workspaceDir,
+        ctx.commitSha,
+        5 * 60_000,
+      );
+      if (!exact.ok) {
+        lastError = exact.error ?? "Commit demandé introuvable";
+        await ctx.log(
+          "warn",
+          `Extraction du commit ${ctx.commitSha} échouée : ${lastError}`,
         );
-        const headSha = stdout.trim();
-        await ctx.log("info", `Commit clonÃƒÂ© : ${headSha}`);
-
-        return {
-          success: true,
-          exitCode: 0,
-          data: {
-            workspaceDir: ctx.workspaceDir,
-            headSha,
-            attempts: attempt,
-            cloneDurationMs: duration,
-            sourceKind: source.kind,
-          },
-        };
-      } catch (err) {
-        const msg = err instanceof Error ? err.message : String(err);
-        await ctx.log("error", `Impossible de lire le SHA : ${msg}`);
-        return { success: false, exitCode: 1, error: msg };
+        continue;
       }
+
+      await ctx.log("info", `Commit extrait et vérifié : ${exact.headSha}`);
+
+      return {
+        success: true,
+        exitCode: 0,
+        data: {
+          workspaceDir: ctx.workspaceDir,
+          headSha: exact.headSha,
+          attempts: attempt,
+          cloneDurationMs: duration,
+          sourceKind: source.kind,
+        },
+      };
     }
 
     lastError = result.error ?? "Erreur inconnue";

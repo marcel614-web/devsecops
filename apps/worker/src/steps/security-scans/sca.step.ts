@@ -1,7 +1,7 @@
 // apps/worker/src/steps/security-scans/sca.step.ts
 import path from "node:path";
 import fs from "node:fs/promises";
-import { ScanType } from "@prisma/client";
+import { ScanOutcome, ScanType } from "@prisma/client";
 import {
   NpmAuditScanner,
   ComposerAuditScanner,
@@ -9,7 +9,10 @@ import {
   type SecurityScanner,
 } from "@devsecops/scanners";
 import type { StepContext, StepResult } from "../../orchestrator/step.executor";
-import { persistScanResult } from "../../orchestrator/scanner.helper";
+import {
+  persistScanFailure,
+  persistScanResult,
+} from "../../orchestrator/scanner.helper";
 
 type Tech = "NODEJS" | "PHP" | "PYTHON" | "UNKNOWN";
 
@@ -60,10 +63,27 @@ export async function scaStep(
   const scanner = scannerFor(tech);
   if (!scanner) {
     await ctx.log("warn", "Aucun fichier de dépendances reconnu — SCA ignoré");
+    await persistScanFailure(
+      {
+        pipelineId: ctx.pipelineId,
+        projectId: ctx.projectId,
+        stepId: ctx.stepId,
+        type: ScanType.SCA,
+      },
+      {
+        scanner: "sca",
+        outcome: ScanOutcome.NOT_APPLICABLE,
+        reason: "no dependency file",
+      },
+    );
     return {
       success: true,
       exitCode: 0,
-      data: { skipped: true, reason: "no dependency file" },
+      data: {
+        skipped: true,
+        outcome: "NOT_APPLICABLE",
+        reason: "no dependency file",
+      },
     };
   }
 
@@ -73,12 +93,26 @@ export async function scaStep(
       "warn",
       `${binary} non disponible — SCA ${tech} ignoré (échec technique signalé au Security Gate)`,
     );
+    await persistScanFailure(
+      {
+        pipelineId: ctx.pipelineId,
+        projectId: ctx.projectId,
+        stepId: ctx.stepId,
+        type: ScanType.SCA,
+      },
+      {
+        scanner: scanner.name,
+        outcome: ScanOutcome.SCANNER_UNAVAILABLE,
+        reason: `${binary} not found`,
+      },
+    );
     return {
       success: true,
       exitCode: 0,
       data: {
         skipped: true,
         technical: true,
+        outcome: "SCANNER_UNAVAILABLE",
         reason: `${binary} not found`,
         technology: tech,
       },
@@ -115,6 +149,10 @@ export async function scaStep(
       success: false,
       exitCode: result.exitCode ?? 1,
       error: result.error ?? `${scanner.name} a échoué`,
+      data: {
+        outcome: result.outcome ?? "INTERRUPTED",
+        reason: result.error ?? `${scanner.name} a échoué`,
+      },
     };
   }
 
@@ -130,6 +168,10 @@ export async function scaStep(
     data: {
       scanner: scanner.name,
       technology: tech,
+      outcome:
+        result.vulnerabilityCount > 0
+          ? "SUCCESS_WITH_FINDINGS"
+          : "SUCCESS_NO_FINDINGS",
       vulnerabilityCount: result.vulnerabilityCount,
       severityCounts: result.severityCounts,
     },

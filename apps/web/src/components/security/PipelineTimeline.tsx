@@ -17,9 +17,16 @@ export function PipelineTimeline({
   blockedReason,
 }: Props) {
   const successCount = steps.filter((s) => s.status === "SUCCESS").length;
-  const failedCount = steps.filter((s) => s.status === "FAILED").length;
+  const warningCount = steps.filter(
+    (s) => s.status === "SUCCESS_WITH_WARNINGS",
+  ).length;
+  const failedCount = steps.filter(
+    (s) => s.status === "FAILED" || s.status === "TIMED_OUT",
+  ).length;
   const blockedCount = steps.filter((s) => s.status === "SECURITY_BLOCKED").length;
-  const cancelledCount = steps.filter((s) => s.status === "CANCELLED").length;
+  const skippedCount = steps.filter(
+    (s) => s.status === "CANCELLED" || s.status === "SKIPPED",
+  ).length;
 
   return (
     <Card>
@@ -30,14 +37,17 @@ export function PipelineTimeline({
             {successCount > 0 && (
               <span className="text-emerald-500">✓ {successCount}</span>
             )}
+            {warningCount > 0 && (
+              <span className="text-amber-500">! {warningCount}</span>
+            )}
             {failedCount > 0 && (
               <span className="text-red-500">✗ {failedCount}</span>
             )}
             {blockedCount > 0 && (
               <span className="text-amber-500">🛡 {blockedCount}</span>
             )}
-            {cancelledCount > 0 && (
-              <span className="text-slate-500">⊘ {cancelledCount}</span>
+            {skippedCount > 0 && (
+              <span className="text-slate-500">⊘ {skippedCount}</span>
             )}
           </div>
         </div>

@@ -2,6 +2,7 @@ import { useEffect, useMemo, useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import {
   AlertTriangle,
+  Check,
   CheckCircle2,
   Cpu,
   FlaskConical,
@@ -12,7 +13,7 @@ import {
   Shield,
   ShieldAlert,
   Trash2,
-  Zap,
+  X,
 } from "lucide-react";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/Card";
 import { Button } from "@/components/ui/Button";
@@ -23,11 +24,13 @@ import { projectService } from "@/services/project.service";
 import type { CreateGateExceptionInput } from "@/services/project.service";
 import { useServers } from "@/hooks/useServers";
 import { getErrorMessage } from "@/services/api";
+import { useAuthStore } from "@/stores/authStore";
 import { cn } from "@/lib/utils";
 import type {
   ProjectConfiguration,
   ProjectDetail,
-  SecurityGateException,
+  SecurityGateCategory,
+  SecurityGateExceptionStatus,
   SecurityGateMode,
   Severity,
   Technology,
@@ -135,9 +138,38 @@ function toDateInput(value: string | null): string {
   )}T${pad(date.getHours())}:${pad(date.getMinutes())}`;
 }
 
+const EXCEPTION_STATUS_LABELS: Record<SecurityGateExceptionStatus, string> = {
+  PENDING: "En attente d'approbation",
+  APPROVED: "Approuvée",
+  REJECTED: "Rejetée",
+  EXPIRED: "Expirée",
+  REVOKED: "Révoquée",
+};
+
+const EXCEPTION_STATUS_CLASSES: Record<SecurityGateExceptionStatus, string> = {
+  PENDING: "bg-sky-500/15 text-sky-700 dark:text-sky-400",
+  APPROVED: "bg-emerald-500/15 text-emerald-700 dark:text-emerald-400",
+  REJECTED: "bg-red-500/15 text-red-700 dark:text-red-400",
+  EXPIRED: "bg-slate-500/15 text-slate-600 dark:text-slate-400",
+  REVOKED: "bg-slate-500/15 text-slate-600 dark:text-slate-400",
+};
+
+const SCANNER_CATEGORY: Partial<
+  Record<keyof ScannerState, SecurityGateCategory>
+> = {
+  gitleaks: "SECRET",
+  semgrep: "SAST",
+  sca: "SCA",
+  iac: "IAC",
+  trivy: "IMAGE",
+  zap: "DAST",
+};
+
 export function ProjectConfigTab({ project }: { project: ProjectDetail }) {
   const qc = useQueryClient();
   const toast = useToast();
+  const user = useAuthStore((s) => s.user);
+  const isAdmin = user?.role === "ADMIN";
   const { data: servers, isLoading: serversLoading } = useServers({
     pageSize: 100,
   });
@@ -169,6 +201,12 @@ export function ProjectConfigTab({ project }: { project: ProjectDetail }) {
     IMAGE: project.config?.gateImageEnabled ?? true,
     DAST: project.config?.gateDastEnabled ?? true,
   });
+  const [mandatoryControls, setMandatoryControls] = useState<
+    SecurityGateCategory[]
+  >(project.config?.mandatoryControls ?? ["SECRET", "SCA"]);
+  const [requireExceptionApproval, setRequireExceptionApproval] = useState(
+    project.config?.requireExceptionApproval ?? true,
+  );
   const [scanners, setScanners] = useState<ScannerState>(
     scannersFromConfig(project.config),
   );
@@ -191,11 +229,36 @@ export function ProjectConfigTab({ project }: { project: ProjectDetail }) {
   const [autoRollback, setAutoRollback] = useState(
     project.config?.autoRollback ?? true,
   );
+  const [requireProductionApproval, setRequireProductionApproval] = useState(
+    project.config?.requireProductionApproval ?? false,
+  );
+  const [ansibleLint, setAnsibleLint] = useState(
+    project.config?.ansibleLintEnabled ?? true,
+  );
+  const [ansibleSyntax, setAnsibleSyntax] = useState(
+    project.config?.ansibleSyntaxCheckEnabled ?? true,
+  );
+  const [ansibleTimeoutMs, setAnsibleTimeoutMs] = useState(
+    project.config?.ansibleTimeoutMs ?? 300_000,
+  );
+  const [ansibleMaxPlaybooks, setAnsibleMaxPlaybooks] = useState(
+    project.config?.ansibleMaxPlaybooks ?? 20,
+  );
+  const [postDeployChecks, setPostDeployChecks] = useState(
+    project.config?.postDeployChecksEnabled ?? true,
+  );
+  const [healthcheckPath, setHealthcheckPath] = useState(
+    project.config?.healthcheckPath ?? "/",
+  );
+  const [healthcheckTimeoutMs, setHealthcheckTimeoutMs] = useState(
+    project.config?.healthcheckTimeoutMs ?? 5000,
+  );
 
   const [exceptionForm, setExceptionForm] = useState<CreateGateExceptionInput>({
     category: "ALL",
     severity: null,
     fingerprint: "",
+    matchType: "ANY",
     reason: "",
     expiresAt: null,
   });
@@ -222,11 +285,21 @@ export function ProjectConfigTab({ project }: { project: ProjectDetail }) {
         IMAGE: c.gateImageEnabled,
         DAST: c.gateDastEnabled,
       });
+      setMandatoryControls(c.mandatoryControls ?? ["SECRET", "SCA"]);
+      setRequireExceptionApproval(c.requireExceptionApproval ?? true);
       setScanners(scannersFromConfig(c));
       setStrategy(c.deploymentStrategy);
       setStagingPort(c.stagingPort ?? "");
       setProductionPort(c.productionPort ?? "");
       setAutoRollback(c.autoRollback);
+      setRequireProductionApproval(c.requireProductionApproval ?? false);
+      setAnsibleLint(c.ansibleLintEnabled ?? true);
+      setAnsibleSyntax(c.ansibleSyntaxCheckEnabled ?? true);
+      setAnsibleTimeoutMs(c.ansibleTimeoutMs ?? 300_000);
+      setAnsibleMaxPlaybooks(c.ansibleMaxPlaybooks ?? 20);
+      setPostDeployChecks(c.postDeployChecksEnabled ?? true);
+      setHealthcheckPath(c.healthcheckPath ?? "/");
+      setHealthcheckTimeoutMs(c.healthcheckTimeoutMs ?? 5000);
     }
     setDeploymentEnabled(project.deploymentEnabled);
     setServerId(project.serverId ?? "");
@@ -269,19 +342,40 @@ export function ProjectConfigTab({ project }: { project: ProjectDetail }) {
         IAC: project.config?.gateIacEnabled ?? true,
         IMAGE: project.config?.gateImageEnabled ?? true,
         DAST: project.config?.gateDastEnabled ?? true,
-      });
+      }) ||
+    JSON.stringify([...mandatoryControls].sort()) !==
+      JSON.stringify(
+        [...(project.config?.mandatoryControls ?? ["SECRET", "SCA"])].sort(),
+      ) ||
+    requireExceptionApproval !==
+      (project.config?.requireExceptionApproval ?? true);
 
   const scannersDirty =
     JSON.stringify(scanners) !==
     JSON.stringify(scannersFromConfig(project.config));
 
+  const approvalDirty =
+    requireProductionApproval !==
+    (project.config?.requireProductionApproval ?? false);
+
+  const strategyDirty =
+    strategy !== (project.config?.deploymentStrategy ?? "direct");
+
   const deployDirty =
     deploymentEnabled !== project.deploymentEnabled ||
     serverId !== (project.serverId ?? "") ||
-    strategy !== (project.config?.deploymentStrategy ?? "direct") ||
+    strategyDirty ||
     stagingPort !== (project.config?.stagingPort ?? "") ||
     productionPort !== (project.config?.productionPort ?? "") ||
-    autoRollback !== (project.config?.autoRollback ?? true);
+    autoRollback !== (project.config?.autoRollback ?? true) ||
+    ansibleLint !== (project.config?.ansibleLintEnabled ?? true) ||
+    ansibleSyntax !== (project.config?.ansibleSyntaxCheckEnabled ?? true) ||
+    ansibleTimeoutMs !== (project.config?.ansibleTimeoutMs ?? 300_000) ||
+    ansibleMaxPlaybooks !== (project.config?.ansibleMaxPlaybooks ?? 20) ||
+    postDeployChecks !== (project.config?.postDeployChecksEnabled ?? true) ||
+    healthcheckPath !== (project.config?.healthcheckPath ?? "/") ||
+    healthcheckTimeoutMs !== (project.config?.healthcheckTimeoutMs ?? 5000) ||
+    approvalDirty;
 
   const techDirty = technology !== project.technology;
 
@@ -311,6 +405,8 @@ export function ProjectConfigTab({ project }: { project: ProjectDetail }) {
         gateIacEnabled: gateCategories.IAC,
         gateImageEnabled: gateCategories.IMAGE,
         gateDastEnabled: gateCategories.DAST,
+        mandatoryControls,
+        requireExceptionApproval,
       }),
     onSuccess: done("Security Gate enregistré"),
     onError: fail,
@@ -339,10 +435,20 @@ export function ProjectConfigTab({ project }: { project: ProjectDetail }) {
         serverId: serverId || null,
       });
       await projectService.updateConfig(project.id, {
-        deploymentStrategy: strategy,
+        // Champs protégés : on ne les envoie que s'ils changent, afin qu'un
+        // DEVELOPER puisse modifier les ports sans être bloqué.
+        ...(strategyDirty ? { deploymentStrategy: strategy } : {}),
         stagingPort: stagingPort === "" ? null : stagingPort,
         productionPort: productionPort === "" ? null : productionPort,
         autoRollback,
+        ansibleLintEnabled: ansibleLint,
+        ansibleSyntaxCheckEnabled: ansibleSyntax,
+        ansibleTimeoutMs,
+        ansibleMaxPlaybooks,
+        postDeployChecksEnabled: postDeployChecks,
+        healthcheckPath,
+        healthcheckTimeoutMs,
+        ...(approvalDirty ? { requireProductionApproval } : {}),
       });
     },
     onSuccess: done("Déploiement enregistré"),
@@ -369,6 +475,7 @@ export function ProjectConfigTab({ project }: { project: ProjectDetail }) {
         category: "ALL",
         severity: null,
         fingerprint: "",
+        matchType: "ANY",
         reason: "",
         expiresAt: null,
       });
@@ -377,11 +484,32 @@ export function ProjectConfigTab({ project }: { project: ProjectDetail }) {
     onError: fail,
   });
 
-  const deleteExceptionMutation = useMutation({
+  const decisionExceptionMutation = useMutation({
+    mutationFn: ({
+      exceptionId,
+      decision,
+      comment,
+    }: {
+      exceptionId: string;
+      decision: "APPROVE" | "REJECT" | "REVOKE";
+      comment?: string;
+    }) =>
+      projectService.decideGateException(project.id, exceptionId, {
+        decision,
+        comment,
+      }),
+    onSuccess: () => {
+      toast.show("success", "Exception mise à jour");
+      qc.invalidateQueries({ queryKey: ["gate-exceptions", project.id] });
+    },
+    onError: fail,
+  });
+
+  const revokeExceptionMutation = useMutation({
     mutationFn: (exceptionId: string) =>
       projectService.deleteGateException(project.id, exceptionId),
     onSuccess: () => {
-      toast.show("success", "Exception supprimée");
+      toast.show("success", "Exception révoquée (historique conservé)");
       qc.invalidateQueries({ queryKey: ["gate-exceptions", project.id] });
     },
     onError: fail,
@@ -395,6 +523,25 @@ export function ProjectConfigTab({ project }: { project: ProjectDetail }) {
       )?.id ?? null,
     [scanners],
   );
+
+  const scannerLocked = (key: keyof ScannerState): boolean => {
+    const category = SCANNER_CATEGORY[key];
+    return (
+      !isAdmin &&
+      !!category &&
+      mandatoryControls.includes(category) &&
+      scanners[key]
+    );
+  };
+
+  const toggleMandatory = (category: SecurityGateCategory) => {
+    if (!isAdmin) return;
+    setMandatoryControls((current) =>
+      current.includes(category)
+        ? current.filter((c) => c !== category)
+        : [...current, category],
+    );
+  };
 
   return (
     <div className="space-y-4">
@@ -490,6 +637,12 @@ export function ProjectConfigTab({ project }: { project: ProjectDetail }) {
               </label>
               <Select
                 value={strategy}
+                disabled={!isAdmin}
+                title={
+                  !isAdmin
+                    ? "Seul un administrateur peut modifier la stratégie de livraison"
+                    : undefined
+                }
                 onChange={(e) =>
                   setStrategy(
                     e.target.value as "direct" | "staging_then_production",
@@ -523,7 +676,7 @@ export function ProjectConfigTab({ project }: { project: ProjectDetail }) {
                   onChange={setStagingPort}
                   hint="Vide = allocation automatique"
                 />
-                <div className="flex items-end">
+                <div className="flex flex-col justify-end gap-2">
                   <label className="flex items-center gap-2 text-sm">
                     <input
                       type="checkbox"
@@ -532,6 +685,23 @@ export function ProjectConfigTab({ project }: { project: ProjectDetail }) {
                       className="h-4 w-4 rounded border-border"
                     />
                     Rollback automatique
+                  </label>
+                  <label className="flex items-center gap-2 text-sm">
+                    <input
+                      type="checkbox"
+                      checked={requireProductionApproval}
+                      disabled={!isAdmin}
+                      title={
+                        !isAdmin
+                          ? "Seul un administrateur peut modifier ce contrôle protégé"
+                          : undefined
+                      }
+                      onChange={(e) =>
+                        setRequireProductionApproval(e.target.checked)
+                      }
+                      className="h-4 w-4 rounded border-border disabled:opacity-50"
+                    />
+                    Approbation avant production
                   </label>
                 </div>
               </>
@@ -546,6 +716,134 @@ export function ProjectConfigTab({ project }: { project: ProjectDetail }) {
             Les ports sont uniques par serveur. Si un port est déjà utilisé par
             un autre projet, un port libre lui sera attribué au déploiement.
           </p>
+
+          <div className="space-y-3 rounded-lg border border-border p-3">
+            <div>
+              <p className="text-sm font-medium">Contrôles Ansible (IaC)</p>
+              <p className="text-xs text-muted">
+                Analyse statique uniquement : aucun playbook n'est exécuté et
+                aucune production n'est contactée. Actifs seulement si le
+                scanner IaC est activé et si des playbooks/rôles sont détectés.
+              </p>
+            </div>
+            <div className="flex flex-wrap gap-5">
+              <label className="flex items-center gap-2 text-sm">
+                <input
+                  type="checkbox"
+                  checked={ansibleLint}
+                  onChange={(e) => setAnsibleLint(e.target.checked)}
+                  className="h-4 w-4 rounded border-border"
+                />
+                ansible-lint
+              </label>
+              <label className="flex items-center gap-2 text-sm">
+                <input
+                  type="checkbox"
+                  checked={ansibleSyntax}
+                  onChange={(e) => setAnsibleSyntax(e.target.checked)}
+                  className="h-4 w-4 rounded border-border"
+                />
+                ansible-playbook --syntax-check
+              </label>
+            </div>
+            <div className="grid grid-cols-1 gap-3 md:grid-cols-2">
+              <div>
+                <label className="mb-1.5 block text-xs font-medium">
+                  Timeout global (secondes)
+                </label>
+                <Input
+                  type="number"
+                  min={10}
+                  max={1800}
+                  value={Math.round(ansibleTimeoutMs / 1000)}
+                  onChange={(e) =>
+                    setAnsibleTimeoutMs(
+                      Math.max(10, Number(e.target.value) || 10) * 1000,
+                    )
+                  }
+                />
+              </div>
+              <div>
+                <label className="mb-1.5 block text-xs font-medium">
+                  Playbooks maximum
+                </label>
+                <Input
+                  type="number"
+                  min={1}
+                  max={100}
+                  value={ansibleMaxPlaybooks}
+                  onChange={(e) =>
+                    setAnsibleMaxPlaybooks(
+                      Math.max(1, Number(e.target.value) || 1),
+                    )
+                  }
+                />
+              </div>
+            </div>
+          </div>
+
+          <div className="space-y-3 rounded-lg border border-border p-3">
+            <div className="flex items-center justify-between gap-4">
+              <div>
+                <p className="text-sm font-medium">
+                  Conformité post-déploiement
+                </p>
+                <p className="text-xs text-muted">
+                  Vérifie sur la VM le conteneur, le healthcheck, les ports et
+                  le digest attendu. Ne modifie rien et n'exécute pas de scan
+                  IaC.
+                </p>
+              </div>
+              <Toggle
+                checked={postDeployChecks}
+                onChange={setPostDeployChecks}
+                label="Conformité post-déploiement"
+              />
+            </div>
+            <div className="grid grid-cols-1 gap-3 md:grid-cols-2">
+              <div>
+                <label className="mb-1.5 block text-xs font-medium">
+                  Chemin du healthcheck
+                </label>
+                <Input
+                  value={healthcheckPath}
+                  onChange={(e) => setHealthcheckPath(e.target.value)}
+                  placeholder="/health"
+                  disabled={!postDeployChecks}
+                />
+                <p className="mt-1 text-xs text-muted">
+                  Chemin local uniquement, commençant par /.
+                </p>
+              </div>
+              <div>
+                <label className="mb-1.5 block text-xs font-medium">
+                  Timeout healthcheck (ms)
+                </label>
+                <Input
+                  type="number"
+                  min={1000}
+                  max={60000}
+                  value={healthcheckTimeoutMs}
+                  disabled={!postDeployChecks}
+                  onChange={(e) =>
+                    setHealthcheckTimeoutMs(
+                      Math.max(1000, Number(e.target.value) || 1000),
+                    )
+                  }
+                />
+              </div>
+            </div>
+          </div>
+
+          {strategy === "staging_then_production" &&
+            requireProductionApproval && (
+              <p className="rounded-md border border-sky-500/30 bg-sky-500/5 px-3 py-2 text-xs text-sky-700 dark:text-sky-300">
+                Après le staging et les contrôles de sécurité, le pipeline
+                s'arrêtera en « attente d'approbation ». Seul le propriétaire du
+                projet ou un administrateur pourra approuver la promotion de ce
+                commit et de ce digest précis.
+              </p>
+            )}
 
           <div className="flex justify-end">
             <Button
@@ -606,13 +904,27 @@ export function ProjectConfigTab({ project }: { project: ProjectDetail }) {
             <CardTitle className="flex items-center gap-2">
               <Shield className="h-4 w-4 text-primary-500" /> Security Gate
             </CardTitle>
+            {project.config && (
+              <p className="text-[11px] text-muted">
+                Politique v{project.config.policyVersion} · appliquée à chaque
+                pipeline créé
+              </p>
+            )}
           </CardHeader>
           <CardContent className="space-y-4">
+            {!isAdmin && (
+              <div className="rounded-md border border-amber-500/30 bg-amber-500/10 p-2.5 text-xs text-amber-700 dark:text-amber-400">
+                La politique de sécurité est protégée. Seul un ADMIN peut
+                modifier le mode, les seuils, les catégories et les contrôles
+                obligatoires.
+              </div>
+            )}
             <div className="grid grid-cols-1 gap-3 md:grid-cols-2">
               <div>
                 <label className="mb-1.5 block text-sm font-medium">Mode</label>
                 <Select
                   value={gateMode}
+                  disabled={!isAdmin}
                   onChange={(e) =>
                     setGateMode(e.target.value as SecurityGateMode)
                   }
@@ -632,6 +944,7 @@ export function ProjectConfigTab({ project }: { project: ProjectDetail }) {
                 <Input
                   type="datetime-local"
                   value={gateEnforcementAt}
+                  disabled={!isAdmin}
                   onChange={(e) => setGateEnforcementAt(e.target.value)}
                 />
                 <p className="mt-1 text-[11px] text-muted">
@@ -644,18 +957,21 @@ export function ProjectConfigTab({ project }: { project: ProjectDetail }) {
               <Field
                 label="Critiques max"
                 value={gate.critical}
+                disabled={!isAdmin}
                 onChange={(v) => setGate((g) => ({ ...g, critical: v }))}
                 min={0}
               />
               <Field
                 label="Élevées max"
                 value={gate.high}
+                disabled={!isAdmin}
                 onChange={(v) => setGate((g) => ({ ...g, high: v }))}
                 min={0}
               />
               <Field
                 label="Moyennes max"
                 value={gate.medium}
+                disabled={!isAdmin}
                 onChange={(v) => setGate((g) => ({ ...g, medium: v }))}
                 min={0}
               />
@@ -663,6 +979,7 @@ export function ProjectConfigTab({ project }: { project: ProjectDetail }) {
                 label="Faibles max"
                 hint="-1 = illimité"
                 value={gate.low}
+                disabled={!isAdmin}
                 onChange={(v) => setGate((g) => ({ ...g, low: v }))}
                 min={-1}
               />
@@ -683,38 +1000,73 @@ export function ProjectConfigTab({ project }: { project: ProjectDetail }) {
                     ["DAST", "DAST"],
                   ] as const
                 ).map(([key, label]) => (
-                  <label
+                  <div
                     key={key}
-                    className="flex items-center gap-2 rounded-md border border-border px-2.5 py-2 text-xs"
+                    className="flex items-center justify-between gap-2 rounded-md border border-border px-2.5 py-2 text-xs"
                   >
-                    <input
-                      type="checkbox"
-                      checked={gateCategories[key]}
-                      onChange={(e) =>
-                        setGateCategories((c) => ({
-                          ...c,
-                          [key]: e.target.checked,
-                        }))
-                      }
-                      className="h-4 w-4 rounded border-border"
-                    />
-                    {label}
-                  </label>
+                    <label className="flex items-center gap-2">
+                      <input
+                        type="checkbox"
+                        checked={gateCategories[key]}
+                        disabled={!isAdmin}
+                        onChange={(e) =>
+                          setGateCategories((c) => ({
+                            ...c,
+                            [key]: e.target.checked,
+                          }))
+                        }
+                        className="h-4 w-4 rounded border-border"
+                      />
+                      {label}
+                    </label>
+                    <label
+                      className="flex items-center gap-1 text-[11px] text-muted"
+                      title="Un contrôle obligatoire non exécuté bloque même en mode WARNING"
+                    >
+                      <input
+                        type="checkbox"
+                        checked={mandatoryControls.includes(key)}
+                        disabled={!isAdmin}
+                        onChange={() => toggleMandatory(key)}
+                        className="h-3.5 w-3.5 rounded border-border"
+                      />
+                      obligatoire
+                    </label>
+                  </div>
                 ))}
               </div>
             </div>
 
+            <label className="flex items-center justify-between gap-3 rounded-lg border border-border p-3">
+              <span>
+                <span className="block text-sm font-medium">
+                  Approbation obligatoire des exceptions
+                </span>
+                <span className="block text-xs text-muted">
+                  Une exception PENDING ne neutralise aucun finding avant
+                  décision d'un ADMIN.
+                </span>
+              </span>
+              <Toggle
+                checked={requireExceptionApproval}
+                onChange={setRequireExceptionApproval}
+                disabled={!isAdmin}
+                label="Approbation obligatoire des exceptions"
+              />
+            </label>
+
             <p className="text-xs text-muted">
               Un scanner en échec technique est traité comme un problème, jamais
-              comme « 0 vulnérabilité ». En mode avertissement, le pipeline
-              continue mais le rapport reste en WARNING.
+              comme « 0 vulnérabilité ». Un contrôle obligatoire non exécuté
+              bloque même en mode avertissement ; les seuils, eux, ne bloquent
+              qu'en mode ENFORCEMENT.
             </p>
 
             <div className="flex justify-end">
               <Button
                 onClick={() => gateMutation.mutate()}
                 loading={gateMutation.isPending}
-                disabled={!gateDirty}
+                disabled={!isAdmin || !gateDirty}
                 className="gap-2"
               >
                 <Save className="h-4 w-4" /> Enregistrer
@@ -772,7 +1124,12 @@ export function ProjectConfigTab({ project }: { project: ProjectDetail }) {
                   onChange={(v) =>
                     setScanners((s) => ({ ...s, [row.key]: v }))
                   }
-                  label={row.name}
+                  disabled={scannerLocked(row.key)}
+                  label={
+                    scannerLocked(row.key)
+                      ? `${row.name} (contrôle obligatoire)`
+                      : row.name
+                  }
                 />
               </div>
             ))}
@@ -816,55 +1173,138 @@ export function ProjectConfigTab({ project }: { project: ProjectDetail }) {
             <p className="text-xs text-muted">Chargement…</p>
           ) : exceptions && exceptions.length > 0 ? (
             <ul className="space-y-2">
-              {exceptions.map((exception) => (
-                <li
-                  key={exception.id}
-                  className="flex items-start justify-between gap-3 rounded-lg border border-border px-3 py-2.5"
-                >
-                  <div className="min-w-0">
-                    <p className="text-sm">
-                      <span className="font-medium">{exception.category}</span>
-                      {exception.severity
-                        ? ` · ${exception.severity}`
-                        : " · toutes sévérités"}
-                      {exception.fingerprint && (
-                        <span className="ml-2 font-mono text-xs text-muted">
-                          {exception.fingerprint}
-                        </span>
-                      )}
-                      {exception.expiresAt && (
-                        <span className="ml-2 text-xs text-muted">
-                          expire le{" "}
-                          {new Date(exception.expiresAt).toLocaleString("fr-FR")}
-                        </span>
-                      )}
-                    </p>
-                    <p className="text-xs text-muted">{exception.reason}</p>
-                    {exception.createdBy && (
-                      <p className="text-[11px] text-muted">
-                        par {exception.createdBy.name}
-                      </p>
-                    )}
-                  </div>
-                  <Button
-                    variant="ghost"
-                    size="sm"
-                    onClick={() =>
-                      deleteExceptionMutation.mutate(exception.id)
-                    }
-                    loading={deleteExceptionMutation.isPending}
-                    aria-label="Supprimer l'exception"
+              {exceptions.map((exception) => {
+                const canRevoke =
+                  (exception.status === "PENDING" ||
+                    exception.status === "APPROVED") &&
+                  (isAdmin || exception.createdById === user?.id);
+                const canDecide =
+                  exception.status === "PENDING" && isAdmin;
+                return (
+                  <li
+                    key={exception.id}
+                    className="rounded-lg border border-border px-3 py-2.5"
                   >
-                    <Trash2 className="h-4 w-4" />
-                  </Button>
-                </li>
-              ))}
+                    <div className="flex items-start justify-between gap-3">
+                      <div className="min-w-0">
+                        <p className="flex flex-wrap items-center gap-1.5 text-sm">
+                          <span className="font-medium">
+                            {exception.category}
+                          </span>
+                          {exception.severity
+                            ? ` · ${exception.severity}`
+                            : " · toutes sévérités"}
+                          <span
+                            className={cn(
+                              "rounded px-1.5 py-0.5 text-[10px] font-semibold uppercase tracking-wide",
+                              EXCEPTION_STATUS_CLASSES[exception.status],
+                            )}
+                          >
+                            {EXCEPTION_STATUS_LABELS[exception.status]}
+                          </span>
+                          {exception.fingerprint && (
+                            <span className="font-mono text-xs text-muted">
+                              {exception.matchType} · {exception.fingerprint}
+                            </span>
+                          )}
+                        </p>
+                        <p className="text-xs text-muted">{exception.reason}</p>
+                        <p className="mt-0.5 text-[11px] text-muted">
+                          Demandée par{" "}
+                          {exception.createdBy?.name ??
+                            exception.createdById ??
+                            "inconnu"}
+                          {exception.approvedBy?.name &&
+                            ` · approuvée par ${exception.approvedBy.name}`}
+                          {exception.expiresAt &&
+                            ` · expire le ${new Date(
+                              exception.expiresAt,
+                            ).toLocaleString("fr-FR")}`}
+                        </p>
+                        {exception.events && exception.events.length > 0 && (
+                          <details className="mt-1 text-[11px] text-muted">
+                            <summary className="cursor-pointer select-none">
+                              Historique ({exception.events.length})
+                            </summary>
+                            <ul className="mt-1 space-y-0.5 border-l border-border pl-2">
+                              {exception.events.map((event) => (
+                                <li key={event.id}>
+                                  {new Date(event.createdAt).toLocaleString(
+                                    "fr-FR",
+                                  )}{" "}
+                                  · {event.action}
+                                  {event.fromStatus
+                                    ? ` (${event.fromStatus} → ${
+                                        event.toStatus ?? "?"
+                                      })`
+                                    : ""}
+                                  {event.actor?.name
+                                    ? ` · ${event.actor.name}`
+                                    : ""}
+                                </li>
+                              ))}
+                            </ul>
+                          </details>
+                        )}
+                      </div>
+                      <div className="flex shrink-0 gap-1">
+                        {canDecide && (
+                          <>
+                            <Button
+                              variant="ghost"
+                              size="sm"
+                              onClick={() =>
+                                decisionExceptionMutation.mutate({
+                                  exceptionId: exception.id,
+                                  decision: "APPROVE",
+                                })
+                              }
+                              loading={decisionExceptionMutation.isPending}
+                              aria-label="Approuver l'exception"
+                            >
+                              <Check className="h-4 w-4 text-emerald-500" />
+                            </Button>
+                            <Button
+                              variant="ghost"
+                              size="sm"
+                              onClick={() =>
+                                decisionExceptionMutation.mutate({
+                                  exceptionId: exception.id,
+                                  decision: "REJECT",
+                                })
+                              }
+                              loading={decisionExceptionMutation.isPending}
+                              aria-label="Rejeter l'exception"
+                            >
+                              <X className="h-4 w-4 text-red-500" />
+                            </Button>
+                          </>
+                        )}
+                        {canRevoke && (
+                          <Button
+                            variant="ghost"
+                            size="sm"
+                            onClick={() =>
+                              revokeExceptionMutation.mutate(exception.id)
+                            }
+                            loading={revokeExceptionMutation.isPending}
+                            aria-label="Révoquer l'exception"
+                            title="Révoquer (l'historique est conservé)"
+                          >
+                            <Trash2 className="h-4 w-4" />
+                          </Button>
+                        )}
+                      </div>
+                    </div>
+                  </li>
+                );
+              })}
             </ul>
           ) : (
             <p className="text-xs text-muted">Aucune exception active.</p>
           )}
 
-          <div className="grid grid-cols-1 gap-3 rounded-lg border border-border p-3 md:grid-cols-4">
+          <div className="grid grid-cols-1 gap-3 rounded-lg border border-border p-3 md:grid-cols-5">
             <div>
               <label className="mb-1 block text-xs text-muted">Catégorie</label>
               <Select
@@ -907,6 +1347,27 @@ export function ProjectConfigTab({ project }: { project: ProjectDetail }) {
             </div>
             <div>
               <label className="mb-1 block text-xs text-muted">
+                Type de cible
+              </label>
+              <Select
+                value={exceptionForm.matchType ?? "ANY"}
+                onChange={(e) =>
+                  setExceptionForm((f) => ({
+                    ...f,
+                    matchType: e.target
+                      .value as CreateGateExceptionInput["matchType"],
+                  }))
+                }
+              >
+                <option value="ANY">Empreinte exacte</option>
+                <option value="FINGERPRINT">Fingerprint</option>
+                <option value="CVE">CVE</option>
+                <option value="RULE">Règle</option>
+                <option value="REFERENCE">Référence</option>
+              </Select>
+            </div>
+            <div>
+              <label className="mb-1 block text-xs text-muted">
                 Expiration
               </label>
               <Input
@@ -927,7 +1388,7 @@ export function ProjectConfigTab({ project }: { project: ProjectDetail }) {
                 onClick={() => createExceptionMutation.mutate()}
                 loading={createExceptionMutation.isPending}
                 disabled={
-                  !exceptionForm.reason.trim() ||
+                  exceptionForm.reason.trim().length < 10 ||
                   !exceptionForm.fingerprint.trim()
                 }
                 className="gap-2"
@@ -935,7 +1396,7 @@ export function ProjectConfigTab({ project }: { project: ProjectDetail }) {
                 <Plus className="h-4 w-4" /> Ajouter
               </Button>
             </div>
-            <div className="md:col-span-4">
+            <div className="md:col-span-5">
               <label className="mb-1 block text-xs text-muted">
                 Finding ciblé (CVE, GHSA, règle, empreinte)
               </label>
@@ -951,9 +1412,9 @@ export function ProjectConfigTab({ project }: { project: ProjectDetail }) {
                 placeholder="Ex. : CVE-2024-1234 ou GHSA-xxxx-yyyy-zzzz"
               />
             </div>
-            <div className="md:col-span-4">
+            <div className="md:col-span-5">
               <label className="mb-1 block text-xs text-muted">
-                Justification
+                Justification (10 caractères minimum)
               </label>
               <textarea
                 value={exceptionForm.reason}
@@ -980,10 +1441,12 @@ function Toggle({
   checked,
   onChange,
   label,
+  disabled = false,
 }: {
   checked: boolean;
   onChange: (v: boolean) => void;
   label: string;
+  disabled?: boolean;
 }) {
   return (
     <button
@@ -991,10 +1454,12 @@ function Toggle({
       role="switch"
       aria-checked={checked}
       aria-label={label}
+      disabled={disabled}
       onClick={() => onChange(!checked)}
       className={cn(
         "relative h-6 w-11 shrink-0 rounded-full transition-colors focus-visible:ring-2 focus-visible:ring-primary-500",
         checked ? "bg-primary-600" : "bg-slate-300 dark:bg-slate-600",
+        disabled && "cursor-not-allowed opacity-50",
       )}
     >
       <span
@@ -1052,12 +1517,14 @@ function Field({
   value,
   onChange,
   min,
+  disabled = false,
 }: {
   label: string;
   hint?: string;
   value: number;
   onChange: (v: number) => void;
   min: number;
+  disabled?: boolean;
 }) {
   return (
     <div>
@@ -1066,6 +1533,7 @@ function Field({
         type="number"
         min={min}
         value={value}
+        disabled={disabled}
         onChange={(e) =>
           onChange(Math.max(min, Number(e.target.value) || 0))
         }

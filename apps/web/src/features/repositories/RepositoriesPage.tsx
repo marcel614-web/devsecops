@@ -1,6 +1,6 @@
 import { useEffect, useState } from "react";
 import { useSearchParams } from "react-router-dom";
-import { Github, ExternalLink, Lock, Globe, RefreshCw, Trash2, Plus, Link2, X, GitBranch, Building2, User } from "lucide-react";
+import { Github, ExternalLink, Lock, Globe, RefreshCw, Trash2, Plus, Link2, X, GitBranch, Building2, User, ShieldCheck } from "lucide-react";
 import { PageHeader } from "@/components/layout/PageHeader";
 import { Card, CardContent } from "@/components/ui/Card";
 import { Button } from "@/components/ui/Button";
@@ -25,6 +25,7 @@ import { useProjects } from "@/hooks/useProjects";
 import { getErrorMessage } from "@/services/api";
 import { timeAgo, cn } from "@/lib/utils";
 import type { GitHubRepository } from "@/services/github.service";
+import { BranchProtectionModal } from "./BranchProtectionModal";
 
 const VISIBILITY = [
   { key: "", label: "Tous" },
@@ -43,6 +44,7 @@ export function RepositoriesPage() {
   const [confirmRevokeId, setConfirmRevokeId] = useState<string | null>(null);
   const [syncingId, setSyncingId] = useState<string | null>(null);
   const [associateRepo, setAssociateRepo] = useState<GitHubRepository | null>(null);
+  const [protectionRepo, setProtectionRepo] = useState<GitHubRepository | null>(null);
 
   const { data: installations, isLoading: installsLoading, refetch: refetchInstalls } = useGithubInstallations();
 
@@ -264,6 +266,15 @@ export function RepositoriesPage() {
                     </div>
 
                     <div className="flex shrink-0 items-center gap-2">
+                      <Button
+                        size="sm"
+                        variant="secondary"
+                        onClick={() => setProtectionRepo(repo)}
+                        className="gap-1.5"
+                        title="Vérifier les protections et le Check Run obligatoire"
+                      >
+                        <ShieldCheck className="h-3.5 w-3.5" /> Protections
+                      </Button>
                       <Button size="sm" onClick={() => setAssociateRepo(repo)} className="gap-1.5"><Link2 className="h-3.5 w-3.5" /> Associer</Button>
                       <a
                         href={repo.htmlUrl}
@@ -299,6 +310,13 @@ export function RepositoriesPage() {
           repository={associateRepo}
           onClose={() => setAssociateRepo(null)}
           onSuccess={() => { setAssociateRepo(null); refetchRepos(); }}
+        />
+      )}
+
+      {protectionRepo && (
+        <BranchProtectionModal
+          repository={protectionRepo}
+          onClose={() => setProtectionRepo(null)}
         />
       )}
     </div>

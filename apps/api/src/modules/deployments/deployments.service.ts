@@ -16,6 +16,11 @@ async function loadDeployment(actor: ActorContext, id: string) {
     include: {
       project: { include: { config: true } },
       server: true,
+      approval: {
+        include: {
+          decidedBy: { select: { id: true, name: true, email: true } },
+        },
+      },
     },
   });
 
@@ -38,6 +43,7 @@ export async function listDeployments(actor: ActorContext) {
     include: {
       project: { select: { id: true, name: true, technology: true } },
       server: { select: { id: true, name: true, host: true } },
+      approval: { select: { id: true, status: true, commitSha: true, imageDigest: true } },
     },
   });
 }
@@ -75,6 +81,9 @@ export async function listProjectDeployments(
       include: {
         project: { select: { id: true, name: true, technology: true } },
         server: { select: { id: true, name: true, host: true } },
+        approval: {
+          select: { id: true, status: true, commitSha: true, imageDigest: true },
+        },
       },
     }),
     prisma.deployment.count({ where }),

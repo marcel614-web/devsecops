@@ -94,6 +94,7 @@ export async function cosignStep(
       username: server.username,
       privateKey,
       passphrase,
+      hostKeyFingerprint: server.hostKeyFingerprint,
     });
 
     const availability = await ssh.exec(

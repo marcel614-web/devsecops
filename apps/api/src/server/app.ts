@@ -5,7 +5,7 @@ import cookieParser from "cookie-parser";
 import cors from "cors";
 import helmet from "helmet";
 import { HEADER_REQUEST_ID } from "../config/constants";
-import { env } from "../config/env";
+import { env, isDev } from "../config/env";
 import {
   globalLimiter,
   webhookLimiter,
@@ -24,7 +24,11 @@ import { deploymentsRouter } from "../modules/deployments/deployments.routes";
 import { serversRouter } from "../modules/servers/servers.routes";
 import { githubRouter } from "../modules/github/github.routes";
 import { notificationsRouter } from "../modules/notifications/notifications.routes";
+import { defectDojoRouter } from "../modules/defectdojo/defectdojo.routes";
+import { dependencyTrackRouter } from "../modules/dependency-track/dependency-track.routes";
 import { systemConfigRouter } from "../modules/system-config/system-config.routes";
+import { rescansRouter } from "../modules/rescans/rescans.routes";
+import { verificationsRouter } from "../modules/verifications/verifications.routes";
 import { githubWebhook } from "../modules/webhooks/webhooks.controller";
 
 /**
@@ -52,6 +56,12 @@ function buildCorsOrigin(): string[] | ((origin: string | undefined, cb: (err: E
     // on l'autorise, le contrôle d'accès se fait via l'authentification.
     if (!origin) return cb(null, true);
     if (allowed.has(origin)) return cb(null, true);
+    // En développement, on accepte toute origine localhost (Vite peut changer
+    // de port dynamiquement si 5173 est déjà occupé → éviter les "Network Error"
+    // liés au CORS).
+    if (isDev && /^http:\/\/localhost:\d+$/.test(origin)) {
+      return cb(null, true);
+    }
     return cb(new Error(`Origine non autorisée : ${origin}`));
   };
 }
@@ -122,11 +132,15 @@ app.use("/api/audit-logs", auditRouter);
   app.use("/api/servers", serversRouter);
   app.use("/api/github", githubRouter);
 app.use("/api/notifications", notificationsRouter);
+  app.use("/api/defectdojo", defectDojoRouter);
+  app.use("/api/dependency-track", dependencyTrackRouter);
   app.use("/api/system-config", systemConfigRouter);
 
   // ⚠️ Ordre important : sous-routes AVANT la route parente
   app.use("/api/projects/:projectId/pipelines", pipelinesRouter);
   app.use("/api/projects/:projectId/vulnerabilities", vulnerabilitiesRouter);
+  app.use("/api/projects/:projectId/rescans", rescansRouter);
+  app.use("/api/projects/:projectId/verifications", verificationsRouter);
   app.use("/api/projects", projectsRouter);
 app.use("/api/deployments", deploymentsRouter);
 app.use("/api/reports", reportsRouter);

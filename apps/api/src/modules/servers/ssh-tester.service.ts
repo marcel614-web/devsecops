@@ -1,5 +1,10 @@
 // apps/api/src/modules/servers/ssh-tester.service.ts
 import { Client } from "ssh2";
+import {
+  computeHostKeyFingerprint,
+  hostKeyMatches,
+  normalizeHostKeyFingerprint,
+} from "@devsecops/shared";
 import { decryptString } from "../../secrets/crypto";
 import { logger } from "../../utils/logger";
 
@@ -8,6 +13,12 @@ export interface ServerTestResult {
     ok: boolean;
     error?: string;
     latencyMs?: number;
+  };
+  hostKey: {
+    observedFingerprint: string | null;
+    trustedFingerprint: string | null;
+    matches: boolean;
+    trusted: boolean;
   };
   docker: {
     ok: boolean;
@@ -32,6 +43,7 @@ interface ServerCreds {
   username: string;
   encryptedPrivateKey: string | null;
   encryptedPassphrase: string | null;
+  hostKeyFingerprint: string | null;
 }
 
 // ============================================================
@@ -78,6 +90,12 @@ export async function testServerConnection(
 ): Promise<ServerTestResult> {
   const result: ServerTestResult = {
     ssh: { ok: false },
+    hostKey: {
+      observedFingerprint: null,
+      trustedFingerprint: normalizeHostKeyFingerprint(server.hostKeyFingerprint),
+      matches: false,
+      trusted: false,
+    },
     docker: { ok: false },
     dockerCompose: { ok: false },
     nginx: { ok: false },
@@ -102,6 +120,8 @@ export async function testServerConnection(
 
   const conn = new Client();
   const startTime = Date.now();
+  const expectedHostKey = normalizeHostKeyFingerprint(server.hostKeyFingerprint);
+  let hostKeyError: string | null = null;
 
   // ----------------------------------------------------------
   // ÉTAPE 1 : Connexion SSH
@@ -119,7 +139,10 @@ export async function testServerConnection(
 
     conn.once("error", (err) => {
       clearTimeout(timeout);
-      resolve({ ok: false, error: sanitizeSshError(err.message) });
+      resolve({
+        ok: false,
+        error: sanitizeSshError(hostKeyError ?? err.message),
+      });
     });
 
     try {
@@ -130,6 +153,24 @@ export async function testServerConnection(
         privateKey,
         passphrase,
         readyTimeout: 15_000,
+        hostVerifier: (key: Buffer) => {
+          const observed = computeHostKeyFingerprint(key);
+          result.hostKey.observedFingerprint = observed;
+          result.hostKey.matches = hostKeyMatches(observed, expectedHostKey);
+          result.hostKey.trusted = result.hostKey.matches;
+
+          // Aucune empreinte enregistrée : on accepte uniquement le temps
+          // du test pour afficher l'empreinte observée à l'utilisateur.
+          // Aucun déploiement n'est autorisé dans cet état.
+          if (!expectedHostKey) return true;
+
+          if (!result.hostKey.matches) {
+            hostKeyError =
+              `Clé d'hôte SSH inconnue ou modifiée (observée : ${observed}, ` +
+              `attendue : ${expectedHostKey}). Connexion refusée.`;
+          }
+          return result.hostKey.matches;
+        },
       });
     } catch (err) {
       clearTimeout(timeout);
@@ -147,6 +188,14 @@ export async function testServerConnection(
   }
 
   result.ssh = { ok: true, latencyMs };
+
+  // Sans référence de confiance, le handshake a seulement servi à afficher
+  // l'empreinte observée (bootstrap). On n'exécute aucune commande sur un
+  // hôte non authentifié : l'utilisateur doit d'abord enregistrer l'empreinte.
+  if (!expectedHostKey) {
+    conn.end();
+    return result;
+  }
 
   // ----------------------------------------------------------
   // ÉTAPE 2 : Vérification des outils

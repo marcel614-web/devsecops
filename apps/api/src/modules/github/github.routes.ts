@@ -25,6 +25,10 @@ githubRouter.delete("/installations/:id", githubController.revokeInstallation);
 
 // Repositories
 githubRouter.get("/repositories", githubController.listRepositories);
+githubRouter.get(
+  "/repositories/:id/branch-protection",
+  githubController.getBranchProtection,
+);
 githubRouter.get("/repositories/:id", githubController.getRepository);
 githubRouter.get("/repositories/:id/branches", githubController.listBranches);
 githubRouter.get("/repositories/:id/commits", githubController.listCommits);

@@ -16,8 +16,11 @@ import { syftStep } from "../steps/sbom/syft.step";
 import { trivyStep } from "../steps/image-scan/trivy.step";
 import { securityGateStep } from "../steps/security-gate/security-gate.step";
 import { deploymentStep } from "../steps/deployment/deployment.step";
+import { approvalStep } from "../steps/deployment/approval.step";
 import { promotionStep } from "../steps/deployment/promotion.step";
+import { postDeploymentStep } from "../steps/deployment/post-deploy.step";
 import { zapStep } from "../steps/dynamic-scan/zap.step";
+import { defectDojoExportStep } from "../steps/integrations/defectdojo-export.step";
 import { finalReportStep } from "../steps/report/final-report.step";
 
 export const execFileAsync = promisify(execFile);
@@ -54,6 +57,10 @@ export interface StepResult {
   blockDeployment?: boolean;
   /** L'étape a été interrompue par une demande d'annulation. */
   cancelled?: boolean;
+  /** L'étape a dépassé son délai maximal. */
+  timedOut?: boolean;
+  /** Le pipeline s'arrête en attente d'une décision humaine. */
+  waitingApproval?: boolean;
 }
 
 export type StepHandler = (
@@ -76,9 +83,12 @@ const HANDLERS: Record<string, StepHandler> = {
   IMAGE_SCAN: trivyStep,
   SECURITY_GATE: securityGateStep,
   DEPLOYMENT: deploymentStep,
+  POST_DEPLOY: postDeploymentStep,
+  APPROVAL: approvalStep,
   DAST: zapStep,
   PROMOTE: promotionStep,
   REPORT: finalReportStep,
+  DEFECTDOJO_EXPORT: defectDojoExportStep,
 };
 
 export async function executeStep(

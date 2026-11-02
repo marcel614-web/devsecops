@@ -83,11 +83,25 @@ export class SemgrepScanner implements SecurityScanner {
 
       if (stderr) logs.push(`[stderr] ${stderr.trim().slice(0, 2000)}`);
 
-      let parsed: SemgrepOutput = {};
+      let parsed: SemgrepOutput;
       try {
         parsed = JSON.parse(stdout) as SemgrepOutput;
-      } catch {
-        logs.push("[warn] Impossible de parser la sortie JSON de Semgrep");
+      } catch (parseErr) {
+        const message =
+          parseErr instanceof Error ? parseErr.message : String(parseErr);
+        logs.push(`[error] Impossible de parser la sortie JSON de Semgrep : ${message}`);
+        return {
+          scanner: this.name,
+          status: "FAILED",
+          outcome: "PARSE_ERROR",
+          durationMs: Date.now() - started,
+          exitCode: 0,
+          vulnerabilityCount: 0,
+          severityCounts: { critical: 0, high: 0, medium: 0, low: 0, info: 0 },
+          findings: [],
+          logs,
+          error: `Impossible de parser la sortie Semgrep : ${message}`,
+        };
       }
 
       const results = parsed.results ?? [];

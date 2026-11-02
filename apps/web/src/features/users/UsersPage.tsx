@@ -1,5 +1,5 @@
 import { useState } from "react";
-import { Users, Plus, Pencil, UserX, UserCheck, Shield, Mail, Search } from "lucide-react";
+import { Users, Plus, Pencil, UserX, UserCheck, Shield, Mail, Search, Trash2, Eye, EyeOff } from "lucide-react";
 import { PageHeader } from "@/components/layout/PageHeader";
 import { Card, CardContent } from "@/components/ui/Card";
 import { Button } from "@/components/ui/Button";
@@ -57,6 +57,8 @@ export function UsersPage() {
   const [formOpen, setFormOpen] = useState(false);
   const [form, setForm] = useState<FormState>(emptyForm);
   const [deactivateTarget, setDeactivateTarget] = useState<ApiUser | null>(null);
+  const [deleteTarget, setDeleteTarget] = useState<ApiUser | null>(null);
+  const [showPassword, setShowPassword] = useState(false);
 
   const createMutation = useMutation({
     mutationFn: (d: FormState) =>
@@ -72,7 +74,12 @@ export function UsersPage() {
 
   const updateMutation = useMutation({
     mutationFn: (d: FormState) =>
-      userService.update(d.id!, { name: d.name, email: d.email, role: d.role }),
+      userService.update(d.id!, {
+        name: d.name,
+        email: d.email,
+        role: d.role,
+        ...(d.password ? { password: d.password } : {}),
+      }),
     onSuccess: () => {
       toast.show("success", "Utilisateur mis à jour");
       qc.invalidateQueries({ queryKey: ["users"] });
@@ -88,6 +95,16 @@ export function UsersPage() {
       toast.show("success", "Utilisateur désactivé");
       qc.invalidateQueries({ queryKey: ["users"] });
       setDeactivateTarget(null);
+    },
+    onError: (err) => toast.show("error", getErrorMessage(err)),
+  });
+
+  const deleteMutation = useMutation({
+    mutationFn: (id: string) => userService.delete(id),
+    onSuccess: () => {
+      toast.show("success", "Utilisateur supprimé");
+      qc.invalidateQueries({ queryKey: ["users"] });
+      setDeleteTarget(null);
     },
     onError: (err) => toast.show("error", getErrorMessage(err)),
   });
@@ -264,6 +281,16 @@ export function UsersPage() {
                             <UserCheck className="w-4 h-4" />
                           </Button>
                         )}
+                        <Button
+                          size="sm"
+                          variant="ghost"
+                          className="text-red-600 hover:bg-red-500/10"
+                          title="Supprimer"
+                          onClick={() => setDeleteTarget(u)}
+                          disabled={u.id === currentUser?.id}
+                        >
+                          <Trash2 className="w-4 h-4" />
+                        </Button>
                       </div>
                     </td>
                   </tr>
@@ -295,15 +322,33 @@ export function UsersPage() {
                   onChange={(e) => setForm((f) => ({ ...f, email: e.target.value }))}
                   required
                 />
-                {!form.id && (
-                  <Input
-                    placeholder="Mot de passe"
-                    type="password"
-                    value={form.password}
-                    onChange={(e) => setForm((f) => ({ ...f, password: e.target.value }))}
-                    required
-                  />
-                )}
+                <div className="relative">
+                  {!form.id ? (
+                    <Input
+                      placeholder="Mot de passe"
+                      type={showPassword ? "text" : "password"}
+                      value={form.password}
+                      onChange={(e) => setForm((f) => ({ ...f, password: e.target.value }))}
+                      required
+                    />
+                  ) : (
+                    <Input
+                      placeholder="Nouveau mot de passe (laisser vide pour conserver)"
+                      type={showPassword ? "text" : "password"}
+                      value={form.password}
+                      onChange={(e) => setForm((f) => ({ ...f, password: e.target.value }))}
+                    />
+                  )}
+                  <Button
+                    type="button"
+                    variant="ghost"
+                    size="sm"
+                    className="absolute right-2 top-1/2 -translate-y-1/2 p-1"
+                    onClick={() => setShowPassword((p) => !p)}
+                  >
+                    {showPassword ? <EyeOff className="w-4 h-4" /> : <Eye className="w-4 h-4" />}
+                  </Button>
+                </div>
                 <Select
                   value={form.role}
                   onChange={(e) => setForm((f) => ({ ...f, role: e.target.value as "ADMIN" | "DEVELOPER" }))}
@@ -337,6 +382,24 @@ export function UsersPage() {
           deactivateMutation.mutate(deactivateTarget.id);
         }}
         onCancel={() => setDeactivateTarget(null)}
+      />
+
+      <ConfirmDialog
+        open={!!deleteTarget}
+        title="Supprimer cet utilisateur ?"
+        description={
+          deleteTarget
+            ? `Le compte ${deleteTarget.email} sera définitivement désactivé.`
+            : ""
+        }
+        confirmLabel="Supprimer"
+        danger
+        loading={deleteMutation.isPending}
+        onConfirm={() => {
+          if (!deleteTarget) return;
+          deleteMutation.mutate(deleteTarget.id);
+        }}
+        onCancel={() => setDeleteTarget(null)}
       />
     </div>
   );

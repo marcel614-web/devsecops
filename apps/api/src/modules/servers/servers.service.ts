@@ -34,6 +34,9 @@ const PUBLIC_SELECT = {
   sshPort: true,
   username: true,
   authType: true,
+  hostKeyFingerprint: true,
+  hostKeyAlgorithm: true,
+  hostKeyTrustedAt: true,
   status: true,
   lastCheckedAt: true,
   createdAt: true,
@@ -51,24 +54,37 @@ async function ensureServerAccess(
   if (!server) throw new NotFoundError("Serveur introuvable");
 
   if (actor.role === Role.ADMIN) return server;
-  if (server.ownerId !== actor.id) {
-    throw new ForbiddenError("Accès interdit à ce serveur");
-  }
-  return server;
+  if (server.ownerId === actor.id) return server;
+  const owner = await prisma.user.findUnique({
+    where: { id: server.ownerId },
+    select: { role: true },
+  });
+  if (owner?.role === Role.ADMIN) return server;
+  throw new ForbiddenError("Accès interdit à ce serveur");
 }
 
 export async function listServers(actor: ActorContext, query: ServerListQuery) {
   const where: Prisma.DeploymentServerWhereInput = {};
 
+  const conditions: Prisma.DeploymentServerWhereInput[] = [];
+
   if (actor.role !== Role.ADMIN) {
-    where.ownerId = actor.id;
+    conditions.push({
+      OR: [{ ownerId: actor.id }, { owner: { role: Role.ADMIN } }],
+    });
   }
 
   if (query.search) {
-    where.OR = [
-      { name: { contains: query.search, mode: "insensitive" } },
-      { host: { contains: query.search, mode: "insensitive" } },
-    ];
+    conditions.push({
+      OR: [
+        { name: { contains: query.search, mode: "insensitive" } },
+        { host: { contains: query.search, mode: "insensitive" } },
+      ],
+    });
+  }
+
+  if (conditions.length > 0) {
+    where.AND = conditions;
   }
 
   const skip = (query.page - 1) * query.pageSize;
@@ -151,6 +167,9 @@ export async function createServer(actor: ActorContext, input: CreateServerInput
       authType: input.authType,
       encryptedPrivateKey,
       encryptedPassphrase,
+      hostKeyFingerprint: input.hostKeyFingerprint ?? null,
+      hostKeyAlgorithm: input.hostKeyAlgorithm ?? null,
+      hostKeyTrustedAt: input.hostKeyFingerprint ? new Date() : null,
       status: "unknown",
     },
     select: PUBLIC_SELECT,
@@ -168,6 +187,7 @@ export async function createServer(actor: ActorContext, input: CreateServerInput
         username: server.username,
         hasPrivateKey: !!encryptedPrivateKey,
         keyFingerprint: input.privateKey ? fingerprint(input.privateKey) : null,
+        hostKeyFingerprint: input.hostKeyFingerprint ?? null,
       },
     },
   });
@@ -206,6 +226,11 @@ export async function updateServer(
   if (input.passphrase !== undefined) {
     data.encryptedPassphrase = encryptString(input.passphrase);
   }
+  if (input.hostKeyFingerprint !== undefined) {
+    data.hostKeyFingerprint = input.hostKeyFingerprint;
+    data.hostKeyAlgorithm = input.hostKeyAlgorithm ?? null;
+    data.hostKeyTrustedAt = new Date();
+  }
 
   // Toute modification des paramètres de connexion invalide le dernier test.
   const connectionChanged =
@@ -217,6 +242,16 @@ export async function updateServer(
   if (connectionChanged) {
     data.status = "unknown";
     data.lastCheckedAt = null;
+  }
+
+  // Une empreinte est liée à un hôte et un port précis : on ne la conserve
+  // jamais après un changement de destination, même si le client fournit une
+  // empreinte dans la même requête. L'utilisateur doit repasser par l'action
+  // explicite de confiance après avoir vérifié la nouvelle clé.
+  if (input.host !== undefined || input.sshPort !== undefined) {
+    data.hostKeyFingerprint = null;
+    data.hostKeyAlgorithm = null;
+    data.hostKeyTrustedAt = null;
   }
 
   const updated = await prisma.deploymentServer.update({
@@ -235,6 +270,7 @@ export async function updateServer(
         fields: Object.keys(input),
         connectionReset: connectionChanged,
         newKeyFingerprint: input.privateKey ? fingerprint(input.privateKey) : null,
+        hostKeyFingerprint: input.hostKeyFingerprint ?? null,
       },
     },
   });
@@ -319,6 +355,7 @@ export async function testServer(
       username: true,
       encryptedPrivateKey: true,
       encryptedPassphrase: true,
+      hostKeyFingerprint: true,
     },
   });
   if (!server) throw new NotFoundError("Serveur introuvable");
@@ -329,6 +366,7 @@ export async function testServer(
     username: server.username,
     encryptedPrivateKey: server.encryptedPrivateKey,
     encryptedPassphrase: server.encryptedPassphrase,
+    hostKeyFingerprint: server.hostKeyFingerprint,
   });
 
   // Statut global : "ok" seulement si SSH + Docker OK
@@ -355,6 +393,8 @@ export async function testServer(
         docker: result.docker.ok,
         dockerCompose: result.dockerCompose.ok,
         nginx: result.nginx.ok,
+        hostKeyObserved: result.hostKey.observedFingerprint,
+        hostKeyTrusted: result.hostKey.trusted,
       },
     },
   });
@@ -405,9 +445,50 @@ export async function getServerResources(
       username: true,
       encryptedPrivateKey: true,
       encryptedPassphrase: true,
+      hostKeyFingerprint: true,
     },
   });
   if (!server) throw new NotFoundError("Serveur introuvable");
 
   return collectServerResources(server);
+}
+
+/**
+ * Enregistre explicitement la référence de confiance de la clé d'hôte.
+ * L'empreinte doit provenir d'un test affiché à l'utilisateur et confirmé
+ * hors bande ; aucun déploiement n'utilise une connexion sans référence.
+ */
+export async function trustServerHostKey(
+  actor: ActorContext,
+  serverId: string,
+  input: { fingerprint: string; algorithm?: string },
+) {
+  await ensureServerAccess(actor, serverId);
+
+  const updated = await prisma.deploymentServer.update({
+    where: { id: serverId },
+    data: {
+      hostKeyFingerprint: input.fingerprint,
+      hostKeyAlgorithm: input.algorithm ?? null,
+      hostKeyTrustedAt: new Date(),
+      status: "unknown",
+      lastCheckedAt: null,
+    },
+    select: PUBLIC_SELECT,
+  });
+
+  await prisma.auditLog.create({
+    data: {
+      userId: actor.id,
+      action: "SERVER_HOST_KEY_TRUSTED",
+      targetType: "DeploymentServer",
+      targetId: serverId,
+      metadataJson: {
+        hostKeyFingerprint: input.fingerprint,
+        hostKeyAlgorithm: input.algorithm ?? null,
+      },
+    },
+  });
+
+  return updated;
 }

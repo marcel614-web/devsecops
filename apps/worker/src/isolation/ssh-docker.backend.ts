@@ -167,6 +167,7 @@ export class SshDockerSandboxBackend implements SandboxBackend {
         username: this.sshConfig.username,
         privateKey: key,
         passphrase: this.sshConfig.passphrase,
+        hostKeyFingerprint: this.sshConfig.hostKeyFingerprint,
         readyTimeoutMs: this.sshConfig.readyTimeoutMs,
       });
       return ssh;

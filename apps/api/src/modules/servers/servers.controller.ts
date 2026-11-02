@@ -5,6 +5,7 @@ import * as serversService from "./servers.service";
 import type {
   CreateServerInput,
   ServerListQuery,
+  TrustHostKeyInput,
   UpdateServerInput,
 } from "./servers.schema";
 
@@ -104,6 +105,24 @@ export async function testServer(
     const actor = actorFrom(req);
     const response = await serversService.testServer(actor, req.params.id);
     res.json(response);
+  } catch (err) {
+    next(err);
+  }
+}
+
+export async function trustHostKey(
+  req: Request,
+  res: Response,
+  next: NextFunction,
+): Promise<void> {
+  try {
+    const actor = actorFrom(req);
+    const server = await serversService.trustServerHostKey(
+      actor,
+      req.params.id,
+      req.body as TrustHostKeyInput,
+    );
+    res.json({ server });
   } catch (err) {
     next(err);
   }

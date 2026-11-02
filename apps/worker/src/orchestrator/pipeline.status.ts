@@ -8,11 +8,22 @@ export async function markPipelineRunning(pipelineId: string): Promise<void> {
     data: {
       status: PipelineStatus.RUNNING,
       startedAt: new Date(),
+      // Une reprise (notamment après approbation) ne doit pas conserver la
+      // date de fin ni la durée de l'exécution précédente.
+      finishedAt: null,
+      durationMs: null,
     },
   });
 }
 
-type FinalStatus = "SUCCESS" | "FAILED" | "SECURITY_BLOCKED" | "CANCELLED";
+type FinalStatus =
+  | "SUCCESS"
+  | "SUCCESS_WITH_WARNINGS"
+  | "FAILED"
+  | "SECURITY_BLOCKED"
+  | "CANCELLED"
+  | "TIMED_OUT"
+  | "WAITING_APPROVAL";
 
 export async function markPipelineFinished(
   pipelineId: string,

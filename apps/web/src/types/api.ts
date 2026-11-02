@@ -11,14 +11,55 @@ export type PipelineStatus =
   | "QUEUED"
   | "RUNNING"
   | "SUCCESS"
+  | "SUCCESS_WITH_WARNINGS"
   | "FAILED"
   | "SECURITY_BLOCKED"
-  | "CANCELLED";
-export type StepStatus = PipelineStatus;
+  | "CANCELLED"
+  | "TIMED_OUT"
+  | "WAITING_APPROVAL";
+export type StepStatus =
+  | "QUEUED"
+  | "RUNNING"
+  | "SUCCESS"
+  | "SUCCESS_WITH_WARNINGS"
+  | "FAILED"
+  | "SECURITY_BLOCKED"
+  | "CANCELLED"
+  | "SKIPPED"
+  | "TIMED_OUT"
+  | "WAITING_APPROVAL";
 export type Severity = "CRITICAL" | "HIGH" | "MEDIUM" | "LOW" | "INFO";
 export type ScanType = "SECRET" | "SAST" | "SCA" | "IMAGE" | "IAC" | "DAST";
+export type ScanOutcome =
+  | "SUCCESS_NO_FINDINGS"
+  | "SUCCESS_WITH_FINDINGS"
+  | "INTERRUPTED"
+  | "SCANNER_UNAVAILABLE"
+  | "PARSE_ERROR"
+  | "NOT_APPLICABLE"
+  | "DISABLED"
+  | "REQUIRED_NOT_RUN";
 export type SecurityGateStatus = "PASSED" | "WARNING" | "FAILED" | "BLOCKED";
 export type SecurityGateMode = "WARNING" | "ENFORCEMENT";
+export type SecurityGateCategory =
+  | "SECRET"
+  | "SAST"
+  | "SCA"
+  | "IMAGE"
+  | "IAC"
+  | "DAST";
+export type SecurityGateExceptionStatus =
+  | "PENDING"
+  | "APPROVED"
+  | "REJECTED"
+  | "EXPIRED"
+  | "REVOKED";
+export type SecurityGateExceptionMatchType =
+  | "ANY"
+  | "FINGERPRINT"
+  | "CVE"
+  | "RULE"
+  | "REFERENCE";
 export type VulnerabilityStatus =
   | "OPEN"
   | "CONFIRMED"
@@ -126,21 +167,86 @@ export interface ProjectConfiguration {
   stagingPort: number | null;
   productionPort: number | null;
   autoRollback: boolean;
+  requireProductionApproval: boolean;
+  mandatoryControls: SecurityGateCategory[];
+  requireExceptionApproval: boolean;
+  ansibleLintEnabled: boolean;
+  ansibleSyntaxCheckEnabled: boolean;
+  ansibleTimeoutMs: number;
+  ansibleMaxPlaybooks: number;
+  postDeployChecksEnabled: boolean;
+  healthcheckPath: string;
+  healthcheckTimeoutMs: number;
+  rescanEnabled: boolean;
+  rescanIntervalHours: number;
+  rescanControls: string[];
+  rescanTimeoutMs: number;
+  rescanMaxRunsPerDay: number;
+  rescanNextRunAt: string | null;
+  rescanLastRunAt: string | null;
+  rescanRemediationEnabled: boolean;
+  policyVersion: number;
+  policyUpdatedAt: string;
+  policyUpdatedById: string | null;
   createdAt: string;
   updatedAt: string;
+}
+
+export interface SecurityGateThresholds {
+  critical: number;
+  high: number;
+  medium: number;
+  low: number;
+}
+
+export interface SecurityGateCategoryPolicy {
+  enabled: boolean;
+  scannerEnabled: boolean;
+  mandatory: boolean;
+}
+
+export interface SecurityPolicySnapshot {
+  schemaVersion: number;
+  version: number;
+  mode: SecurityGateMode;
+  enforcementAt: string | null;
+  thresholds: SecurityGateThresholds;
+  categories: Record<SecurityGateCategory, SecurityGateCategoryPolicy>;
+  requireExceptionApproval: boolean;
+}
+
+export interface SecurityGateExceptionEvent {
+  id: string;
+  exceptionId: string;
+  actorId: string | null;
+  action: string;
+  fromStatus: SecurityGateExceptionStatus | null;
+  toStatus: SecurityGateExceptionStatus | null;
+  metadataJson: Record<string, unknown> | null;
+  createdAt: string;
+  actor?: { id: string; name: string; email: string } | null;
 }
 
 export interface SecurityGateException {
   id: string;
   projectId: string;
-  category: "ALL" | "SECRET" | "SAST" | "SCA" | "IMAGE" | "IAC" | "DAST";
+  category: "ALL" | SecurityGateCategory;
   severity: Severity | null;
   fingerprint: string | null;
+  matchType: SecurityGateExceptionMatchType;
   reason: string;
+  status: SecurityGateExceptionStatus;
   createdById: string | null;
+  approvedById: string | null;
+  approvedAt: string | null;
+  rejectedAt: string | null;
+  revokedAt: string | null;
   expiresAt: string | null;
   createdAt: string;
+  updatedAt: string;
   createdBy?: { id: string; name: string; email: string } | null;
+  approvedBy?: { id: string; name: string; email: string } | null;
+  events?: SecurityGateExceptionEvent[];
 }
 
 /**
@@ -204,6 +310,23 @@ export interface PipelineStep {
   error: string | null;
 }
 
+export interface SecurityGateControl {
+  category: SecurityGateCategory;
+  required: boolean;
+  mandatory: boolean;
+  scannerEnabled: boolean;
+  state: ScanOutcome;
+  reason: string | null;
+}
+
+export interface SecurityGateFailure {
+  category: string;
+  step: string;
+  state: ScanOutcome;
+  reason: string;
+  mandatory?: boolean;
+}
+
 export interface SecurityGateResult {
   id: string;
   pipelineId: string;
@@ -216,6 +339,11 @@ export interface SecurityGateResult {
     low: number;
     mode?: SecurityGateMode;
     categories?: Record<string, boolean>;
+    policyVersion?: number;
+    policyHash?: string;
+    gateKey?: string;
+    thresholds?: SecurityGateThresholds;
+    controls?: SecurityGateControl[];
     rawCounts?: Record<string, number>;
   };
   critical: number;
@@ -224,18 +352,55 @@ export interface SecurityGateResult {
   low: number;
   blocked: boolean;
   reason: string | null;
-  technicalFailures: Array<{
-    category: string;
-    step: string;
-    reason: string;
-  }> | null;
-  exceptionsApplied: Array<{
-    id: string;
-    category: string;
-    severity: string | null;
-    reason: string;
-    expiresAt: string | null;
-  }> | null;
+  technicalFailures: SecurityGateFailure[] | null;
+  /** Les anciennes décisions peuvent contenir un objet { applied, ignored }. */
+  exceptionsApplied:
+    | SecurityGateExceptionApplication[]
+    | {
+        applied?: SecurityGateExceptionApplication[];
+        ignored?: unknown[];
+      }
+    | null;
+  createdAt: string;
+}
+
+export interface SecurityGateExceptionApplication {
+  id: string;
+  category: string;
+  severity: string | null;
+  fingerprint: string | null;
+  matchType?: string;
+  reason: string;
+  expiresAt: string | null;
+}
+
+export interface PipelineGateEvaluation {
+  id: string;
+  pipelineId: string;
+  policySnapshotId: string | null;
+  gateKey: "PRE_DEPLOY" | "POST_DAST" | string;
+  status: SecurityGateStatus;
+  mode: SecurityGateMode;
+  blocked: boolean;
+  thresholdsJson: SecurityGateThresholds;
+  controlsJson: SecurityGateControl[] | Record<string, unknown>;
+  exceptionsJson: Record<string, unknown> | null;
+  technicalFailures: SecurityGateFailure[] | null;
+  countsJson: {
+    retained?: Record<string, number>;
+    raw?: Record<string, number>;
+  };
+  reason: string | null;
+  evaluatedAt: string;
+}
+
+export interface PipelineSecurityPolicy {
+  id: string;
+  pipelineId: string;
+  projectId: string;
+  version: number;
+  policyHash: string;
+  policyJson: SecurityPolicySnapshot;
   createdAt: string;
 }
 
@@ -244,11 +409,50 @@ export interface DockerImage {
   pipelineId: string;
   imageTag: string;
   imageId: string | null;
+  /** Digest immuable de l'artefact promu (sha256:...). */
+  imageDigest: string | null;
+  digestAlgorithm: string;
+  digestVerifiedAt: string | null;
   sizeBytes: string | null; // BigInt sérialisé en string par le backend
   registry: string | null;
   signed: boolean;
   signatureRef: string | null;
   createdAt: string;
+}
+
+export type DeploymentApprovalStatus =
+  | "PENDING"
+  | "APPROVED"
+  | "REJECTED"
+  | "EXPIRED"
+  | "REVOKED";
+
+export interface DeploymentApproval {
+  id: string;
+  pipelineId: string;
+  projectId: string;
+  deploymentId: string | null;
+  environment: string;
+  commitSha: string;
+  imageTag: string;
+  imageDigest: string;
+  status: DeploymentApprovalStatus;
+  requestedAt: string;
+  decidedById: string | null;
+  decidedAt: string | null;
+  comment: string | null;
+  expiresAt: string | null;
+  createdAt: string;
+  project?: { id: string; name: string; ownerId?: string };
+  pipeline?: {
+    id: string;
+    commitSha: string;
+    branch: string;
+    status: PipelineStatus;
+    pullRequestNumber?: number | null;
+  };
+  decidedBy?: { id: string; name: string; email: string } | null;
+  requestedBy?: { id: string; name: string; email: string } | null;
 }
 
 export interface Deployment {
@@ -259,6 +463,7 @@ export interface Deployment {
   status: DeploymentStatus;
   environment: string;
   imageTag: string | null;
+  imageDigest: string | null;
   releaseVersion: string | null;
   url: string | null;
   stagingUrl: string | null;
@@ -266,11 +471,198 @@ export interface Deployment {
   productionUrl: string | null;
   productionStatus: DeploymentStatus | null;
   rollbackImageTag: string | null;
+  rollbackImageDigest: string | null;
+  previousDeploymentId: string | null;
+  approval?: DeploymentApproval | null;
+  verifications?: DeploymentVerification[];
   startedAt: string | null;
   finishedAt: string | null;
   durationMs: number | null;
   error: string | null;
   createdAt: string;
+}
+
+export type DeploymentCheckStatus = "PASSED" | "FAILED" | "SKIPPED";
+export type DeploymentVerificationStatus = "PASSED" | "FAILED" | "SKIPPED";
+
+export interface DeploymentCheck {
+  key: string;
+  label: string;
+  status: DeploymentCheckStatus;
+  required: boolean;
+  detail: string;
+  expected?: string;
+  observed?: string;
+}
+
+export interface DeploymentVerification {
+  id: string;
+  projectId?: string;
+  deploymentId: string;
+  pipelineId: string;
+  environment: string;
+  status: DeploymentVerificationStatus;
+  imageTag: string | null;
+  imageDigest: string | null;
+  checksJson: DeploymentCheck[];
+  summaryJson: {
+    passed: number;
+    failed: number;
+    skipped: number;
+    required: number;
+  } | null;
+  error: string | null;
+  startedAt: string;
+  finishedAt: string | null;
+  durationMs: number | null;
+  createdAt: string;
+  deployment?: Deployment;
+  pipeline?: {
+    id: string;
+    commitSha: string;
+    branch: string;
+    status: PipelineStatus;
+  };
+}
+
+// ============================================================
+// RESCAN PÉRIODIQUE
+// ============================================================
+
+export type RescanStatus =
+  | "QUEUED"
+  | "RUNNING"
+  | "SUCCESS"
+  | "FAILED"
+  | "TIMED_OUT"
+  | "CANCELLED";
+
+export interface RescanFinding {
+  fingerprint: string;
+  severity: Severity;
+  tool: string;
+  packageName: string | null;
+  filePath?: string | null;
+  reference: string | null;
+  description: string | null;
+  status?: string | null;
+}
+
+export interface RescanComparison {
+  baselineAvailable: boolean;
+  baselineFingerprints: number;
+  currentFingerprints: number;
+  newFindings: RescanFinding[];
+  resolvedFindings: RescanFinding[];
+  severityChanges: Array<{
+    fingerprint: string;
+    tool: string;
+    packageName: string | null;
+    reference: string | null;
+    filePath: string | null;
+    previousSeverity: Severity;
+    currentSeverity: Severity;
+    direction: "INCREASED" | "DECREASED";
+  }>;
+  counts: {
+    new: number;
+    resolved: number;
+    severityIncreased: number;
+    severityDecreased: number;
+    newBySeverity: Record<Severity, number>;
+    increasedToHighOrCritical: number;
+  };
+  riskFound: boolean;
+}
+
+export interface RescanSummary {
+  scanId: string;
+  scanner: string;
+  scannerVersion: string | null;
+  vulnerabilityCount: number;
+  severityCounts: {
+    critical: number;
+    high: number;
+    medium: number;
+    low: number;
+    info: number;
+  };
+  controls: string[];
+  baseline: {
+    source: string | null;
+    scanIds: string[];
+    available: boolean;
+    findings: number;
+  };
+  currentFindings: number;
+  riskFound: boolean;
+  evolution: RescanComparison["counts"];
+}
+
+export interface RescanScan {
+  id: string;
+  scanner: string;
+  scannerVersion?: string | null;
+  type?: ScanType;
+  status: StepStatus;
+  outcome?: ScanOutcome | null;
+  criticalCount: number;
+  highCount: number;
+  mediumCount: number;
+  lowCount: number;
+  infoCount: number;
+  durationMs?: number | null;
+  exitCode?: number | null;
+  startedAt?: string | null;
+  finishedAt?: string | null;
+}
+
+export interface RescanRun {
+  id: string;
+  projectId: string;
+  deploymentId: string;
+  pipelineId: string | null;
+  environment: string;
+  commitSha: string;
+  branch: string;
+  imageTag: string | null;
+  imageDigest: string;
+  trigger: "SCHEDULED" | "MANUAL";
+  status: RescanStatus;
+  controls: string[];
+  timeoutMs: number;
+  scannerVersion?: string | null;
+  summaryJson: RescanSummary | null;
+  comparisonJson: RescanComparison | null;
+  error: string | null;
+  queuedAt: string;
+  startedAt: string | null;
+  finishedAt: string | null;
+  durationMs: number | null;
+  createdAt: string;
+  scans: RescanScan[];
+}
+
+export interface RescanDetail extends RescanRun {
+  server?: {
+    id: string;
+    name: string;
+    host: string;
+  };
+  deployment?: {
+    id: string;
+    environment: string;
+    imageTag: string | null;
+    imageDigest: string | null;
+    finishedAt: string | null;
+  };
+  pipeline?: {
+    id: string;
+    commitSha: string;
+    branch: string;
+    status: PipelineStatus;
+    createdAt: string;
+  } | null;
 }
 
 export interface SbomSummary {
@@ -305,8 +697,11 @@ export interface Sbom {
 export interface PipelineDetail extends Pipeline {
   steps: PipelineStep[];
   gateResult: SecurityGateResult | null;
+  gateEvaluations?: PipelineGateEvaluation[];
+  securityPolicy?: PipelineSecurityPolicy | null;
   dockerImage: DockerImage | null;
   deployment: Deployment | null;
+  approval?: DeploymentApproval | null;
   sbom: Sbom | null;
 }
 
@@ -337,8 +732,10 @@ export interface PipelineLog {
 export interface SecurityScan {
   id: string;
   scanner: string;
+  scannerVersion?: string | null;
   type: ScanType;
   status: StepStatus;
+  outcome: ScanOutcome | null;
   criticalCount: number;
   highCount: number;
   mediumCount: number;
@@ -427,6 +824,10 @@ export interface DeploymentServer {
   sshPort: number;
   username: string;
   authType: ServerAuthType;
+  /** Référence de confiance de la clé d'hôte (SHA256:<base64 sans padding>). */
+  hostKeyFingerprint: string | null;
+  hostKeyAlgorithm: string | null;
+  hostKeyTrustedAt: string | null;
   status: string;
   lastCheckedAt: string | null;
   createdAt: string;
@@ -528,8 +929,23 @@ export interface SecurityReportSummary {
       high: number;
       medium: number;
       low: number;
+      policyVersion?: number;
+      policyHash?: string;
     };
   } | null;
+  securityPolicy?: {
+    version: number;
+    policyHash: string;
+    mode: SecurityGateMode;
+    enforcementAt: string | null;
+  } | null;
+  gates?: Array<{
+    gateKey: string;
+    status: SecurityGateStatus;
+    mode: SecurityGateMode;
+    blocked: boolean;
+    reason: string | null;
+  }>;
   dockerImage: {
     imageTag: string;
     imageId: string | null;

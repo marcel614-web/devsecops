@@ -8,6 +8,9 @@ import {
   MinusCircle,
   ChevronRight,
   AlertCircle,
+  AlertTriangle,
+  SkipForward,
+  TimerReset,
 } from "lucide-react";
 import { cn, formatDuration } from "@/lib/utils";
 import type { StepStatus, PipelineStep } from "@/types/api";
@@ -31,6 +34,11 @@ const STATUS_CONFIG: Record<
     className: "text-emerald-500",
     label: "Réussi",
   },
+  SUCCESS_WITH_WARNINGS: {
+    Icon: AlertTriangle,
+    className: "text-amber-500",
+    label: "Réussi avec avertissements",
+  },
   FAILED: {
     Icon: X,
     className: "text-red-500",
@@ -44,7 +52,22 @@ const STATUS_CONFIG: Record<
   CANCELLED: {
     Icon: MinusCircle,
     className: "text-slate-500",
-    label: "Non exécuté",
+    label: "Annulé",
+  },
+  SKIPPED: {
+    Icon: SkipForward,
+    className: "text-slate-500",
+    label: "Sauté",
+  },
+  TIMED_OUT: {
+    Icon: TimerReset,
+    className: "text-orange-500",
+    label: "Délai dépassé",
+  },
+  WAITING_APPROVAL: {
+    Icon: Clock,
+    className: "text-sky-500",
+    label: "Attente d'approbation",
   },
 };
 
@@ -62,7 +85,12 @@ export function PipelineStage({ step, selected, onSelect }: Props) {
   };
   const Icon = cfg.Icon;
 
-  const hasError = !!step.error && (step.status === "FAILED" || step.status === "SECURITY_BLOCKED");
+  const hasError =
+    !!step.error &&
+    (step.status === "FAILED" ||
+      step.status === "SECURITY_BLOCKED" ||
+      step.status === "TIMED_OUT");
+  const hasWarning = step.status === "SUCCESS_WITH_WARNINGS";
 
   return (
     <button
@@ -74,7 +102,9 @@ export function PipelineStage({ step, selected, onSelect }: Props) {
           ? "bg-primary-600/15 border border-primary-500/40"
           : hasError
             ? "border border-red-500/30 bg-red-500/5 hover:bg-red-500/10"
-            : "border border-transparent hover:bg-slate-100 dark:hover:bg-slate-700/40",
+            : hasWarning
+              ? "border border-amber-500/30 bg-amber-500/5 hover:bg-amber-500/10"
+              : "border border-transparent hover:bg-slate-100 dark:hover:bg-slate-700/40",
       )}
     >
       <div className="flex items-center justify-center w-6 h-6 shrink-0">

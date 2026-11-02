@@ -49,9 +49,12 @@ export async function getDashboardSummary(actor: ActorContext) {
     QUEUED: 0,
     RUNNING: 0,
     SUCCESS: 0,
+    SUCCESS_WITH_WARNINGS: 0,
     FAILED: 0,
     SECURITY_BLOCKED: 0,
     CANCELLED: 0,
+    TIMED_OUT: 0,
+    WAITING_APPROVAL: 0,
   };
   for (const g of pipelineStatusGroups) {
     pipelinesByStatus[g.status] = g._count._all;

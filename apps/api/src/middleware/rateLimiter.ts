@@ -8,7 +8,7 @@ import {
   RATE_LIMIT_WEBHOOK_MAX,
   RATE_LIMIT_WEBHOOK_WINDOW_MS,
 } from "../config/constants";
-import { isTest } from "../config/env";
+import { isDev, isTest } from "../config/env";
 
 /**
  * En test, les limiteurs sont désactivés par défaut pour éviter les
@@ -22,6 +22,9 @@ export function setRateLimitsEnabledInTest(enabled: boolean): void {
 }
 
 export function areRateLimitsEnabled(): boolean {
+  // En développement, on désactive les rate limits pour éviter les blocages
+  // lors des tests de connexion (ex: "Trop de tentatives d'authentification").
+  if (isDev) return false;
   return !isTest || enabledInTest;
 }
 

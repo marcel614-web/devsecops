@@ -21,7 +21,9 @@ const FILTERS = [
   { key: "", label: "Tous" },
   { key: "RUNNING", label: "En cours" },
   { key: "SUCCESS", label: "Réussis" },
+  { key: "SUCCESS_WITH_WARNINGS", label: "Avec avertissements" },
   { key: "FAILED", label: "Échoués" },
+  { key: "TIMED_OUT", label: "Délais dépassés" },
   { key: "SECURITY_BLOCKED", label: "Bloqués" },
 ];
 
@@ -268,7 +270,10 @@ export function PipelinesPage() {
                                 <PlayCircle className={cn("h-4 w-4", resumeMutation.isPending && resumeMutation.variables?.pipelineId === p.id && "animate-spin")} />
                               </button>
                             )}
-                            {(p.status === "FAILED" || p.status === "SECURITY_BLOCKED") && (
+                            {(p.status === "FAILED" ||
+                              p.status === "SECURITY_BLOCKED" ||
+                              p.status === "TIMED_OUT" ||
+                              p.status === "SUCCESS_WITH_WARNINGS") && (
                               <button
                                 type="button"
                                 className="rounded-md p-1.5 text-muted hover:bg-primary-500/10 hover:text-primary-500 focus-visible:ring-2 focus-visible:ring-primary-500 disabled:cursor-not-allowed disabled:opacity-50"

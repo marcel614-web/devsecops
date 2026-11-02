@@ -244,6 +244,7 @@ export async function cleanupPipelineArtifacts(
       username: server.username,
       privateKey,
       passphrase,
+      hostKeyFingerprint: server.hostKeyFingerprint,
     });
 
     // ------------------------------------------------------------

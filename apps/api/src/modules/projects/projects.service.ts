@@ -1,5 +1,5 @@
 // apps/api/src/modules/projects/projects.service.ts
-import { Prisma, Role } from "@prisma/client";
+import { Prisma, Role, SecurityGateExceptionStatus } from "@prisma/client";
 import { prisma } from "../../utils/prisma";
 import {
   ConflictError,
@@ -125,7 +125,15 @@ export async function createProject(actor: ActorContext, input: CreateProjectInp
       select: { id: true, ownerId: true },
     });
     if (!server) throw new NotFoundError("Serveur de déploiement introuvable");
-    if (server.ownerId !== actor.id) {
+    const owner = await prisma.user.findUnique({
+      where: { id: server.ownerId },
+      select: { role: true },
+    });
+    const allowed =
+      actor.role === Role.ADMIN ||
+      server.ownerId === actor.id ||
+      owner?.role === Role.ADMIN;
+    if (!allowed) {
       throw new ForbiddenError("Ce serveur ne vous appartient pas");
     }
   }
@@ -208,7 +216,15 @@ export async function updateProject(
       select: { id: true, ownerId: true },
     });
     if (!server) throw new NotFoundError("Serveur de déploiement introuvable");
-    if (server.ownerId !== actor.id) {
+    const owner = await prisma.user.findUnique({
+      where: { id: server.ownerId },
+      select: { role: true },
+    });
+    const allowed =
+      actor.role === Role.ADMIN ||
+      server.ownerId === actor.id ||
+      owner?.role === Role.ADMIN;
+    if (!allowed) {
       throw new ForbiddenError("Ce serveur ne vous appartient pas");
     }
   }
@@ -274,6 +290,101 @@ export async function updateProjectConfig(
 ) {
   await ensureProjectAccess(actor, projectId);
 
+  const current = await prisma.projectConfiguration.findUnique({
+    where: { projectId },
+  });
+  if (!current) throw new NotFoundError("Configuration introuvable");
+
+  // ------------------------------------------------
+  // Protection de la politique de sécurité.
+  // Un DEVELOPER ne peut pas modifier les règles
+  // protégées ni désactiver un contrôle obligatoire.
+  // ------------------------------------------------
+  if (actor.role !== Role.ADMIN) {
+    const forbidden =
+      input.mandatoryControls !== undefined ||
+      input.requireExceptionApproval !== undefined ||
+      input.gateMode !== undefined ||
+      input.gateEnforcementAt !== undefined ||
+      input.securityGateCritical !== undefined ||
+      input.securityGateHigh !== undefined ||
+      input.securityGateMedium !== undefined ||
+      input.securityGateLow !== undefined ||
+      input.gateSecretsEnabled !== undefined ||
+      input.gateSastEnabled !== undefined ||
+      input.gateScaEnabled !== undefined ||
+      input.gateIacEnabled !== undefined ||
+      input.gateImageEnabled !== undefined ||
+      input.gateDastEnabled !== undefined ||
+      input.requireProductionApproval !== undefined ||
+      // Changer la stratégie directe contournerait l'approbation et le DAST
+      // préalable : ce choix reste protégé comme la politique de sécurité.
+      input.deploymentStrategy !== undefined;
+    if (forbidden) {
+      throw new ForbiddenError(
+        "La politique de sécurité est protégée : seul un ADMIN peut la modifier",
+      );
+    }
+
+    const mandatory = new Set(current.mandatoryControls);
+    const disabledMandatory =
+      (mandatory.has("SECRET") && input.gitleaksEnabled === false) ||
+      (mandatory.has("SAST") && input.semgrepEnabled === false) ||
+      (mandatory.has("SCA") && input.scaEnabled === false) ||
+      (mandatory.has("IAC") && input.iacEnabled === false) ||
+      (mandatory.has("IMAGE") && input.trivyEnabled === false) ||
+      (mandatory.has("DAST") && input.zapEnabled === false);
+    if (disabledMandatory) {
+      throw new ForbiddenError(
+        "Ce scanner est un contrôle obligatoire et ne peut pas être désactivé",
+      );
+    }
+  }
+
+  const policyChangingFields = [
+    "gitleaksEnabled",
+    "semgrepEnabled",
+    "scaEnabled",
+    "iacEnabled",
+    "trivyEnabled",
+    "syftEnabled",
+    "zapEnabled",
+    "cosignEnabled",
+    "securityGateCritical",
+    "securityGateHigh",
+    "securityGateMedium",
+    "securityGateLow",
+    "gateMode",
+    "gateEnforcementAt",
+    "gateSecretsEnabled",
+    "gateSastEnabled",
+    "gateScaEnabled",
+    "gateIacEnabled",
+    "gateImageEnabled",
+    "gateDastEnabled",
+    "mandatoryControls",
+    "requireExceptionApproval",
+    "ansibleLintEnabled",
+    "ansibleSyntaxCheckEnabled",
+  ] as const;
+  const policyChanged = policyChangingFields.some(
+    (key) => input[key] !== undefined,
+  );
+
+  // La planification est dérivée de la configuration : activer un rescan
+  // fixe la première échéance après un intervalle complet (aucune surprise
+  // immédiate), le désactiver efface l'échéance. Aucun second scheduler.
+  const now = new Date();
+  const intervalHours = input.rescanIntervalHours ?? current.rescanIntervalHours;
+  let rescanNextRunAt: Date | null | undefined;
+  if (input.rescanEnabled === false) {
+    rescanNextRunAt = null;
+  } else if (input.rescanEnabled === true) {
+    rescanNextRunAt = new Date(now.getTime() + intervalHours * 3_600_000);
+  } else if (current.rescanEnabled && input.rescanIntervalHours !== undefined) {
+    rescanNextRunAt = new Date(now.getTime() + intervalHours * 3_600_000);
+  }
+
   const updated = await prisma.projectConfiguration.update({
     where: { projectId },
     data: {
@@ -318,6 +429,9 @@ export async function updateProjectConfig(
       ...(input.autoRollback !== undefined
         ? { autoRollback: input.autoRollback }
         : {}),
+      ...(input.requireProductionApproval !== undefined
+        ? { requireProductionApproval: input.requireProductionApproval }
+        : {}),
       ...(input.securityGateCritical !== undefined
         ? { securityGateCritical: input.securityGateCritical }
         : {}),
@@ -326,6 +440,59 @@ export async function updateProjectConfig(
         ? { securityGateMedium: input.securityGateMedium }
         : {}),
       ...(input.securityGateLow !== undefined ? { securityGateLow: input.securityGateLow } : {}),
+      ...(input.mandatoryControls !== undefined
+        ? { mandatoryControls: input.mandatoryControls }
+        : {}),
+      ...(input.requireExceptionApproval !== undefined
+        ? { requireExceptionApproval: input.requireExceptionApproval }
+        : {}),
+      ...(input.ansibleLintEnabled !== undefined
+        ? { ansibleLintEnabled: input.ansibleLintEnabled }
+        : {}),
+      ...(input.ansibleSyntaxCheckEnabled !== undefined
+        ? { ansibleSyntaxCheckEnabled: input.ansibleSyntaxCheckEnabled }
+        : {}),
+      ...(input.ansibleTimeoutMs !== undefined
+        ? { ansibleTimeoutMs: input.ansibleTimeoutMs }
+        : {}),
+      ...(input.ansibleMaxPlaybooks !== undefined
+        ? { ansibleMaxPlaybooks: input.ansibleMaxPlaybooks }
+        : {}),
+      ...(input.postDeployChecksEnabled !== undefined
+        ? { postDeployChecksEnabled: input.postDeployChecksEnabled }
+        : {}),
+      ...(input.healthcheckPath !== undefined
+        ? { healthcheckPath: input.healthcheckPath }
+        : {}),
+      ...(input.healthcheckTimeoutMs !== undefined
+        ? { healthcheckTimeoutMs: input.healthcheckTimeoutMs }
+        : {}),
+      ...(input.rescanEnabled !== undefined
+        ? { rescanEnabled: input.rescanEnabled }
+        : {}),
+      ...(input.rescanIntervalHours !== undefined
+        ? { rescanIntervalHours: input.rescanIntervalHours }
+        : {}),
+      ...(input.rescanControls !== undefined
+        ? { rescanControls: input.rescanControls }
+        : {}),
+      ...(input.rescanTimeoutMs !== undefined
+        ? { rescanTimeoutMs: input.rescanTimeoutMs }
+        : {}),
+      ...(input.rescanMaxRunsPerDay !== undefined
+        ? { rescanMaxRunsPerDay: input.rescanMaxRunsPerDay }
+        : {}),
+      ...(input.rescanRemediationEnabled !== undefined
+        ? { rescanRemediationEnabled: input.rescanRemediationEnabled }
+        : {}),
+      ...(rescanNextRunAt !== undefined ? { rescanNextRunAt } : {}),
+      ...(policyChanged
+        ? {
+            policyVersion: { increment: 1 },
+            policyUpdatedAt: new Date(),
+            policyUpdatedById: actor.id,
+          }
+        : {}),
     },
   });
 
@@ -335,6 +502,11 @@ export async function updateProjectConfig(
       action: "PROJECT_CONFIG_UPDATED",
       targetType: "Project",
       targetId: projectId,
+      metadataJson: {
+        policyVersion: updated.policyVersion,
+        policyChanged,
+        fields: Object.keys(input),
+      },
     },
   });
 
@@ -345,19 +517,82 @@ export async function updateProjectConfig(
 // EXCEPTIONS DE SECURITY GATE
 // ============================================================
 
+async function expireGateExceptions(projectId: string): Promise<void> {
+  const now = new Date();
+  // Une exception PENDING expirée ne doit pas rester éternellement en attente :
+  // elle est marquée EXPIRED et ne peut plus être approuvée.
+  const expired = await prisma.securityGateException.findMany({
+    where: {
+      projectId,
+      status: {
+        in: [
+          SecurityGateExceptionStatus.PENDING,
+          SecurityGateExceptionStatus.APPROVED,
+        ],
+      },
+      expiresAt: { lte: now },
+    },
+    select: { id: true, status: true },
+  });
+  if (expired.length === 0) return;
+
+  await prisma.$transaction(async (tx) => {
+    for (const row of expired) {
+      await tx.securityGateException.update({
+        where: { id: row.id },
+        data: { status: SecurityGateExceptionStatus.EXPIRED },
+      });
+      await tx.securityGateExceptionEvent.create({
+        data: {
+          exceptionId: row.id,
+          action: "EXPIRED",
+          fromStatus: row.status,
+          toStatus: "EXPIRED",
+        },
+      });
+    }
+  });
+}
+
+const EXCEPTION_INCLUDE = {
+  createdBy: { select: { id: true, name: true, email: true } },
+  approvedBy: { select: { id: true, name: true, email: true } },
+  events: {
+    orderBy: { createdAt: "desc" as const },
+    include: {
+      actor: { select: { id: true, name: true, email: true } },
+    },
+  },
+};
+
 export async function listGateExceptions(
   actor: ActorContext,
   projectId: string,
 ) {
   await ensureProjectAccess(actor, projectId);
+  await expireGateExceptions(projectId);
 
   return prisma.securityGateException.findMany({
     where: { projectId },
     orderBy: { createdAt: "desc" },
-    include: {
-      createdBy: { select: { id: true, name: true, email: true } },
-    },
+    include: EXCEPTION_INCLUDE,
   });
+}
+
+export async function getGateException(
+  actor: ActorContext,
+  projectId: string,
+  exceptionId: string,
+) {
+  await ensureProjectAccess(actor, projectId);
+  await expireGateExceptions(projectId);
+
+  const exception = await prisma.securityGateException.findFirst({
+    where: { id: exceptionId, projectId },
+    include: EXCEPTION_INCLUDE,
+  });
+  if (!exception) throw new NotFoundError("Exception introuvable");
+  return exception;
 }
 
 export async function createGateException(
@@ -370,17 +605,75 @@ export async function createGateException(
   if (input.expiresAt && input.expiresAt.getTime() <= Date.now()) {
     throw new ConflictError("La date d'expiration doit être dans le futur");
   }
+  if (input.category === "ALL" && !input.fingerprint.trim()) {
+    throw new ConflictError(
+      "Une exception doit cibler une empreinte, une CVE ou une règle précise",
+    );
+  }
 
-  const exception = await prisma.securityGateException.create({
-    data: {
-      projectId,
-      category: input.category,
-      severity: input.severity ?? null,
-      fingerprint: input.fingerprint,
-      reason: input.reason,
-      expiresAt: input.expiresAt ?? null,
-      createdById: actor.id,
-    },
+  const config = await prisma.projectConfiguration.findUnique({
+    where: { projectId },
+    select: { requireExceptionApproval: true },
+  });
+  const autoApprove =
+    actor.role === Role.ADMIN || config?.requireExceptionApproval === false;
+  const status = autoApprove
+    ? SecurityGateExceptionStatus.APPROVED
+    : SecurityGateExceptionStatus.PENDING;
+
+  const exception = await prisma.$transaction(async (tx) => {
+    const created = await tx.securityGateException.create({
+      data: {
+        projectId,
+        category: input.category,
+        severity: input.severity ?? null,
+        fingerprint: input.fingerprint,
+        matchType: input.matchType,
+        reason: input.reason,
+        expiresAt: input.expiresAt ?? null,
+        createdById: actor.id,
+        status,
+        approvedById: autoApprove ? actor.id : null,
+        approvedAt: autoApprove ? new Date() : null,
+      },
+    });
+
+    await tx.securityGateExceptionEvent.create({
+      data: {
+        exceptionId: created.id,
+        actorId: actor.id,
+        action: "REQUESTED",
+        toStatus: status,
+        metadataJson: {
+          category: created.category,
+          severity: created.severity,
+          fingerprint: created.fingerprint,
+          matchType: created.matchType,
+          expiresAt: created.expiresAt?.toISOString() ?? null,
+        },
+      },
+    });
+
+    if (autoApprove) {
+      await tx.securityGateExceptionEvent.create({
+        data: {
+          exceptionId: created.id,
+          actorId: actor.id,
+          action: "APPROVED",
+          fromStatus: SecurityGateExceptionStatus.PENDING,
+          toStatus: SecurityGateExceptionStatus.APPROVED,
+          metadataJson: {
+            autoApproved: true,
+            reason:
+              actor.role === Role.ADMIN
+                ? "Créée par un administrateur"
+                : "Approbation désactivée par la politique",
+          },
+        },
+      });
+    }
+
+    return created;
   });
 
   await prisma.auditLog.create({
@@ -394,6 +687,8 @@ export async function createGateException(
         category: exception.category,
         severity: exception.severity,
         fingerprint: exception.fingerprint,
+        matchType: exception.matchType,
+        status: exception.status,
         expiresAt: exception.expiresAt?.toISOString() ?? null,
         reason: exception.reason,
       },
@@ -403,27 +698,125 @@ export async function createGateException(
   return exception;
 }
 
-export async function deleteGateException(
+export async function decideGateException(
   actor: ActorContext,
   projectId: string,
   exceptionId: string,
+  decision: "APPROVE" | "REJECT" | "REVOKE",
+  comment?: string,
 ) {
   await ensureProjectAccess(actor, projectId);
+  await expireGateExceptions(projectId);
 
   const exception = await prisma.securityGateException.findFirst({
     where: { id: exceptionId, projectId },
   });
   if (!exception) throw new NotFoundError("Exception introuvable");
 
-  await prisma.securityGateException.delete({ where: { id: exceptionId } });
+  const now = new Date();
+  let nextStatus: SecurityGateExceptionStatus;
+  let action: string;
+
+  if (decision === "APPROVE") {
+    if (actor.role !== Role.ADMIN) {
+      throw new ForbiddenError("Seul un ADMIN peut approuver une exception");
+    }
+    if (exception.status !== SecurityGateExceptionStatus.PENDING) {
+      throw new ConflictError("Seule une exception en attente peut être approuvée");
+    }
+    if (exception.createdById === actor.id) {
+      throw new ForbiddenError(
+        "Le demandeur ne peut pas approuver sa propre exception",
+      );
+    }
+    if (exception.expiresAt && exception.expiresAt.getTime() <= now.getTime()) {
+      throw new ConflictError("Cette exception est déjà expirée");
+    }
+    nextStatus = SecurityGateExceptionStatus.APPROVED;
+    action = "APPROVED";
+  } else if (decision === "REJECT") {
+    if (actor.role !== Role.ADMIN) {
+      throw new ForbiddenError("Seul un ADMIN peut rejeter une exception");
+    }
+    if (exception.status !== SecurityGateExceptionStatus.PENDING) {
+      throw new ConflictError("Seule une exception en attente peut être rejetée");
+    }
+    nextStatus = SecurityGateExceptionStatus.REJECTED;
+    action = "REJECTED";
+  } else {
+    const canRevoke =
+      actor.role === Role.ADMIN || exception.createdById === actor.id;
+    if (!canRevoke) {
+      throw new ForbiddenError("Vous ne pouvez pas révoquer cette exception");
+    }
+    if (
+      exception.status !== SecurityGateExceptionStatus.PENDING &&
+      exception.status !== SecurityGateExceptionStatus.APPROVED
+    ) {
+      throw new ConflictError("Cette exception ne peut plus être révoquée");
+    }
+    nextStatus = SecurityGateExceptionStatus.REVOKED;
+    action = "REVOKED";
+  }
+
+  const updated = await prisma.$transaction(async (tx) => {
+    await tx.securityGateException.update({
+      where: { id: exceptionId },
+      data: {
+        status: nextStatus,
+        ...(decision === "APPROVE"
+          ? { approvedById: actor.id, approvedAt: now }
+          : {}),
+        ...(decision === "REJECT" ? { rejectedAt: now } : {}),
+        ...(decision === "REVOKE" ? { revokedAt: now } : {}),
+      },
+    });
+
+    await tx.securityGateExceptionEvent.create({
+      data: {
+        exceptionId,
+        actorId: actor.id,
+        action,
+        fromStatus: exception.status,
+        toStatus: nextStatus,
+        metadataJson: comment ? { comment } : undefined,
+      },
+    });
+
+    // Relecture après insertion de l'événement pour renvoyer l'historique
+    // complet, y compris la décision qui vient d'être prise.
+    return tx.securityGateException.findUniqueOrThrow({
+      where: { id: exceptionId },
+      include: EXCEPTION_INCLUDE,
+    });
+  });
 
   await prisma.auditLog.create({
     data: {
       userId: actor.id,
-      action: "SECURITY_GATE_EXCEPTION_DELETED",
+      action: `SECURITY_GATE_EXCEPTION_${action}`,
       targetType: "SecurityGateException",
       targetId: exceptionId,
-      metadataJson: { projectId, reason: exception.reason },
+      metadataJson: {
+        projectId,
+        fromStatus: exception.status,
+        toStatus: nextStatus,
+        comment: comment ?? null,
+      },
     },
   });
+
+  return updated;
+}
+
+/**
+ * Conservation de l'endpoint DELETE historique : une exception n'est jamais
+ * supprimée physiquement, elle est révoquée pour conserver son historique.
+ */
+export async function deleteGateException(
+  actor: ActorContext,
+  projectId: string,
+  exceptionId: string,
+) {
+  return decideGateException(actor, projectId, exceptionId, "REVOKE");
 }

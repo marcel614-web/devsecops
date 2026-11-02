@@ -7,6 +7,7 @@ import {
   createServerSchema,
   serverIdParamSchema,
   serverListQuerySchema,
+  trustHostKeySchema,
   updateServerSchema,
 } from "./servers.schema";
 
@@ -56,6 +57,12 @@ serversRouter.post(
   "/:id/test",
   validate({ params: serverIdParamSchema }),
   serversController.testServer,
+);
+
+serversRouter.put(
+  "/:id/host-key",
+  validate({ params: serverIdParamSchema, body: trustHostKeySchema }),
+  serversController.trustHostKey,
 );
 
 serversRouter.post(

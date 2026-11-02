@@ -1,13 +1,23 @@
 // apps/api/src/modules/webhooks/webhooks.controller.ts
 import type { Request, Response } from "express";
 import crypto from "node:crypto";
-import { PipelineStatus, StepStatus } from "@prisma/client";
+import {
+  DeploymentApprovalStatus,
+  PipelineStatus,
+  StepStatus,
+} from "@prisma/client";
+import { isFullGitSha } from "@devsecops/shared";
 import { logger } from "../../utils/logger";
 import { prisma } from "../../utils/prisma";
 import { pipelineQueue } from "../../queues/pipeline.queue";
 import * as installService from "../github/installations.service";
 import { getGithubConfigInternal } from "../system-config/system-config.service";
 import { buildDefaultSteps } from "../pipelines/pipeline.steps";
+import { createPipelineSecurityPolicy } from "../pipelines/policy-snapshot";
+import {
+  isSameRepositoryPullRequest,
+  validatePush,
+} from "./webhook-validation";
 
 // ============================================================
 // VÉRIFICATION SIGNATURE
@@ -17,7 +27,7 @@ async function verifySignature(
   rawBody: string,
   signature: string | undefined,
 ): Promise<{ valid: boolean; reason?: string }> {
-  if (!signature || !signature.startsWith("sha256=")) {
+  if (!signature || !/^sha256=[a-f0-9]{64}$/u.test(signature)) {
     return { valid: false, reason: "missing_signature" };
   }
 
@@ -50,11 +60,25 @@ export async function githubWebhook(
   req: Request,
   res: Response,
 ): Promise<void> {
-  const event = req.headers["x-github-event"] as string;
-  const delivery = req.headers["x-github-delivery"] as string;
+  const event = req.headers["x-github-event"] as string | undefined;
+  const delivery = req.headers["x-github-delivery"] as string | undefined;
   const signature = req.headers["x-hub-signature-256"] as string | undefined;
 
   const rawBody = (req as Request & { rawBody?: string }).rawBody ?? "";
+
+  // L'identifiant de livraison est la clé d'idempotence : sans lui, une
+  // redelivraison GitHub créerait un second pipeline pour le même événement.
+  if (
+    !event ||
+    !delivery ||
+    !/^[A-Za-z0-9-]{1,128}$/u.test(delivery) ||
+    rawBody.length === 0
+  ) {
+    res.status(400).json({
+      error: "En-têtes GitHub manquants ou invalides (event/delivery/body)",
+    });
+    return;
+  }
 
   const verification = await verifySignature(rawBody, signature);
 
@@ -83,29 +107,36 @@ export async function githubWebhook(
 
   // Traitement asynchrone
   try {
-    const already = await prisma.webhookEvent.findUnique({
-      where: { deliveryId: delivery },
-      select: { id: true, processedAt: true },
-    });
-    if (already?.processedAt) {
-      logger.debug({ delivery }, "Webhook déjà traité");
-      return;
-    }
-
     const payload = JSON.parse(rawBody);
-    const webhookRecord = await prisma.webhookEvent.upsert({
-      where: { deliveryId: delivery },
-      create: {
-        provider: "GITHUB",
-        eventType: event ?? "unknown",
-        deliveryId: delivery ?? `no-delivery-${Date.now()}`,
-        payloadJson: payload,
-        signatureValid: true,
-        status: "received",
-      },
-      update: {},
-      select: { id: true },
-    });
+
+    // Claim atomique de la livraison : la contrainte unique sur deliveryId
+    // garantit qu'une redelivraison concurrente ne peut pas créer un second
+    // pipeline. Une livraison déjà connue est ignorée silencieusement.
+    let webhookRecord: { id: string };
+    try {
+      webhookRecord = await prisma.webhookEvent.create({
+        data: {
+          provider: "GITHUB",
+          eventType: event,
+          deliveryId: delivery,
+          payloadJson: payload,
+          signatureValid: true,
+          status: "received",
+        },
+        select: { id: true },
+      });
+    } catch (err) {
+      if (
+        typeof err === "object" &&
+        err !== null &&
+        "code" in err &&
+        (err as { code?: string }).code === "P2002"
+      ) {
+        logger.debug({ delivery }, "Webhook déjà traité ou en cours");
+        return;
+      }
+      throw err;
+    }
 
     switch (event) {
       case "push":
@@ -178,9 +209,19 @@ interface PushEvent {
 }
 
 async function handlePush(payload: PushEvent, webhookRecordId: string) {
-  const branch = payload.ref.replace("refs/heads/", "");
+  // Seuls les pushes de branches nous intéressent : tags, suppressions de
+  // branche et SHA invalides ne doivent jamais déclencher de déploiement.
+  const push = validatePush(payload);
+  if (!push.ok) {
+    logger.debug(
+      { repo: payload.repository.full_name, ref: payload.ref, reason: push.reason },
+      "Push ignoré (branche, suppression ou SHA invalide)",
+    );
+    return;
+  }
+
+  const { branch, commitSha } = push;
   const repoId = String(payload.repository.id);
-  const commitSha = payload.after;
 
   logger.info(
     { repo: payload.repository.full_name, branch, commitSha },
@@ -231,6 +272,32 @@ async function handlePush(payload: PushEvent, webhookRecordId: string) {
       continue;
     }
 
+    // Redelivrance / double push du même commit : ne pas empiler deux
+    // exécutions actives. Un nouveau commit (SHA différent) crée bien un
+    // nouveau pipeline complet.
+    const duplicate = await prisma.pipeline.findFirst({
+      where: {
+        projectId: project.id,
+        commitSha,
+        trigger: "push",
+        status: {
+          in: [
+            PipelineStatus.QUEUED,
+            PipelineStatus.RUNNING,
+            PipelineStatus.WAITING_APPROVAL,
+          ],
+        },
+      },
+      select: { id: true },
+    });
+    if (duplicate) {
+      logger.debug(
+        { projectId: project.id, pipelineId: duplicate.id },
+        "Pipeline push déjà actif pour ce commit — ignoré",
+      );
+      continue;
+    }
+
     const pipeline = await prisma.$transaction(async (tx) => {
       const created = await tx.pipeline.create({
         data: {
@@ -252,6 +319,12 @@ async function handlePush(payload: PushEvent, webhookRecordId: string) {
       }
       const steps = buildDefaultSteps(config);
 
+      await createPipelineSecurityPolicy(tx, {
+        pipelineId: created.id,
+        projectId: project.id,
+        config,
+      });
+
       await tx.pipelineStep.createMany({
         data: steps.map((s) => ({
           pipelineId: created.id,
@@ -261,6 +334,23 @@ async function handlePush(payload: PushEvent, webhookRecordId: string) {
           status: StepStatus.QUEUED,
           resultJson: { critical: s.critical },
         })),
+      });
+
+      // Un nouveau commit invalide les demandes d'approbation encore
+      // pendantes sur la même branche : elles ne doivent pas permettre de
+      // promouvoir ultérieurement un artefact plus ancien.
+      await tx.deploymentApproval.updateMany({
+        where: {
+          projectId: project.id,
+          status: DeploymentApprovalStatus.PENDING,
+          pipelineId: { not: created.id },
+          commitSha: { not: commitSha },
+          pipeline: { is: { branch } },
+        },
+        data: {
+          status: DeploymentApprovalStatus.REVOKED,
+          comment: `Nouveau commit ${commitSha.slice(0, 12)} sur la branche ${branch}`,
+        },
       });
 
       await tx.auditLog.create({
@@ -348,6 +438,29 @@ async function handlePullRequest(
     return;
   }
 
+  if (!isFullGitSha(pr.head.sha)) {
+    logger.warn(
+      { pr: payload.number, sha: pr.head.sha },
+      "Pull request avec SHA de tête invalide — ignorée",
+    );
+    return;
+  }
+
+  // Une PR provenant d'un fork exécuterait du code non maîtrisé sur nos
+  // runners : elle est refusée. La CI de fork doit rester hors de ce
+  // chemin privilégié (aucun secret, aucune connexion SSH).
+  if (!isSameRepositoryPullRequest(payload)) {
+    logger.warn(
+      {
+        pr: payload.number,
+        headRepo: pr.head.repo?.full_name ?? null,
+        baseRepo: payload.repository.full_name,
+      },
+      "Pull request issue d'un fork — pipeline refusé",
+    );
+    return;
+  }
+
   const repo = await prisma.gitHubRepository.findFirst({
     where: { repositoryId: repoId },
     select: {
@@ -408,7 +521,13 @@ async function handlePullRequest(
         projectId: project.id,
         commitSha: pr.head.sha,
         trigger: "pull_request",
-        status: { in: [PipelineStatus.QUEUED, PipelineStatus.RUNNING] },
+        status: {
+          in: [
+            PipelineStatus.QUEUED,
+            PipelineStatus.RUNNING,
+            PipelineStatus.WAITING_APPROVAL,
+          ],
+        },
       },
       select: { id: true },
     });
@@ -436,7 +555,13 @@ async function handlePullRequest(
         select: { id: true },
       });
 
-      const steps = buildDefaultSteps(project.config!);
+      const steps = buildDefaultSteps(project.config!, { pullRequest: true });
+
+      await createPipelineSecurityPolicy(tx, {
+        pipelineId: created.id,
+        projectId: project.id,
+        config: project.config!,
+      });
 
       await tx.pipelineStep.createMany({
         data: steps.map((s) => ({

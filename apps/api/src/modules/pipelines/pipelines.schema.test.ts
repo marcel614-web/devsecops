@@ -10,10 +10,16 @@ describe("runPipelineSchema — commitSha", () => {
     expect(result.success).toBe(true);
   });
 
-  it("accepte un SHA court", () => {
+  it("refuse un SHA court", () => {
     expect(runPipelineSchema.safeParse({ commitSha: "e83c516" }).success).toBe(
-      true,
+      false,
     );
+  });
+
+  it("accepte un SHA complet de 64 caractères", () => {
+    expect(
+      runPipelineSchema.safeParse({ commitSha: "a".repeat(64) }).success,
+    ).toBe(true);
   });
 
   it("accepte l'absence de commit SHA (résolution automatique)", () => {
@@ -61,7 +67,7 @@ describe("runPipelineSchema — autres champs", () => {
 
   it("accepte une configuration complète valide", () => {
     const result = runPipelineSchema.safeParse({
-      commitSha: "e83c516",
+      commitSha: "e83c5163316f89bfbde7d9ab23ca2e25604af290",
       branch: "feature/x",
       author: "dev@example.com",
       trigger: "manual",

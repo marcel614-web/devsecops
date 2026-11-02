@@ -1,4 +1,9 @@
 import { Client } from "ssh2";
+import {
+  computeHostKeyFingerprint,
+  hostKeyMatches,
+  normalizeHostKeyFingerprint,
+} from "@devsecops/shared";
 import { decryptString } from "../../secrets/crypto";
 
 export interface DeploymentServerCreds {
@@ -7,6 +12,7 @@ export interface DeploymentServerCreds {
   username: string;
   encryptedPrivateKey: string | null;
   encryptedPassphrase: string | null;
+  hostKeyFingerprint: string | null;
 }
 
 export async function runRemoteCommand(
@@ -18,12 +24,21 @@ export async function runRemoteCommand(
     throw new Error("Clé SSH du serveur manquante");
   }
 
+  const expectedHostKey = normalizeHostKeyFingerprint(creds.hostKeyFingerprint);
+  if (!expectedHostKey) {
+    throw new Error(
+      `Clé d'hôte SSH non configurée pour ${creds.host}:${creds.sshPort} : ` +
+        "enregistrez son empreinte de confiance avant toute opération.",
+    );
+  }
+
   const privateKey = decryptString(creds.encryptedPrivateKey);
   const passphrase = creds.encryptedPassphrase
     ? decryptString(creds.encryptedPassphrase)
     : undefined;
 
   const conn = new Client();
+  let hostKeyError: string | null = null;
 
   await new Promise<void>((resolve, reject) => {
     const timeout = setTimeout(() => {
@@ -37,7 +52,7 @@ export async function runRemoteCommand(
     });
     conn.once("error", (err) => {
       clearTimeout(timeout);
-      reject(err);
+      reject(new Error(hostKeyError ?? err.message));
     });
 
     try {
@@ -48,6 +63,16 @@ export async function runRemoteCommand(
         privateKey,
         passphrase,
         readyTimeout: 15_000,
+        hostVerifier: (key: Buffer) => {
+          const observed = computeHostKeyFingerprint(key);
+          const ok = hostKeyMatches(observed, expectedHostKey);
+          if (!ok) {
+            hostKeyError =
+              `Clé d'hôte SSH inconnue ou modifiée pour ${creds.host}:${creds.sshPort} ` +
+              `(observée : ${observed}, attendue : ${expectedHostKey}). Connexion refusée.`;
+          }
+          return ok;
+        },
       });
     } catch (err) {
       clearTimeout(timeout);

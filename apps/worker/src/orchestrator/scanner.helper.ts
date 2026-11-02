@@ -1,6 +1,7 @@
 // apps/worker/src/orchestrator/scanner.helper.ts
 import crypto from "node:crypto";
 import {
+  ScanOutcome,
   ScanType,
   Severity,
   StepStatus,
@@ -10,9 +11,12 @@ import type { NormalizedFinding, ScanResult } from "@devsecops/scanners";
 import { prisma } from "../utils/prisma";
 
 interface PersistContext {
-  pipelineId: string;
+  /** Absent pour un rescan périodique, qui n'appartient à aucun pipeline. */
+  pipelineId?: string | null;
+  /** Présent uniquement pour un rescan périodique. */
+  rescanRunId?: string | null;
   projectId: string;
-  stepId: string;
+  stepId?: string;
   type: ScanType;
 }
 
@@ -51,6 +55,57 @@ const INHERITED_STATUSES: VulnerabilityStatus[] = [
   VulnerabilityStatus.CONFIRMED,
 ];
 
+/** Déduit l'issue normalisée d'un ScanResult. */
+export function outcomeForScanResult(result: ScanResult): ScanOutcome {
+  if (result.outcome) {
+    return result.outcome as ScanOutcome;
+  }
+  if (result.status === "FAILED") return ScanOutcome.INTERRUPTED;
+  return result.findings.length > 0
+    ? ScanOutcome.SUCCESS_WITH_FINDINGS
+    : ScanOutcome.SUCCESS_NO_FINDINGS;
+}
+
+/**
+ * Persiste un scanner indisponible ou un rapport impossible à parser.
+ * Le statut de l'étape peut rester « non bloquant », mais le scan n'est
+ * jamais présenté comme un succès à zéro vulnérabilité.
+ */
+export async function persistScanFailure(
+  ctx: PersistContext,
+  params: {
+    scanner: string;
+    outcome: ScanOutcome;
+    reason: string;
+    durationMs?: number;
+    exitCode?: number | null;
+    scannerVersion?: string | null;
+  },
+): Promise<void> {
+  await prisma.securityScan.create({
+    data: {
+      pipelineId: ctx.pipelineId ?? null,
+      rescanRunId: ctx.rescanRunId ?? null,
+      projectId: ctx.projectId,
+      scanner: params.scanner,
+      scannerVersion: params.scannerVersion ?? null,
+      type: ctx.type,
+      status: StepStatus.FAILED,
+      outcome: params.outcome,
+      durationMs: params.durationMs ?? 0,
+      exitCode: params.exitCode ?? null,
+      startedAt: new Date(Date.now() - (params.durationMs ?? 0)),
+      finishedAt: new Date(),
+      rawResultJson: {
+        scanner: params.scanner,
+        status: "FAILED",
+        outcome: params.outcome,
+        error: params.reason,
+      },
+    },
+  });
+}
+
 /**
  * Persiste un ScanResult en base : crée un SecurityScan,
  * puis un Vulnerability par finding normalisé.
@@ -64,14 +119,19 @@ const INHERITED_STATUSES: VulnerabilityStatus[] = [
 export async function persistScanResult(
   ctx: PersistContext,
   result: ScanResult,
-): Promise<void> {
+  options?: { outcome?: ScanOutcome },
+): Promise<{ scanId: string }> {
+  const outcome = options?.outcome ?? outcomeForScanResult(result);
   const scan = await prisma.securityScan.create({
     data: {
-      pipelineId: ctx.pipelineId,
+      pipelineId: ctx.pipelineId ?? null,
+      rescanRunId: ctx.rescanRunId ?? null,
       projectId: ctx.projectId,
       scanner: result.scanner,
+      scannerVersion: result.scannerVersion ?? null,
       type: ctx.type,
       status: result.status === "SUCCESS" ? StepStatus.SUCCESS : StepStatus.FAILED,
+      outcome,
       criticalCount: result.severityCounts.critical,
       highCount: result.severityCounts.high,
       mediumCount: result.severityCounts.medium,
@@ -84,6 +144,7 @@ export async function persistScanResult(
       rawResultJson: {
         scanner: result.scanner,
         status: result.status,
+        outcome,
         vulnerabilityCount: result.vulnerabilityCount,
         logs: result.logs.slice(-50),
         error: result.error ?? null,
@@ -92,7 +153,7 @@ export async function persistScanResult(
     select: { id: true },
   });
 
-  if (result.findings.length === 0) return;
+  if (result.findings.length === 0) return { scanId: scan.id };
 
   const now = new Date();
   const fingerprints = result.findings.map((f) =>
@@ -184,4 +245,6 @@ export async function persistScanResult(
       },
     });
   }
+
+  return { scanId: scan.id };
 }

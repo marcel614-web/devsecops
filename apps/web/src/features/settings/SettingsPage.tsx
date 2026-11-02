@@ -23,6 +23,13 @@ interface SettingsItem {
 
 const SETTINGS_ITEMS: SettingsItem[] = [
   {
+    to: "/settings/defectdojo",
+    icon: Shield,
+    title: "DefectDojo",
+    description: "Configurer l'export optionnel des résultats vers DefectDojo",
+    adminOnly: true,
+  },
+  {
     to: "/settings/github",
     icon: Github,
     title: "GitHub App",

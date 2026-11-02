@@ -3,6 +3,16 @@ export type ScannerSeverity = "CRITICAL" | "HIGH" | "MEDIUM" | "LOW" | "INFO";
 
 export type ScannerStatus = "SUCCESS" | "FAILED";
 
+export type ScannerOutcome =
+  | "SUCCESS_NO_FINDINGS"
+  | "SUCCESS_WITH_FINDINGS"
+  | "INTERRUPTED"
+  | "SCANNER_UNAVAILABLE"
+  | "PARSE_ERROR"
+  | "NOT_APPLICABLE"
+  | "DISABLED"
+  | "REQUIRED_NOT_RUN";
+
 export interface NormalizedFinding {
   tool: string;
   technology?: string;
@@ -27,8 +37,12 @@ export interface ScanSeverityCounts {
 export interface ScanResult {
   scanner: string;
   status: ScannerStatus;
+  /** Issue normalisée, notamment pour distinguer parse error et interruption. */
+  outcome?: ScannerOutcome;
   durationMs: number;
   exitCode: number | null;
+  /** Version de l'outil réellement exécutée, si disponible. */
+  scannerVersion?: string;
   vulnerabilityCount: number;
   severityCounts: ScanSeverityCounts;
   findings: NormalizedFinding[];
@@ -50,4 +64,6 @@ export interface SecurityScanner {
   readonly name: string;
   isAvailable(workspaceDir?: string): Promise<boolean>;
   scan(ctx: ScanContext): Promise<ScanResult>;
+  /** Dernière version observée par isAvailable, si l'outil l'expose. */
+  getVersion?(): string | null;
 }
