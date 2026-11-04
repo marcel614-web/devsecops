@@ -127,11 +127,12 @@ describe("Inscription — pas de jeton pour un compte inactif", () => {
   it("crée bien le compte en base mais inactif", async () => {
     const user = await prisma.user.findUnique({
       where: { email: "nouveau@test.local" },
-      select: { isActive: true, role: true },
+      select: { isActive: true, role: true, status: true },
     });
     expect(user).not.toBeNull();
     expect(user!.isActive).toBe(false);
-    expect(user!.role).toBe(Role.DEVELOPER);
+    expect(user!.status).toBe("PENDING");
+    expect(user!.role).toBe(Role.PLATFORM_USER);
   });
 
   it("ne permet pas de se connecter tant que le compte est inactif", async () => {

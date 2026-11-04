@@ -246,7 +246,7 @@ export async function associateRepository(
     }
 
     const project = await repoService.associateRepositoryToProject(
-      actor.id,
+      actor,
       req.params.id,
       repositoryId,
       branch,
@@ -268,7 +268,7 @@ export async function detachRepository(
 ): Promise<void> {
   try {
     const actor = actorFrom(req);
-    await repoService.detachRepositoryFromProject(actor.id, req.params.id);
+    await repoService.detachRepositoryFromProject(actor, req.params.id);
     res.status(204).end();
   } catch (err) {
     next(err);

@@ -1,5 +1,6 @@
 import { useState } from "react";
 import { useQuery } from "@tanstack/react-query";
+import { isPlatformAdminRole } from "@/lib/roles";
 import {
   RefreshCw,
   Filter,
@@ -168,7 +169,7 @@ function formatDay(value: string): string {
 
 export function AuditPage() {
   const { user: currentUser } = useAuthStore();
-  const isAdmin = currentUser?.role === "ADMIN";
+  const isAdmin = isPlatformAdminRole(currentUser?.role);
 
   // État "live" (inputs)
   const [search, setSearch] = useState("");

@@ -7,6 +7,7 @@ import {
 } from "@prisma/client";
 import { prisma } from "../../utils/prisma";
 import { NotFoundError } from "../../utils/errors";
+import { projectAccessWhere } from "../authorization/project-membership.service";
 import type {
   ClearNotificationsQuery,
   MarkNotificationInput,
@@ -94,10 +95,8 @@ async function syncNotifications(actor: ActorContext): Promise<void> {
             PipelineStatus.SECURITY_BLOCKED,
           ],
         },
+        project: projectAccessWhere(actor),
       };
-      if (actor.role !== Role.ADMIN) {
-        where.project = { ownerId: actor.id };
-      }
 
       const pipelines = await prisma.pipeline.findMany({
         where,

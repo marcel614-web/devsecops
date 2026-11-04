@@ -2,16 +2,26 @@
 import { api } from "./api";
 import type {
   Paginated,
+  PermissionGrant,
   Project,
   ProjectConfiguration,
   ProjectDetail,
+  ProjectInvitation,
+  ProjectMember,
+  ProjectRole,
   SecurityGateCategory,
   SecurityGateException,
   SecurityGateExceptionMatchType,
   SecurityGateMode,
   Severity,
+  SpecialPermission,
   Technology,
 } from "@/types/api";
+import type {
+  GitHubTeam,
+  ProjectTeamLink,
+  ProjectTeamRole,
+} from "./github.service";
 
 // ============================================================
 // TYPES
@@ -211,4 +221,130 @@ export const projectService = {
 
   detachRepository: (projectId: string) =>
     api.delete(`/api/projects/${projectId}/repository`),
+
+  // ----------------------------------------------------------
+  // Membres, invitations et permissions spéciales
+  // ----------------------------------------------------------
+  listMembers: (projectId: string) =>
+    api
+      .get<{ members: ProjectMember[] }>(`/api/projects/${projectId}/members`)
+      .then((r) => r.data.members),
+
+  listInvitations: (projectId: string) =>
+    api
+      .get<{ invitations: ProjectInvitation[] }>(
+        `/api/projects/${projectId}/invitations`,
+      )
+      .then((r) => r.data.invitations),
+
+  inviteMember: (
+    projectId: string,
+    data: { email: string; role: ProjectRole; expiresInDays?: number },
+  ) =>
+    api
+      .post<{ invitation: ProjectInvitation; token: string }>(
+        `/api/projects/${projectId}/invitations`,
+        data,
+      )
+      .then((r) => r.data),
+
+  resendInvitation: (projectId: string, invitationId: string) =>
+    api
+      .post<{ token: string; expiresAt: string }>(
+        `/api/projects/${projectId}/invitations/${invitationId}/resend`,
+      )
+      .then((r) => r.data),
+
+  revokeInvitation: (projectId: string, invitationId: string) =>
+    api.delete(`/api/projects/${projectId}/invitations/${invitationId}`),
+
+  acceptInvitation: (token: string) =>
+    api
+      .post<{ member: ProjectMember }>("/api/projects/invitations/accept", {
+        token,
+      })
+      .then((r) => r.data.member),
+
+  updateMemberRole: (
+    projectId: string,
+    memberId: string,
+    role: ProjectRole,
+  ) =>
+    api
+      .patch<{ member: ProjectMember }>(
+        `/api/projects/${projectId}/members/${memberId}`,
+        { role },
+      )
+      .then((r) => r.data.member),
+
+  removeMember: (projectId: string, memberId: string) =>
+    api.delete(`/api/projects/${projectId}/members/${memberId}`),
+
+  listPermissionGrants: (projectId: string) =>
+    api
+      .get<{ grants: PermissionGrant[] }>(
+        `/api/projects/${projectId}/permission-grants`,
+      )
+      .then((r) => r.data.grants),
+
+  grantPermission: (
+    projectId: string,
+    data: {
+      userId: string;
+      permission: SpecialPermission;
+      scopeType?: "PROJECT";
+      expiresAt?: string | null;
+    },
+  ) =>
+    api
+      .post<{ grant: PermissionGrant }>(
+        `/api/projects/${projectId}/permission-grants`,
+        { ...data, scopeType: "PROJECT" },
+      )
+      .then((r) => r.data.grant),
+
+  revokePermission: (projectId: string, grantId: string) =>
+    api.delete(`/api/projects/${projectId}/permission-grants/${grantId}`),
+
+  // ----------------------------------------------------------
+  // Équipes GitHub associées (rôle interne uniquement)
+  // ----------------------------------------------------------
+  listTeams: (projectId: string) =>
+    api
+      .get<{ items: ProjectTeamLink[] }>(`/api/projects/${projectId}/teams`)
+      .then((r) => r.data.items),
+
+  listAvailableTeams: (projectId: string) =>
+    api
+      .get<{ items: GitHubTeam[] }>(
+        `/api/projects/${projectId}/teams/available`,
+      )
+      .then((r) => r.data.items),
+
+  associateTeam: (
+    projectId: string,
+    githubTeamId: string,
+    role: ProjectTeamRole,
+  ) =>
+    api
+      .post<{ link: ProjectTeamLink }>(`/api/projects/${projectId}/teams`, {
+        githubTeamId,
+        role,
+      })
+      .then((r) => r.data.link),
+
+  updateTeamRole: (
+    projectId: string,
+    linkId: string,
+    role: ProjectTeamRole,
+  ) =>
+    api
+      .patch<{ link: ProjectTeamLink }>(
+        `/api/projects/${projectId}/teams/${linkId}`,
+        { role },
+      )
+      .then((r) => r.data.link),
+
+  removeTeam: (projectId: string, linkId: string) =>
+    api.delete(`/api/projects/${projectId}/teams/${linkId}`),
 };

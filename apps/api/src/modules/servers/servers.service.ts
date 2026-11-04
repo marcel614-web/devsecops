@@ -1,5 +1,5 @@
 // apps/api/src/modules/servers/servers.service.ts
-import { Prisma, Role } from "@prisma/client";
+import { Prisma, Role, SpecialPermission } from "@prisma/client";
 import { prisma } from "../../utils/prisma";
 import { encryptString, fingerprint } from "../../secrets/crypto";
 import {
@@ -7,6 +7,8 @@ import {
   ForbiddenError,
   NotFoundError,
 } from "../../utils/errors";
+import { hasSpecialPermission } from "../authorization/permission.service";
+import { isPlatformAdmin } from "../authorization/role-permissions";
 import type {
   CreateServerInput,
   ServerListQuery,
@@ -53,13 +55,18 @@ async function ensureServerAccess(
   });
   if (!server) throw new NotFoundError("Serveur introuvable");
 
-  if (actor.role === Role.ADMIN) return server;
+  if (isPlatformAdmin(actor.role)) return server;
+  if (
+    await hasSpecialPermission(actor, SpecialPermission.MANAGE_SERVERS)
+  ) {
+    return server;
+  }
   if (server.ownerId === actor.id) return server;
   const owner = await prisma.user.findUnique({
     where: { id: server.ownerId },
     select: { role: true },
   });
-  if (owner?.role === Role.ADMIN) return server;
+  if (isPlatformAdmin(owner?.role ?? "")) return server;
   throw new ForbiddenError("Accès interdit à ce serveur");
 }
 
@@ -68,9 +75,16 @@ export async function listServers(actor: ActorContext, query: ServerListQuery) {
 
   const conditions: Prisma.DeploymentServerWhereInput[] = [];
 
-  if (actor.role !== Role.ADMIN) {
+  const canManageAll =
+    isPlatformAdmin(actor.role) ||
+    (await hasSpecialPermission(actor, SpecialPermission.MANAGE_SERVERS));
+
+  if (!canManageAll) {
     conditions.push({
-      OR: [{ ownerId: actor.id }, { owner: { role: Role.ADMIN } }],
+      OR: [
+        { ownerId: actor.id },
+        { owner: { role: { in: [Role.PLATFORM_ADMIN, Role.ADMIN] } } },
+      ],
     });
   }
 

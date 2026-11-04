@@ -1,0 +1,207 @@
+// apps/api/src/modules/authorization/permissions.constants.ts
+import { SpecialPermission } from "@prisma/client";
+
+/**
+ * Registre central des ressources et actions.
+ * Toute vérification d'autorisation doit utiliser une permission de ce
+ * registre : aucune condition métier ne doit réimplémenter un test de rôle.
+ */
+export const RESOURCES = {
+  PROJECT: "project",
+  PROJECT_MEMBER: "project_member",
+  PROJECT_SECRET: "project_secret",
+  REPOSITORY: "repository",
+  BRANCH: "branch",
+  PIPELINE: "pipeline",
+  PIPELINE_LOG: "pipeline_log",
+  VULNERABILITY: "vulnerability",
+  SECURITY_GATE: "security_gate",
+  SECURITY_REPORT: "security_report",
+  SBOM: "sbom",
+  IMAGE: "image",
+  SERVER: "server",
+  DEPLOYMENT: "deployment",
+  NOTIFICATION: "notification",
+  AUDIT_LOG: "audit_log",
+  INTEGRATION: "integration",
+  GITHUB_TEAM: "github_team",
+  USER: "user",
+  SYSTEM_CONFIG: "system_config",
+} as const;
+
+export type Resource = (typeof RESOURCES)[keyof typeof RESOURCES];
+
+export const ACTIONS = {
+  CREATE: "create",
+  READ: "read",
+  UPDATE: "update",
+  DELETE: "delete",
+  EXECUTE: "execute",
+  CANCEL: "cancel",
+  APPROVE: "approve",
+  MANAGE_MEMBERS: "manage_members",
+  CONFIGURE: "configure",
+  EXPORT: "export",
+  ACCEPT_RISK: "accept_risk",
+  MANAGE_SESSIONS: "manage_sessions",
+} as const;
+
+export type Action = (typeof ACTIONS)[keyof typeof ACTIONS];
+
+export type Permission = `${Resource}:${Action}`;
+
+export function permission(resource: Resource, action: Action): Permission {
+  return `${resource}:${action}` as Permission;
+}
+
+/**
+ * Liste exhaustive utilisée pour construire la matrice et les réponses
+ * "permissions effectives". Elle est volontairement explicite.
+ */
+export const PERMISSIONS = {
+  PROJECT_CREATE: permission(RESOURCES.PROJECT, ACTIONS.CREATE),
+  PROJECT_READ: permission(RESOURCES.PROJECT, ACTIONS.READ),
+  PROJECT_UPDATE: permission(RESOURCES.PROJECT, ACTIONS.UPDATE),
+  PROJECT_DELETE: permission(RESOURCES.PROJECT, ACTIONS.DELETE),
+  PROJECT_CONFIGURE: permission(RESOURCES.PROJECT, ACTIONS.CONFIGURE),
+  PROJECT_MANAGE_MEMBERS: permission(RESOURCES.PROJECT, ACTIONS.MANAGE_MEMBERS),
+
+  PROJECT_MEMBER_READ: permission(RESOURCES.PROJECT_MEMBER, ACTIONS.READ),
+  PROJECT_MEMBER_UPDATE: permission(RESOURCES.PROJECT_MEMBER, ACTIONS.UPDATE),
+  PROJECT_MEMBER_DELETE: permission(RESOURCES.PROJECT_MEMBER, ACTIONS.DELETE),
+
+  PROJECT_SECRET_MANAGE: permission(RESOURCES.PROJECT_SECRET, ACTIONS.CONFIGURE),
+
+  REPOSITORY_READ: permission(RESOURCES.REPOSITORY, ACTIONS.READ),
+  REPOSITORY_UPDATE: permission(RESOURCES.REPOSITORY, ACTIONS.UPDATE),
+
+  BRANCH_READ: permission(RESOURCES.BRANCH, ACTIONS.READ),
+  BRANCH_UPDATE: permission(RESOURCES.BRANCH, ACTIONS.UPDATE),
+
+  PIPELINE_READ: permission(RESOURCES.PIPELINE, ACTIONS.READ),
+  PIPELINE_EXECUTE: permission(RESOURCES.PIPELINE, ACTIONS.EXECUTE),
+  PIPELINE_CANCEL: permission(RESOURCES.PIPELINE, ACTIONS.CANCEL),
+  PIPELINE_DELETE: permission(RESOURCES.PIPELINE, ACTIONS.DELETE),
+
+  PIPELINE_LOG_READ: permission(RESOURCES.PIPELINE_LOG, ACTIONS.READ),
+  PIPELINE_LOG_EXPORT: permission(RESOURCES.PIPELINE_LOG, ACTIONS.EXPORT),
+
+  VULNERABILITY_READ: permission(RESOURCES.VULNERABILITY, ACTIONS.READ),
+  VULNERABILITY_UPDATE: permission(RESOURCES.VULNERABILITY, ACTIONS.UPDATE),
+  VULNERABILITY_ACCEPT_RISK: permission(
+    RESOURCES.VULNERABILITY,
+    ACTIONS.ACCEPT_RISK,
+  ),
+
+  SECURITY_GATE_READ: permission(RESOURCES.SECURITY_GATE, ACTIONS.READ),
+  SECURITY_GATE_CONFIGURE: permission(RESOURCES.SECURITY_GATE, ACTIONS.CONFIGURE),
+  SECURITY_GATE_APPROVE: permission(RESOURCES.SECURITY_GATE, ACTIONS.APPROVE),
+
+  SECURITY_REPORT_READ: permission(RESOURCES.SECURITY_REPORT, ACTIONS.READ),
+  SECURITY_REPORT_EXPORT: permission(RESOURCES.SECURITY_REPORT, ACTIONS.EXPORT),
+
+  SBOM_READ: permission(RESOURCES.SBOM, ACTIONS.READ),
+  IMAGE_READ: permission(RESOURCES.IMAGE, ACTIONS.READ),
+
+  SERVER_READ: permission(RESOURCES.SERVER, ACTIONS.READ),
+  SERVER_CREATE: permission(RESOURCES.SERVER, ACTIONS.CREATE),
+  SERVER_UPDATE: permission(RESOURCES.SERVER, ACTIONS.UPDATE),
+  SERVER_DELETE: permission(RESOURCES.SERVER, ACTIONS.DELETE),
+  SERVER_EXECUTE: permission(RESOURCES.SERVER, ACTIONS.EXECUTE),
+
+  DEPLOYMENT_READ: permission(RESOURCES.DEPLOYMENT, ACTIONS.READ),
+  DEPLOYMENT_CREATE: permission(RESOURCES.DEPLOYMENT, ACTIONS.CREATE),
+  DEPLOYMENT_UPDATE: permission(RESOURCES.DEPLOYMENT, ACTIONS.UPDATE),
+  DEPLOYMENT_CANCEL: permission(RESOURCES.DEPLOYMENT, ACTIONS.CANCEL),
+  DEPLOYMENT_APPROVE: permission(RESOURCES.DEPLOYMENT, ACTIONS.APPROVE),
+
+  NOTIFICATION_READ: permission(RESOURCES.NOTIFICATION, ACTIONS.READ),
+  NOTIFICATION_UPDATE: permission(RESOURCES.NOTIFICATION, ACTIONS.UPDATE),
+
+  AUDIT_LOG_READ: permission(RESOURCES.AUDIT_LOG, ACTIONS.READ),
+
+  INTEGRATION_READ: permission(RESOURCES.INTEGRATION, ACTIONS.READ),
+  INTEGRATION_MANAGE: permission(RESOURCES.INTEGRATION, ACTIONS.CONFIGURE),
+
+  GITHUB_TEAM_READ: permission(RESOURCES.GITHUB_TEAM, ACTIONS.READ),
+  GITHUB_TEAM_MANAGE: permission(RESOURCES.GITHUB_TEAM, ACTIONS.CONFIGURE),
+
+  USER_READ: permission(RESOURCES.USER, ACTIONS.READ),
+  USER_CREATE: permission(RESOURCES.USER, ACTIONS.CREATE),
+  USER_UPDATE: permission(RESOURCES.USER, ACTIONS.UPDATE),
+  USER_DELETE: permission(RESOURCES.USER, ACTIONS.DELETE),
+  USER_MANAGE_SESSIONS: permission(RESOURCES.USER, ACTIONS.MANAGE_SESSIONS),
+
+  SYSTEM_CONFIG_READ: permission(RESOURCES.SYSTEM_CONFIG, ACTIONS.READ),
+  SYSTEM_CONFIG_UPDATE: permission(RESOURCES.SYSTEM_CONFIG, ACTIONS.UPDATE),
+} as const;
+
+export type PermissionKey = keyof typeof PERMISSIONS;
+export type PermissionValue = (typeof PERMISSIONS)[PermissionKey];
+
+export const ALL_PERMISSIONS: ReadonlySet<PermissionValue> = new Set(
+  Object.values(PERMISSIONS),
+);
+
+/** Capacités débloquées par chaque permission spéciale. */
+export const SPECIAL_PERMISSION_CAPABILITIES: Record<
+  SpecialPermission,
+  ReadonlyArray<PermissionValue>
+> = {
+  [SpecialPermission.APPROVE_PRODUCTION]: [PERMISSIONS.DEPLOYMENT_APPROVE],
+  [SpecialPermission.MANAGE_SECURITY_POLICY]: [
+    PERMISSIONS.SECURITY_GATE_CONFIGURE,
+  ],
+  [SpecialPermission.MANAGE_SERVERS]: [
+    PERMISSIONS.SERVER_READ,
+    PERMISSIONS.SERVER_CREATE,
+    PERMISSIONS.SERVER_UPDATE,
+    PERMISSIONS.SERVER_DELETE,
+    PERMISSIONS.SERVER_EXECUTE,
+  ],
+  [SpecialPermission.MANAGE_INTEGRATIONS]: [
+    PERMISSIONS.INTEGRATION_READ,
+    PERMISSIONS.INTEGRATION_MANAGE,
+  ],
+  [SpecialPermission.MANAGE_PROJECT_MEMBERS]: [
+    PERMISSIONS.PROJECT_MANAGE_MEMBERS,
+    PERMISSIONS.PROJECT_MEMBER_READ,
+  ],
+  [SpecialPermission.MANAGE_GITHUB_TEAMS]: [
+    PERMISSIONS.GITHUB_TEAM_READ,
+    PERMISSIONS.GITHUB_TEAM_MANAGE,
+  ],
+  [SpecialPermission.ACCEPT_SECURITY_RISK]: [
+    PERMISSIONS.VULNERABILITY_ACCEPT_RISK,
+    PERMISSIONS.SECURITY_GATE_APPROVE,
+  ],
+  [SpecialPermission.MANAGE_DEPLOYMENTS]: [
+    PERMISSIONS.DEPLOYMENT_CREATE,
+    PERMISSIONS.DEPLOYMENT_UPDATE,
+    PERMISSIONS.DEPLOYMENT_CANCEL,
+  ],
+  [SpecialPermission.MANAGE_PROJECT_SECRETS]: [
+    PERMISSIONS.PROJECT_SECRET_MANAGE,
+  ],
+  [SpecialPermission.VIEW_SECURITY_AUDIT]: [PERMISSIONS.AUDIT_LOG_READ],
+};
+
+/** Permissions spéciales attribuables avec une portée projet. */
+export const PROJECT_SCOPED_SPECIAL_PERMISSIONS: ReadonlySet<SpecialPermission> =
+  new Set([
+    SpecialPermission.APPROVE_PRODUCTION,
+    SpecialPermission.MANAGE_SECURITY_POLICY,
+    SpecialPermission.MANAGE_PROJECT_MEMBERS,
+    SpecialPermission.MANAGE_GITHUB_TEAMS,
+    SpecialPermission.ACCEPT_SECURITY_RISK,
+    SpecialPermission.MANAGE_DEPLOYMENTS,
+    SpecialPermission.MANAGE_PROJECT_SECRETS,
+  ]);
+
+/** Permissions spéciales strictement globales. */
+export const GLOBAL_ONLY_SPECIAL_PERMISSIONS: ReadonlySet<SpecialPermission> =
+  new Set([
+    SpecialPermission.MANAGE_SERVERS,
+    SpecialPermission.MANAGE_INTEGRATIONS,
+    SpecialPermission.VIEW_SECURITY_AUDIT,
+  ]);

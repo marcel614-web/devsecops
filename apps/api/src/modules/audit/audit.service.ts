@@ -1,5 +1,7 @@
-import { Prisma, Role } from "@prisma/client";
+import { Prisma, Role, SpecialPermission } from "@prisma/client";
 import { prisma } from "../../utils/prisma";
+import { hasSpecialPermission } from "../authorization/permission.service";
+import { isPlatformAdmin } from "../authorization/role-permissions";
 
 export interface ActorContext {
   id: string;
@@ -22,8 +24,13 @@ export async function listAuditLogs(
 ) {
   const where: Prisma.AuditLogWhereInput = {};
 
-  // Un non-admin ne voit que son propre historique.
-  if (actor.role !== Role.ADMIN) {
+  const canReadAll =
+    isPlatformAdmin(actor.role) ||
+    (await hasSpecialPermission(actor, SpecialPermission.VIEW_SECURITY_AUDIT));
+
+  // Un utilisateur sans permission d'audit global ne voit que son propre
+  // historique. Le filtre par projet sera exposé séparément.
+  if (!canReadAll) {
     where.userId = actor.id;
   } else if (query.userId) {
     where.userId = query.userId;

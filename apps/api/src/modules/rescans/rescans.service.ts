@@ -12,6 +12,11 @@ import {
   ForbiddenError,
   NotFoundError,
 } from "../../utils/errors";
+import { requirePermission } from "../authorization/permission.service";
+import {
+  PERMISSIONS,
+  type PermissionValue,
+} from "../authorization/permissions.constants";
 import {
   enqueueRescanRun,
   rescanQueue,
@@ -35,16 +40,18 @@ const SUPPORTED_CONTROLS = new Set(["IMAGE"]);
 async function ensureProjectAccess(
   actor: ActorContext,
   projectId: string,
+  required: PermissionValue = PERMISSIONS.PROJECT_READ,
 ): Promise<{ id: string; ownerId: string }> {
+  await requirePermission(actor, required, {
+    projectId,
+    targetType: "Project",
+    targetId: projectId,
+  });
   const project = await prisma.project.findUnique({
     where: { id: projectId },
     select: { id: true, ownerId: true },
   });
   if (!project) throw new NotFoundError("Projet introuvable");
-  if (actor.role === Role.ADMIN) return project;
-  if (project.ownerId !== actor.id) {
-    throw new ForbiddenError("Accès interdit à ce projet");
-  }
   return project;
 }
 
@@ -80,7 +87,7 @@ export async function listRescans(
   projectId: string,
   query: RescanListQuery,
 ) {
-  await ensureProjectAccess(actor, projectId);
+  await ensureProjectAccess(actor, projectId, PERMISSIONS.PROJECT_READ);
   const skip = (query.page - 1) * query.pageSize;
 
   const [items, total] = await prisma.$transaction([
@@ -144,7 +151,7 @@ export async function getRescan(
   projectId: string,
   runId: string,
 ) {
-  await ensureProjectAccess(actor, projectId);
+  await ensureProjectAccess(actor, projectId, PERMISSIONS.PROJECT_READ);
   const run = await prisma.rescanRun.findFirst({
     where: { id: runId, projectId },
     include: {
@@ -204,7 +211,7 @@ export async function triggerRescan(
   actor: ActorContext,
   projectId: string,
 ) {
-  await ensureProjectAccess(actor, projectId);
+  await ensureProjectAccess(actor, projectId, PERMISSIONS.PIPELINE_EXECUTE);
 
   const config = await prisma.projectConfiguration.findUnique({
     where: { projectId },
@@ -310,7 +317,7 @@ export async function cancelRescan(
   projectId: string,
   runId: string,
 ) {
-  await ensureProjectAccess(actor, projectId);
+  await ensureProjectAccess(actor, projectId, PERMISSIONS.PIPELINE_CANCEL);
 
   const run = await prisma.rescanRun.findFirst({
     where: { id: runId, projectId },
@@ -376,7 +383,7 @@ export async function createRemediationPipeline(
   runId: string,
   input: RemediationInput,
 ) {
-  await ensureProjectAccess(actor, projectId);
+  await ensureProjectAccess(actor, projectId, PERMISSIONS.PIPELINE_EXECUTE);
 
   const [config, run] = await Promise.all([
     prisma.projectConfiguration.findUnique({

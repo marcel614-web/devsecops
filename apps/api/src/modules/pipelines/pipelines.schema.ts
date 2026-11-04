@@ -24,6 +24,15 @@ export const pipelineListQuerySchema = z.object({
   branch: z.string().trim().min(1).max(120).optional(),
 });
 
+/**
+ * Liste globale des pipelines accessibles à l'utilisateur.
+ * `projectId` est optionnel : sans lui, tous les pipelines visibles sont
+ * retournés. Les droits sont vérifiés côté service.
+ */
+export const globalPipelineListQuerySchema = pipelineListQuerySchema.extend({
+  projectId: z.string().min(1).optional(),
+});
+
 export const runPipelineSchema = z.object({
   // Le SHA est utilisé pour construire le tag Docker, qui part dans une
   // commande shell sur la VM de déploiement : on n'accepte qu'un SHA Git
@@ -78,6 +87,9 @@ export const vulnerabilityListQuerySchema = z.object({
 
 export type RunPipelineInput = z.infer<typeof runPipelineSchema>;
 export type PipelineListQuery = z.infer<typeof pipelineListQuerySchema>;
+export type GlobalPipelineListQuery = z.infer<
+  typeof globalPipelineListQuerySchema
+>;
 export type PipelineLogsQuery = z.infer<typeof pipelineLogsQuerySchema>;
 export type PipelineScansQuery = z.infer<typeof pipelineScansQuerySchema>;
 export type VulnerabilityListQuery = z.infer<typeof vulnerabilityListQuerySchema>;

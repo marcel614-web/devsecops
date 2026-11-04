@@ -1,11 +1,34 @@
 // apps/api/src/modules/projects/projects.service.ts
-import { Prisma, Role, SecurityGateExceptionStatus } from "@prisma/client";
+import {
+  Prisma,
+  ProjectMemberStatus,
+  ProjectRole,
+  Role,
+  SecurityGateExceptionStatus,
+  SpecialPermission,
+} from "@prisma/client";
 import { prisma } from "../../utils/prisma";
 import {
   ConflictError,
   ForbiddenError,
   NotFoundError,
 } from "../../utils/errors";
+import {
+  getEffectivePermissions,
+  hasSpecialPermission,
+  requirePermission,
+} from "../authorization/permission.service";
+import {
+  PERMISSIONS,
+  type PermissionValue,
+} from "../authorization/permissions.constants";
+import {
+  isPlatformAdmin,
+} from "../authorization/role-permissions";
+import {
+  projectAccessWhere,
+  requireProjectMembership,
+} from "../authorization/project-membership.service";
 import type {
   CreateGateExceptionInput,
   CreateProjectInput,
@@ -20,26 +43,24 @@ export interface ActorContext {
 }
 
 /**
- * Vérifie qu'un acteur peut accéder à un projet.
- *  - ADMIN : tous les projets (lecture et écriture).
- *  - DEVELOPER : uniquement ses propres projets.
- *
- * Toujours appelé AVANT toute opération sur un projet.
+ * Vérifie une permission projet précise. Le refus par défaut est appliqué par
+ * le service central : aucun service ne doit tester un rôle à la main.
  */
 async function ensureProjectAccess(
   actor: ActorContext,
   projectId: string,
+  required: PermissionValue = PERMISSIONS.PROJECT_READ,
 ): Promise<{ id: string; ownerId: string }> {
+  await requirePermission(actor, required, {
+    projectId,
+    targetType: "Project",
+    targetId: projectId,
+  });
   const project = await prisma.project.findUnique({
     where: { id: projectId },
     select: { id: true, ownerId: true },
   });
   if (!project) throw new NotFoundError("Projet introuvable");
-
-  if (actor.role === Role.ADMIN) return project;
-  if (project.ownerId !== actor.id) {
-    throw new ForbiddenError("Accès interdit à ce projet");
-  }
   return project;
 }
 
@@ -59,20 +80,21 @@ const PUBLIC_SELECT = {
 } satisfies Prisma.ProjectSelect;
 
 export async function listProjects(actor: ActorContext, query: ProjectListQuery) {
-  const where: Prisma.ProjectWhereInput = {};
-
-  // Isolation : un DEVELOPER ne voit QUE ses projets.
-  if (actor.role !== Role.ADMIN) {
-    where.ownerId = actor.id;
-  }
+  // Isolation : PLATFORM_ADMIN voit tout, les autres uniquement leurs
+  // projets (propriétaire historique ou membre actif).
+  const where: Prisma.ProjectWhereInput = {
+    AND: [projectAccessWhere(actor)],
+  };
 
   if (query.technology) where.technology = query.technology;
   if (query.provider) where.provider = query.provider;
   if (query.search) {
-    where.OR = [
-      { name: { contains: query.search, mode: "insensitive" } },
-      { repoFullName: { contains: query.search, mode: "insensitive" } },
-    ];
+    (where.AND as Prisma.ProjectWhereInput[]).push({
+      OR: [
+        { name: { contains: query.search, mode: "insensitive" } },
+        { repoFullName: { contains: query.search, mode: "insensitive" } },
+      ],
+    });
   }
 
   const skip = (query.page - 1) * query.pageSize;
@@ -98,7 +120,7 @@ export async function listProjects(actor: ActorContext, query: ProjectListQuery)
 }
 
 export async function getProject(actor: ActorContext, projectId: string) {
-  await ensureProjectAccess(actor, projectId);
+  await ensureProjectAccess(actor, projectId, PERMISSIONS.PROJECT_READ);
 
   const project = await prisma.project.findUnique({
     where: { id: projectId },
@@ -109,12 +131,21 @@ export async function getProject(actor: ActorContext, projectId: string) {
         select: { id: true, email: true, name: true },
       },
       _count: {
-        select: { pipelines: true, deployments: true },
+        select: { pipelines: true, deployments: true, members: true },
       },
     },
   });
   if (!project) throw new NotFoundError("Projet introuvable");
-  return project;
+
+  const membership = await requireProjectMembership(actor, projectId);
+  const permissions = await getEffectivePermissions(actor, projectId);
+
+  return {
+    ...project,
+    currentUserRole: membership.role,
+    isPlatformAdmin: membership.isPlatformAdmin,
+    permissions: [...permissions].sort(),
+  };
 }
 
 export async function createProject(actor: ActorContext, input: CreateProjectInput) {
@@ -130,9 +161,9 @@ export async function createProject(actor: ActorContext, input: CreateProjectInp
       select: { role: true },
     });
     const allowed =
-      actor.role === Role.ADMIN ||
+      isPlatformAdmin(actor.role) ||
       server.ownerId === actor.id ||
-      owner?.role === Role.ADMIN;
+      isPlatformAdmin(owner?.role ?? "");
     if (!allowed) {
       throw new ForbiddenError("Ce serveur ne vous appartient pas");
     }
@@ -167,6 +198,17 @@ export async function createProject(actor: ActorContext, input: CreateProjectInp
         serverId: input.serverId ?? null,
       },
       select: PUBLIC_SELECT,
+    });
+
+    // Le créateur devient OWNER explicite du projet. Le champ historique
+    // ownerId est conservé pour compatibilité.
+    await tx.projectMember.create({
+      data: {
+        projectId: created.id,
+        userId: actor.id,
+        role: ProjectRole.OWNER,
+        status: ProjectMemberStatus.ACTIVE,
+      },
     });
 
     // Configuration par défaut : branche cible, scanners activés, seuils du gate.
@@ -207,7 +249,7 @@ export async function updateProject(
   projectId: string,
   input: UpdateProjectInput,
 ) {
-  await ensureProjectAccess(actor, projectId);
+  await ensureProjectAccess(actor, projectId, PERMISSIONS.PROJECT_UPDATE);
 
   // Si on change le serverId, il doit appartenir à l'acteur.
   if (input.serverId) {
@@ -221,9 +263,9 @@ export async function updateProject(
       select: { role: true },
     });
     const allowed =
-      actor.role === Role.ADMIN ||
+      isPlatformAdmin(actor.role) ||
       server.ownerId === actor.id ||
-      owner?.role === Role.ADMIN;
+      isPlatformAdmin(owner?.role ?? "");
     if (!allowed) {
       throw new ForbiddenError("Ce serveur ne vous appartient pas");
     }
@@ -259,7 +301,7 @@ export async function updateProject(
 }
 
 export async function deleteProject(actor: ActorContext, projectId: string) {
-  await ensureProjectAccess(actor, projectId);
+  await ensureProjectAccess(actor, projectId, PERMISSIONS.PROJECT_DELETE);
 
   await prisma.project.delete({ where: { id: projectId } });
 
@@ -274,7 +316,7 @@ export async function deleteProject(actor: ActorContext, projectId: string) {
 }
 
 export async function getProjectConfig(actor: ActorContext, projectId: string) {
-  await ensureProjectAccess(actor, projectId);
+  await ensureProjectAccess(actor, projectId, PERMISSIONS.PROJECT_READ);
 
   const config = await prisma.projectConfiguration.findUnique({
     where: { projectId },
@@ -283,49 +325,96 @@ export async function getProjectConfig(actor: ActorContext, projectId: string) {
   return config;
 }
 
+/**
+ * Champs qui relèvent de la politique de sécurité. Ils peuvent être modifiés
+ * par un porteur de MANAGE_SECURITY_POLICY, sans lui donner pour autant le
+ * droit de changer le dépôt, les serveurs, les ports ou la planification.
+ */
+const SECURITY_POLICY_FIELDS = [
+  "mandatoryControls",
+  "requireExceptionApproval",
+  "gateMode",
+  "gateEnforcementAt",
+  "securityGateCritical",
+  "securityGateHigh",
+  "securityGateMedium",
+  "securityGateLow",
+  "gateSecretsEnabled",
+  "gateSastEnabled",
+  "gateScaEnabled",
+  "gateIacEnabled",
+  "gateImageEnabled",
+  "gateDastEnabled",
+  "requireProductionApproval",
+  "deploymentStrategy",
+  "gitleaksEnabled",
+  "semgrepEnabled",
+  "scaEnabled",
+  "iacEnabled",
+  "trivyEnabled",
+  "syftEnabled",
+  "zapEnabled",
+  "cosignEnabled",
+  "ansibleLintEnabled",
+  "ansibleSyntaxCheckEnabled",
+] as const;
+
+const SECURITY_POLICY_FIELD_SET = new Set<string>(SECURITY_POLICY_FIELDS);
+
 export async function updateProjectConfig(
   actor: ActorContext,
   projectId: string,
   input: UpdateProjectConfigInput,
 ) {
-  await ensureProjectAccess(actor, projectId);
+  await ensureProjectAccess(actor, projectId, PERMISSIONS.PROJECT_READ);
 
   const current = await prisma.projectConfiguration.findUnique({
     where: { projectId },
   });
   if (!current) throw new NotFoundError("Configuration introuvable");
 
-  // ------------------------------------------------
-  // Protection de la politique de sécurité.
-  // Un DEVELOPER ne peut pas modifier les règles
-  // protégées ni désactiver un contrôle obligatoire.
-  // ------------------------------------------------
-  if (actor.role !== Role.ADMIN) {
-    const forbidden =
-      input.mandatoryControls !== undefined ||
-      input.requireExceptionApproval !== undefined ||
-      input.gateMode !== undefined ||
-      input.gateEnforcementAt !== undefined ||
-      input.securityGateCritical !== undefined ||
-      input.securityGateHigh !== undefined ||
-      input.securityGateMedium !== undefined ||
-      input.securityGateLow !== undefined ||
-      input.gateSecretsEnabled !== undefined ||
-      input.gateSastEnabled !== undefined ||
-      input.gateScaEnabled !== undefined ||
-      input.gateIacEnabled !== undefined ||
-      input.gateImageEnabled !== undefined ||
-      input.gateDastEnabled !== undefined ||
-      input.requireProductionApproval !== undefined ||
-      // Changer la stratégie directe contournerait l'approbation et le DAST
-      // préalable : ce choix reste protégé comme la politique de sécurité.
-      input.deploymentStrategy !== undefined;
-    if (forbidden) {
-      throw new ForbiddenError(
-        "La politique de sécurité est protégée : seul un ADMIN peut la modifier",
-      );
-    }
+  const effectivePermissions = await getEffectivePermissions(actor, projectId);
+  const canConfigureProject =
+    isPlatformAdmin(actor.role) ||
+    effectivePermissions.has(PERMISSIONS.PROJECT_CONFIGURE);
+  const canManagePolicy =
+    isPlatformAdmin(actor.role) ||
+    (await hasSpecialPermission(
+      actor,
+      SpecialPermission.MANAGE_SECURITY_POLICY,
+      projectId,
+    ));
 
+  if (!canConfigureProject && !canManagePolicy) {
+    throw new ForbiddenError(
+      "Permission requise pour modifier la configuration du projet",
+    );
+  }
+
+  const requestedFields = Object.keys(input);
+  const requestedPolicyFields = requestedFields.filter((field) =>
+    SECURITY_POLICY_FIELD_SET.has(field),
+  );
+  const hasProtectedPolicyField = requestedPolicyFields.length > 0;
+  const hasNonPolicyField = requestedFields.some(
+    (field) => !SECURITY_POLICY_FIELD_SET.has(field),
+  );
+
+  // Un porteur de MANAGE_SECURITY_POLICY ne peut modifier que les champs de
+  // politique ; les autres champs restent réservés à PROJECT_CONFIGURE.
+  if (!canConfigureProject && hasNonPolicyField) {
+    throw new ForbiddenError(
+      "MANAGE_SECURITY_POLICY ne permet de modifier que la politique de sécurité",
+    );
+  }
+
+  if (!canManagePolicy && hasProtectedPolicyField) {
+    throw new ForbiddenError(
+      "La politique de sécurité est protégée : la permission spéciale MANAGE_SECURITY_POLICY est requise",
+    );
+  }
+
+  if (!canManagePolicy) {
     const mandatory = new Set(current.mandatoryControls);
     const disabledMandatory =
       (mandatory.has("SECRET") && input.gitleaksEnabled === false) ||
@@ -341,32 +430,7 @@ export async function updateProjectConfig(
     }
   }
 
-  const policyChangingFields = [
-    "gitleaksEnabled",
-    "semgrepEnabled",
-    "scaEnabled",
-    "iacEnabled",
-    "trivyEnabled",
-    "syftEnabled",
-    "zapEnabled",
-    "cosignEnabled",
-    "securityGateCritical",
-    "securityGateHigh",
-    "securityGateMedium",
-    "securityGateLow",
-    "gateMode",
-    "gateEnforcementAt",
-    "gateSecretsEnabled",
-    "gateSastEnabled",
-    "gateScaEnabled",
-    "gateIacEnabled",
-    "gateImageEnabled",
-    "gateDastEnabled",
-    "mandatoryControls",
-    "requireExceptionApproval",
-    "ansibleLintEnabled",
-    "ansibleSyntaxCheckEnabled",
-  ] as const;
+  const policyChangingFields = SECURITY_POLICY_FIELDS;
   const policyChanged = policyChangingFields.some(
     (key) => input[key] !== undefined,
   );
@@ -569,7 +633,7 @@ export async function listGateExceptions(
   actor: ActorContext,
   projectId: string,
 ) {
-  await ensureProjectAccess(actor, projectId);
+  await ensureProjectAccess(actor, projectId, PERMISSIONS.SECURITY_GATE_READ);
   await expireGateExceptions(projectId);
 
   return prisma.securityGateException.findMany({
@@ -584,7 +648,7 @@ export async function getGateException(
   projectId: string,
   exceptionId: string,
 ) {
-  await ensureProjectAccess(actor, projectId);
+  await ensureProjectAccess(actor, projectId, PERMISSIONS.SECURITY_GATE_READ);
   await expireGateExceptions(projectId);
 
   const exception = await prisma.securityGateException.findFirst({
@@ -600,7 +664,7 @@ export async function createGateException(
   projectId: string,
   input: CreateGateExceptionInput,
 ) {
-  await ensureProjectAccess(actor, projectId);
+  await ensureProjectAccess(actor, projectId, PERMISSIONS.SECURITY_GATE_CONFIGURE);
 
   if (input.expiresAt && input.expiresAt.getTime() <= Date.now()) {
     throw new ConflictError("La date d'expiration doit être dans le futur");
@@ -616,7 +680,7 @@ export async function createGateException(
     select: { requireExceptionApproval: true },
   });
   const autoApprove =
-    actor.role === Role.ADMIN || config?.requireExceptionApproval === false;
+    isPlatformAdmin(actor.role) || config?.requireExceptionApproval === false;
   const status = autoApprove
     ? SecurityGateExceptionStatus.APPROVED
     : SecurityGateExceptionStatus.PENDING;
@@ -665,7 +729,7 @@ export async function createGateException(
           metadataJson: {
             autoApproved: true,
             reason:
-              actor.role === Role.ADMIN
+              isPlatformAdmin(actor.role)
                 ? "Créée par un administrateur"
                 : "Approbation désactivée par la politique",
           },
@@ -705,7 +769,7 @@ export async function decideGateException(
   decision: "APPROVE" | "REJECT" | "REVOKE",
   comment?: string,
 ) {
-  await ensureProjectAccess(actor, projectId);
+  await ensureProjectAccess(actor, projectId, PERMISSIONS.SECURITY_GATE_READ);
   await expireGateExceptions(projectId);
 
   const exception = await prisma.securityGateException.findFirst({
@@ -718,9 +782,11 @@ export async function decideGateException(
   let action: string;
 
   if (decision === "APPROVE") {
-    if (actor.role !== Role.ADMIN) {
-      throw new ForbiddenError("Seul un ADMIN peut approuver une exception");
-    }
+    await requirePermission(actor, PERMISSIONS.SECURITY_GATE_APPROVE, {
+      projectId,
+      targetType: "SecurityGateException",
+      targetId: exceptionId,
+    });
     if (exception.status !== SecurityGateExceptionStatus.PENDING) {
       throw new ConflictError("Seule une exception en attente peut être approuvée");
     }
@@ -735,9 +801,11 @@ export async function decideGateException(
     nextStatus = SecurityGateExceptionStatus.APPROVED;
     action = "APPROVED";
   } else if (decision === "REJECT") {
-    if (actor.role !== Role.ADMIN) {
-      throw new ForbiddenError("Seul un ADMIN peut rejeter une exception");
-    }
+    await requirePermission(actor, PERMISSIONS.SECURITY_GATE_APPROVE, {
+      projectId,
+      targetType: "SecurityGateException",
+      targetId: exceptionId,
+    });
     if (exception.status !== SecurityGateExceptionStatus.PENDING) {
       throw new ConflictError("Seule une exception en attente peut être rejetée");
     }
@@ -745,9 +813,13 @@ export async function decideGateException(
     action = "REJECTED";
   } else {
     const canRevoke =
-      actor.role === Role.ADMIN || exception.createdById === actor.id;
+      isPlatformAdmin(actor.role) || exception.createdById === actor.id;
     if (!canRevoke) {
-      throw new ForbiddenError("Vous ne pouvez pas révoquer cette exception");
+      await requirePermission(actor, PERMISSIONS.SECURITY_GATE_APPROVE, {
+        projectId,
+        targetType: "SecurityGateException",
+        targetId: exceptionId,
+      });
     }
     if (
       exception.status !== SecurityGateExceptionStatus.PENDING &&

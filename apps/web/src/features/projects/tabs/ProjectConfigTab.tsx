@@ -1,5 +1,6 @@
 import { useEffect, useMemo, useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
+import { isPlatformAdminRole } from "@/lib/roles";
 import {
   AlertTriangle,
   Check,
@@ -169,7 +170,7 @@ export function ProjectConfigTab({ project }: { project: ProjectDetail }) {
   const qc = useQueryClient();
   const toast = useToast();
   const user = useAuthStore((s) => s.user);
-  const isAdmin = user?.role === "ADMIN";
+  const isAdmin = isPlatformAdminRole(user?.role);
   const { data: servers, isLoading: serversLoading } = useServers({
     pageSize: 100,
   });

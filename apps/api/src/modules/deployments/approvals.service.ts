@@ -6,6 +6,7 @@ import {
   PipelineStatus,
   Prisma,
   Role,
+  SpecialPermission,
   StepStatus,
 } from "@prisma/client";
 import { prisma } from "../../utils/prisma";
@@ -14,6 +15,12 @@ import {
   ForbiddenError,
   NotFoundError,
 } from "../../utils/errors";
+import {
+  hasSpecialPermission,
+  requirePermission,
+} from "../authorization/permission.service";
+import { PERMISSIONS } from "../authorization/permissions.constants";
+import { projectAccessWhere } from "../authorization/project-membership.service";
 import { resumePipeline } from "../pipelines/pipelines.service";
 import type {
   ApprovalDecisionInput,
@@ -25,22 +32,14 @@ export interface ActorContext {
   role: Role;
 }
 
-function isAuthorized(
-  actor: ActorContext,
-  project: { ownerId: string },
-): boolean {
-  return actor.role === Role.ADMIN || project.ownerId === actor.id;
-}
-
 export async function listApprovals(
   actor: ActorContext,
   query: ApprovalListQuery,
 ) {
-  const where: Prisma.DeploymentApprovalWhereInput = {};
+  const where: Prisma.DeploymentApprovalWhereInput = {
+    project: projectAccessWhere(actor),
+  };
   if (query.status) where.status = query.status;
-  if (actor.role !== Role.ADMIN) {
-    where.project = { ownerId: actor.id };
-  }
 
   const skip = (query.page - 1) * query.pageSize;
   const [items, total] = await prisma.$transaction([
@@ -94,11 +93,11 @@ async function loadApproval(actor: ActorContext, approvalId: string) {
   });
 
   if (!approval) throw new NotFoundError("Approbation introuvable");
-  if (!isAuthorized(actor, approval.project)) {
-    throw new ForbiddenError(
-      "Seul le propriétaire du projet ou un administrateur peut décider de cette approbation",
-    );
-  }
+  await requirePermission(actor, PERMISSIONS.DEPLOYMENT_READ, {
+    projectId: approval.projectId,
+    targetType: "DeploymentApproval",
+    targetId: approval.id,
+  });
   return approval;
 }
 
@@ -115,6 +114,27 @@ export async function decideApproval(
   input: ApprovalDecisionInput,
 ) {
   const approval = await loadApproval(actor, approvalId);
+
+  await requirePermission(actor, PERMISSIONS.DEPLOYMENT_APPROVE, {
+    projectId: approval.projectId,
+    targetType: "DeploymentApproval",
+    targetId: approval.id,
+  });
+
+  // Un utilisateur ne peut pas approuver sa propre livraison en production
+  // sans la permission spéciale APPROVE_PRODUCTION.
+  if (
+    approval.requestedById === actor.id &&
+    !(await hasSpecialPermission(
+      actor,
+      SpecialPermission.APPROVE_PRODUCTION,
+      approval.projectId,
+    ))
+  ) {
+    throw new ForbiddenError(
+      "Vous ne pouvez pas approuver votre propre mise en production sans la permission APPROVE_PRODUCTION",
+    );
+  }
 
   if (approval.status !== DeploymentApprovalStatus.PENDING) {
     throw new ConflictError(

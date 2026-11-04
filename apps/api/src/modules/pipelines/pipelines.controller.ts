@@ -3,6 +3,7 @@ import type { NextFunction, Request, Response } from "express";
 import { UnauthorizedError } from "../../utils/errors";
 import * as pipelinesService from "./pipelines.service";
 import type {
+  GlobalPipelineListQuery,
   PipelineListQuery,
   PipelineLogsQuery,
   PipelineScansQuery,
@@ -29,6 +30,24 @@ export async function listPipelines(
       actor,
       req.params.projectId,
       req.query as unknown as PipelineListQuery,
+    );
+    res.json(result);
+  } catch (err) {
+    next(err);
+  }
+}
+
+/** Liste globale de tous les pipelines accessibles, avec filtre projet optionnel. */
+export async function listAllPipelines(
+  req: Request,
+  res: Response,
+  next: NextFunction,
+): Promise<void> {
+  try {
+    const actor = actorFrom(req);
+    const result = await pipelinesService.listAllPipelines(
+      actor,
+      req.query as unknown as GlobalPipelineListQuery,
     );
     res.json(result);
   } catch (err) {

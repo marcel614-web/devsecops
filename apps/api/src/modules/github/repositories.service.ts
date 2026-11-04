@@ -1,6 +1,10 @@
 // apps/api/src/modules/github/repositories.service.ts
 import { prisma } from "../../utils/prisma";
-import { BadRequestError, ForbiddenError, NotFoundError } from "../../utils/errors";
+import { BadRequestError, NotFoundError } from "../../utils/errors";
+import { requirePermission } from "../authorization/permission.service";
+import { PERMISSIONS } from "../authorization/permissions.constants";
+import { isPlatformAdmin } from "../authorization/role-permissions";
+import type { AuthorizationActor } from "../authorization/project-membership.service";
 import { getInstallationOctokit } from "./github-app.service";
 
 /**
@@ -198,11 +202,17 @@ export async function listCommits(
  *  - le repository appartient à une installation de l'utilisateur
  */
 export async function associateRepositoryToProject(
-  userId: string,
+  actor: AuthorizationActor,
   projectId: string,
   repositoryId: string,
   branch: string,
 ) {
+  await requirePermission(actor, PERMISSIONS.REPOSITORY_UPDATE, {
+    projectId,
+    targetType: "Project",
+    targetId: projectId,
+  });
+
   const [project, repo] = await Promise.all([
     prisma.project.findUnique({
       where: { id: projectId },
@@ -211,7 +221,10 @@ export async function associateRepositoryToProject(
     prisma.gitHubRepository.findFirst({
       where: {
         id: repositoryId,
-        installation: { userId, revokedAt: null },
+        installation: {
+          revokedAt: null,
+          ...(isPlatformAdmin(actor.role) ? {} : { userId: actor.id }),
+        },
       },
       select: {
         id: true,
@@ -225,7 +238,6 @@ export async function associateRepositoryToProject(
   ]);
 
   if (!project) throw new NotFoundError("Projet introuvable");
-  if (project.ownerId !== userId) throw new ForbiddenError("Accès interdit à ce projet");
   if (!repo) throw new NotFoundError("Repository introuvable");
 
   // Vérifie que la branche existe côté GitHub
@@ -266,7 +278,7 @@ export async function associateRepositoryToProject(
 
   await prisma.auditLog.create({
     data: {
-      userId,
+      userId: actor.id,
       action: "PROJECT_REPOSITORY_ASSOCIATED",
       targetType: "Project",
       targetId: projectId,
@@ -281,15 +293,20 @@ export async function associateRepositoryToProject(
  * Détache un repository d'un projet.
  */
 export async function detachRepositoryFromProject(
-  userId: string,
+  actor: AuthorizationActor,
   projectId: string,
 ) {
+  await requirePermission(actor, PERMISSIONS.REPOSITORY_UPDATE, {
+    projectId,
+    targetType: "Project",
+    targetId: projectId,
+  });
+
   const project = await prisma.project.findUnique({
     where: { id: projectId },
     select: { id: true, ownerId: true },
   });
   if (!project) throw new NotFoundError("Projet introuvable");
-  if (project.ownerId !== userId) throw new ForbiddenError("Accès interdit à ce projet");
 
   await prisma.project.update({
     where: { id: projectId },
@@ -301,7 +318,7 @@ export async function detachRepositoryFromProject(
 
   await prisma.auditLog.create({
     data: {
-      userId,
+      userId: actor.id,
       action: "PROJECT_REPOSITORY_DETACHED",
       targetType: "Project",
       targetId: projectId,

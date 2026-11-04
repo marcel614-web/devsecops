@@ -1,7 +1,9 @@
 // apps/api/src/modules/verifications/verifications.service.ts
 import { Role } from "@prisma/client";
 import { prisma } from "../../utils/prisma";
-import { ForbiddenError, NotFoundError } from "../../utils/errors";
+import { NotFoundError } from "../../utils/errors";
+import { requirePermission } from "../authorization/permission.service";
+import { PERMISSIONS } from "../authorization/permissions.constants";
 import type { VerificationListQuery } from "./verifications.schema";
 
 export interface ActorContext {
@@ -10,15 +12,16 @@ export interface ActorContext {
 }
 
 async function ensureProjectAccess(actor: ActorContext, projectId: string) {
+  await requirePermission(actor, PERMISSIONS.DEPLOYMENT_READ, {
+    projectId,
+    targetType: "Project",
+    targetId: projectId,
+  });
   const project = await prisma.project.findUnique({
     where: { id: projectId },
     select: { id: true, ownerId: true },
   });
   if (!project) throw new NotFoundError("Projet introuvable");
-  if (actor.role === Role.ADMIN) return project;
-  if (project.ownerId !== actor.id) {
-    throw new ForbiddenError("Accès interdit à ce projet");
-  }
   return project;
 }
 

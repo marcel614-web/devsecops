@@ -1,6 +1,12 @@
 import { DeploymentStatus, Prisma, Role } from "@prisma/client";
 import { prisma } from "../../utils/prisma";
 import { NotFoundError, ForbiddenError } from "../../utils/errors";
+import { requirePermission } from "../authorization/permission.service";
+import {
+  PERMISSIONS,
+  type PermissionValue,
+} from "../authorization/permissions.constants";
+import { projectAccessWhere } from "../authorization/project-membership.service";
 import { runRemoteCommand } from "./ssh.util";
 
 export interface ActorContext {
@@ -10,7 +16,11 @@ export interface ActorContext {
 
 const EXTERNAL_PORT = 8080;
 
-async function loadDeployment(actor: ActorContext, id: string) {
+async function loadDeployment(
+  actor: ActorContext,
+  id: string,
+  required: PermissionValue = PERMISSIONS.DEPLOYMENT_READ,
+) {
   const deployment = await prisma.deployment.findUnique({
     where: { id },
     include: {
@@ -25,17 +35,18 @@ async function loadDeployment(actor: ActorContext, id: string) {
   });
 
   if (!deployment) throw new NotFoundError("Déploiement introuvable");
-  if (actor.role !== Role.ADMIN && deployment.project.ownerId !== actor.id) {
-    throw new ForbiddenError("Accès interdit à ce déploiement");
-  }
+  await requirePermission(actor, required, {
+    projectId: deployment.projectId,
+    targetType: "Deployment",
+    targetId: id,
+  });
   return deployment;
 }
 
 export async function listDeployments(actor: ActorContext) {
-  const where =
-    actor.role === Role.ADMIN
-      ? {}
-      : { project: { ownerId: actor.id } };
+  const where: Prisma.DeploymentWhereInput = {
+    project: projectAccessWhere(actor),
+  };
 
   return prisma.deployment.findMany({
     where,
@@ -60,14 +71,11 @@ export async function listProjectDeployments(
   projectId: string,
   query: { page: number; pageSize: number },
 ) {
-  const project = await prisma.project.findUnique({
-    where: { id: projectId },
-    select: { id: true, ownerId: true },
+  await requirePermission(actor, PERMISSIONS.DEPLOYMENT_READ, {
+    projectId,
+    targetType: "Project",
+    targetId: projectId,
   });
-  if (!project) throw new NotFoundError("Projet introuvable");
-  if (actor.role !== Role.ADMIN && project.ownerId !== actor.id) {
-    throw new ForbiddenError("Accès interdit à ce projet");
-  }
 
   const where: Prisma.DeploymentWhereInput = { projectId };
   const skip = (query.page - 1) * query.pageSize;
@@ -175,7 +183,11 @@ function composeCommand(
 }
 
 export async function startDeployment(actor: ActorContext, id: string) {
-  const deployment = await loadDeployment(actor, id);
+  const deployment = await loadDeployment(
+    actor,
+    id,
+    PERMISSIONS.DEPLOYMENT_UPDATE,
+  );
   const server = deployment.server;
   const project = deployment.project;
   const dir = remoteDir(server.username, project.id, deployment.environment);
@@ -217,7 +229,11 @@ export async function startDeployment(actor: ActorContext, id: string) {
 }
 
 export async function stopDeployment(actor: ActorContext, id: string) {
-  const deployment = await loadDeployment(actor, id);
+  const deployment = await loadDeployment(
+    actor,
+    id,
+    PERMISSIONS.DEPLOYMENT_CANCEL,
+  );
   const server = deployment.server;
   const project = deployment.project;
   const dir = remoteDir(server.username, project.id, deployment.environment);
@@ -243,7 +259,11 @@ export async function stopDeployment(actor: ActorContext, id: string) {
 }
 
 export async function restartDeployment(actor: ActorContext, id: string) {
-  const deployment = await loadDeployment(actor, id);
+  const deployment = await loadDeployment(
+    actor,
+    id,
+    PERMISSIONS.DEPLOYMENT_UPDATE,
+  );
   const server = deployment.server;
   const project = deployment.project;
   const dir = remoteDir(server.username, project.id, deployment.environment);
@@ -270,7 +290,11 @@ export async function restartDeployment(actor: ActorContext, id: string) {
 }
 
 export async function uninstallDeployment(actor: ActorContext, id: string) {
-  const deployment = await loadDeployment(actor, id);
+  const deployment = await loadDeployment(
+    actor,
+    id,
+    PERMISSIONS.DEPLOYMENT_CANCEL,
+  );
   const server = deployment.server;
   const project = deployment.project;
   const dir = remoteDir(server.username, project.id, deployment.environment);

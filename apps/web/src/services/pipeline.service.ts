@@ -16,6 +16,10 @@ export interface ListPipelinesParams {
   branch?: string;
 }
 
+export interface ListGlobalPipelinesParams extends ListPipelinesParams {
+  projectId?: string;
+}
+
 export interface RunPipelineInput {
   branch?: string;
   commitSha?: string;
@@ -24,6 +28,11 @@ export interface RunPipelineInput {
 }
 
 export const pipelineService = {
+  listAll: (params?: ListGlobalPipelinesParams) =>
+    api
+      .get<Paginated<Pipeline>>("/api/pipelines", { params })
+      .then((r) => r.data),
+
   listByProject: (projectId: string, params?: ListPipelinesParams) =>
     api
       .get<Paginated<Pipeline>>(`/api/projects/${projectId}/pipelines`, { params })

@@ -3,7 +3,13 @@ import fs from "node:fs/promises";
 import path from "node:path";
 import { execFile } from "node:child_process";
 import { promisify } from "node:util";
-import { PipelineStatus, Prisma, Role, StepStatus } from "@prisma/client";
+import {
+  PipelineStatus,
+  Prisma,
+  ProjectRole,
+  Role,
+  StepStatus,
+} from "@prisma/client";
 import { isFullGitSha } from "@devsecops/shared";
 import { prisma } from "../../utils/prisma";
 import {
@@ -11,6 +17,18 @@ import {
   ForbiddenError,
   NotFoundError,
 } from "../../utils/errors";
+import {
+  requirePermission,
+} from "../authorization/permission.service";
+import {
+  PERMISSIONS,
+  type PermissionValue,
+} from "../authorization/permissions.constants";
+import { isPlatformAdmin } from "../authorization/role-permissions";
+import {
+  projectAccessWhere,
+  requireProjectMembership,
+} from "../authorization/project-membership.service";
 import { pipelineQueue } from "../../queues/pipeline.queue";
 import { redisConnection } from "../../queues/connection";
 import { listCommits } from "../github/repositories.service";
@@ -18,6 +36,7 @@ import { logWarn } from "../../utils/logger";
 import { buildDefaultSteps } from "./pipeline.steps";
 import { createPipelineSecurityPolicy } from "./policy-snapshot";
 import type {
+  GlobalPipelineListQuery,
   PipelineListQuery,
   PipelineLogsQuery,
   PipelineScansQuery,
@@ -44,6 +63,7 @@ export interface ActorContext {
 async function ensureProjectAccess(
   actor: ActorContext,
   projectId: string,
+  required: PermissionValue = PERMISSIONS.PIPELINE_READ,
 ): Promise<{
   id: string;
   ownerId: string;
@@ -52,6 +72,12 @@ async function ensureProjectAccess(
   repoFullName: string;
   githubRepositoryId: string | null;
 }> {
+  await requirePermission(actor, required, {
+    projectId,
+    targetType: "Project",
+    targetId: projectId,
+  });
+
   const project = await prisma.project.findUnique({
     where: { id: projectId },
     select: {
@@ -64,11 +90,6 @@ async function ensureProjectAccess(
     },
   });
   if (!project) throw new NotFoundError("Projet introuvable");
-
-  if (actor.role === Role.ADMIN) return project;
-  if (project.ownerId !== actor.id) {
-    throw new ForbiddenError("Accès interdit à ce projet");
-  }
   return project;
 }
 
@@ -190,9 +211,12 @@ export async function listPipelines(
   projectId: string,
   query: PipelineListQuery,
 ) {
-  await ensureProjectAccess(actor, projectId);
+  await ensureProjectAccess(actor, projectId, PERMISSIONS.PIPELINE_READ);
 
-  const where: Prisma.PipelineWhereInput = { projectId };
+  const where: Prisma.PipelineWhereInput = {
+    projectId,
+    project: projectAccessWhere(actor),
+  };
   if (query.status) where.status = query.status;
   if (query.branch) where.branch = query.branch;
 
@@ -238,6 +262,71 @@ export async function listPipelines(
   };
 }
 
+/**
+ * Liste globale : tous les pipelines accessibles à l'acteur, avec un filtre
+ * optionnel par projet. Un DEVELOPER ne voit que les projets dont il est
+ * propriétaire ; un ADMIN voit tous les projets.
+ */
+export async function listAllPipelines(
+  actor: ActorContext,
+  query: GlobalPipelineListQuery,
+) {
+  const where: Prisma.PipelineWhereInput = {
+    project: projectAccessWhere(actor),
+  };
+
+  if (query.projectId) {
+    await ensureProjectAccess(actor, query.projectId, PERMISSIONS.PIPELINE_READ);
+    where.projectId = query.projectId;
+  }
+
+  if (query.status) where.status = query.status;
+  if (query.branch) where.branch = query.branch;
+
+  const skip = (query.page - 1) * query.pageSize;
+
+  const [items, total] = await prisma.$transaction([
+    prisma.pipeline.findMany({
+      where,
+      orderBy: { createdAt: "desc" },
+      skip,
+      take: query.pageSize,
+      select: {
+        id: true,
+        projectId: true,
+        commitSha: true,
+        branch: true,
+        author: true,
+        trigger: true,
+        status: true,
+        startedAt: true,
+        finishedAt: true,
+        durationMs: true,
+        createdAt: true,
+        project: {
+          select: { id: true, name: true, repoFullName: true },
+        },
+        _count: { select: { steps: true, scans: true } },
+        steps: {
+          where: { status: { not: StepStatus.SUCCESS } },
+          orderBy: { order: "asc" },
+          take: 1,
+          select: { id: true, name: true, order: true, status: true },
+        },
+      },
+    }),
+    prisma.pipeline.count({ where }),
+  ]);
+
+  return {
+    items,
+    page: query.page,
+    pageSize: query.pageSize,
+    total,
+    totalPages: Math.ceil(total / query.pageSize),
+  };
+}
+
 // ============================================================
 // DETAIL
 // ============================================================
@@ -247,7 +336,7 @@ export async function getPipeline(
   projectId: string,
   pipelineId: string,
 ) {
-  await ensureProjectAccess(actor, projectId);
+  await ensureProjectAccess(actor, projectId, PERMISSIONS.PIPELINE_READ);
 
   const pipeline = await prisma.pipeline.findFirst({
     where: { id: pipelineId, projectId },
@@ -284,7 +373,11 @@ export async function runPipeline(
   projectId: string,
   input: RunPipelineInput,
 ) {
-  const project = await ensureProjectAccess(actor, projectId);
+  const project = await ensureProjectAccess(
+    actor,
+    projectId,
+    PERMISSIONS.PIPELINE_EXECUTE,
+  );
 
   const config = await prisma.projectConfiguration.findUnique({
     where: { projectId },
@@ -383,6 +476,7 @@ export async function runPipeline(
         branch,
         author,
         trigger,
+        triggeredById: actor.id,
         pullRequestNumber: input.pullRequestNumber ?? null,
         pullRequestUrl: input.pullRequestUrl ?? null,
         baseBranch: input.baseBranch ?? null,
@@ -459,7 +553,7 @@ export async function rerunPipeline(
   projectId: string,
   pipelineId: string,
 ) {
-  await ensureProjectAccess(actor, projectId);
+  await ensureProjectAccess(actor, projectId, PERMISSIONS.PIPELINE_EXECUTE);
 
   const source = await prisma.pipeline.findFirst({
     where: { id: pipelineId, projectId },
@@ -533,7 +627,7 @@ export async function resumePipeline(
   projectId: string,
   pipelineId: string,
 ) {
-  await ensureProjectAccess(actor, projectId);
+  await ensureProjectAccess(actor, projectId, PERMISSIONS.PIPELINE_EXECUTE);
 
   const pipeline = await prisma.pipeline.findFirst({
     where: { id: pipelineId, projectId },
@@ -690,13 +784,26 @@ export async function cancelPipeline(
   projectId: string,
   pipelineId: string,
 ) {
-  await ensureProjectAccess(actor, projectId);
+  await ensureProjectAccess(actor, projectId, PERMISSIONS.PIPELINE_CANCEL);
 
   const pipeline = await prisma.pipeline.findFirst({
     where: { id: pipelineId, projectId },
-    select: { id: true, status: true },
+    select: { id: true, status: true, triggeredById: true },
   });
   if (!pipeline) throw new NotFoundError("Pipeline introuvable");
+
+  // Un DEVELOPER ne peut annuler que ses propres pipelines. Les rôles
+  // MAINTAINER/OWNER et PLATFORM_ADMIN peuvent annuler ceux du projet.
+  const membership = await requireProjectMembership(actor, projectId);
+  if (
+    !membership.isPlatformAdmin &&
+    membership.role === ProjectRole.DEVELOPER &&
+    pipeline.triggeredById !== actor.id
+  ) {
+    throw new ForbiddenError(
+      "Vous ne pouvez annuler que les pipelines que vous avez lancés",
+    );
+  }
 
   if (
     pipeline.status !== PipelineStatus.QUEUED &&
@@ -796,7 +903,7 @@ export async function getPipelineLogs(
   pipelineId: string,
   query: PipelineLogsQuery,
 ) {
-  await ensureProjectAccess(actor, projectId);
+  await ensureProjectAccess(actor, projectId, PERMISSIONS.PIPELINE_LOG_READ);
 
   const pipeline = await prisma.pipeline.findFirst({
     where: { id: pipelineId, projectId },
@@ -851,7 +958,7 @@ export async function getPipelineScans(
   pipelineId: string,
   query: PipelineScansQuery,
 ) {
-  await ensureProjectAccess(actor, projectId);
+  await ensureProjectAccess(actor, projectId, PERMISSIONS.PIPELINE_READ);
 
   const pipeline = await prisma.pipeline.findFirst({
     where: { id: pipelineId, projectId },
@@ -896,7 +1003,7 @@ export async function getPipelineReport(
   projectId: string,
   pipelineId: string,
 ) {
-  await ensureProjectAccess(actor, projectId);
+  await ensureProjectAccess(actor, projectId, PERMISSIONS.SECURITY_REPORT_READ);
 
   const pipeline = await prisma.pipeline.findFirst({
     where: { id: pipelineId, projectId },
@@ -936,7 +1043,11 @@ export async function getPipelineReportFile(
   pipelineId: string,
   format: "html" | "pdf",
 ) {
-  await ensureProjectAccess(actor, projectId);
+  await ensureProjectAccess(
+    actor,
+    projectId,
+    PERMISSIONS.SECURITY_REPORT_EXPORT,
+  );
 
   const report = await prisma.securityReport.findUnique({
     where: { pipelineId },
@@ -977,7 +1088,7 @@ export async function listProjectVulnerabilities(
   projectId: string,
   query: VulnerabilityListQuery,
 ) {
-  await ensureProjectAccess(actor, projectId);
+  await ensureProjectAccess(actor, projectId, PERMISSIONS.VULNERABILITY_READ);
 
   const where: Prisma.VulnerabilityWhereInput = {
     scan: { projectId },
@@ -1064,7 +1175,7 @@ export async function deletePipeline(
   projectId: string,
   pipelineId: string,
 ) {
-  await ensureProjectAccess(actor, projectId);
+  await ensureProjectAccess(actor, projectId, PERMISSIONS.PIPELINE_DELETE);
 
   const pipeline = await prisma.pipeline.findFirst({
     where: { id: pipelineId, projectId },
@@ -1109,7 +1220,7 @@ export async function downloadPipelineLogs(
   projectId: string,
   pipelineId: string,
 ): Promise<string> {
-  await ensureProjectAccess(actor, projectId);
+  await ensureProjectAccess(actor, projectId, PERMISSIONS.PIPELINE_LOG_EXPORT);
 
   const pipeline = await prisma.pipeline.findFirst({
     where: { id: pipelineId, projectId },

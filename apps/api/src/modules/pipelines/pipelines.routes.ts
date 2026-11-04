@@ -4,6 +4,7 @@ import { requireAuth } from "../../middleware/auth";
 import { validate } from "../../middleware/validate";
 import * as pipelinesController from "./pipelines.controller";
 import {
+  globalPipelineListQuerySchema,
   pipelineListQuerySchema,
   pipelineLogsQuerySchema,
   pipelineReportParamSchema,
@@ -17,6 +18,22 @@ export const pipelinesRouter = Router({ mergeParams: true });
 
 pipelinesRouter.use(requireAuth);
 
+// ------------------------------------------------------------
+// LISTE GLOBALE (tous les projets accessibles, filtre optionnel)
+// ------------------------------------------------------------
+export const globalPipelinesRouter = Router();
+
+globalPipelinesRouter.use(requireAuth);
+
+globalPipelinesRouter.get(
+  "/",
+  validate({ query: globalPipelineListQuerySchema }),
+  pipelinesController.listAllPipelines,
+);
+
+// ------------------------------------------------------------
+// LISTE PAR PROJET
+// ------------------------------------------------------------
 pipelinesRouter.get(
   "/",
   validate({ params: projectIdParamSchema, query: pipelineListQuerySchema }),

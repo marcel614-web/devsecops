@@ -11,8 +11,8 @@ import {
   EyeOff,
   Info,
 } from "lucide-react";
-import { PageHeader } from "@/components/layout/PageHeader";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/Card";
+import { SettingsPageHeader } from "./SettingsPageHeader";
 import { Button } from "@/components/ui/Button";
 import { Input } from "@/components/ui/Input";
 import { useToast } from "@/components/feedback/Toast";
@@ -87,7 +87,7 @@ export function GithubSettingsPage() {
   if (isLoading) {
     return (
       <div>
-        <PageHeader title="Configuration GitHub App" />
+        <SettingsPageHeader title="Configuration GitHub App" />
         <Skeleton className="h-64" />
       </div>
     );
@@ -95,7 +95,7 @@ export function GithubSettingsPage() {
 
   return (
     <div>
-      <PageHeader
+      <SettingsPageHeader
         title="Configuration GitHub App"
         description="Paramètres de l'intégration GitHub App de la plateforme"
       />

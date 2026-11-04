@@ -1,5 +1,10 @@
 // apps/api/src/modules/projects/projects.security-policy.test.ts
-import { Role } from "@prisma/client";
+import {
+  PermissionScopeType,
+  ProjectRole,
+  Role,
+  SpecialPermission,
+} from "@prisma/client";
 import { afterAll, beforeEach, describe, expect, it } from "vitest";
 import { prisma } from "../../utils/prisma";
 import { createProject, createUser, resetDatabase } from "../../test/helpers";
@@ -92,6 +97,54 @@ describe("politique de sécurité — protection backend", () => {
     });
     expect(config.scaEnabled).toBe(true);
     expect(config.mandatoryControls).toContain("SCA");
+  });
+
+  it("limite MANAGE_SECURITY_POLICY aux champs de politique", async () => {
+    const { project } = await setup();
+    const member = await createUser({
+      email: "policy-member@test.local",
+      role: Role.DEVELOPER,
+    });
+    await prisma.projectMember.create({
+      data: {
+        projectId: project.id,
+        userId: member.id,
+        role: ProjectRole.DEVELOPER,
+      },
+    });
+    await prisma.permissionGrant.create({
+      data: {
+        userId: member.id,
+        permission: SpecialPermission.MANAGE_SECURITY_POLICY,
+        scopeType: PermissionScopeType.PROJECT,
+        scopeId: project.id,
+        grantedById: member.id,
+      },
+    });
+
+    await updateProjectConfig(
+      { id: member.id, role: Role.DEVELOPER },
+      project.id,
+      { gateMode: "ENFORCEMENT" },
+    );
+    const updated = await prisma.projectConfiguration.findUniqueOrThrow({
+      where: { projectId: project.id },
+    });
+    expect(updated.gateMode).toBe("ENFORCEMENT");
+
+    const beforePort = updated.stagingPort;
+    await expect(
+      updateProjectConfig(
+        { id: member.id, role: Role.DEVELOPER },
+        project.id,
+        { stagingPort: beforePort + 1 },
+      ),
+    ).rejects.toBeInstanceOf(ForbiddenError);
+
+    const after = await prisma.projectConfiguration.findUniqueOrThrow({
+      where: { projectId: project.id },
+    });
+    expect(after.stagingPort).toBe(beforePort);
   });
 
   it("autorise un ADMIN et incrémente la version de politique", async () => {

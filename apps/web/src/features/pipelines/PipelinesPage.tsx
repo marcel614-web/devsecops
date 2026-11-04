@@ -42,12 +42,13 @@ export function PipelinesPage() {
     queryFn: () => projectService.list({ pageSize: 100 }),
   });
 
-  const effectiveProjectId = projectId || projects?.items[0]?.id || "";
-
   const { data, isLoading, isError, error, refetch, isFetching } = useQuery({
-    queryKey: ["global-pipelines", effectiveProjectId],
-    queryFn: () => pipelineService.listByProject(effectiveProjectId, { pageSize: 50 }),
-    enabled: !!effectiveProjectId,
+    queryKey: ["global-pipelines", projectId],
+    queryFn: () =>
+      pipelineService.listAll({
+        projectId: projectId || undefined,
+        pageSize: 50,
+      }),
     refetchInterval: 10_000,
   });
 
@@ -111,7 +112,7 @@ export function PipelinesPage() {
     });
   }, [data, status, q]);
 
-  const selectedProject = projects?.items.find((p) => p.id === effectiveProjectId);
+  const selectedProject = projects?.items.find((p) => p.id === projectId);
 
   return (
     <div className="space-y-5">
@@ -130,14 +131,16 @@ export function PipelinesPage() {
           <div className="w-full lg:max-w-sm">
             <Select
               aria-label="Projet"
-              value={effectiveProjectId}
+              value={projectId}
               onChange={(e) => {
                 const next = new URLSearchParams(params);
-                next.set("projectId", e.target.value);
+                if (e.target.value) next.set("projectId", e.target.value);
+                else next.delete("projectId");
                 setParams(next);
                 setStatus("");
               }}
             >
+              <option value="">Tous les projets</option>
               {projects.items.map((p) => (
                 <option key={p.id} value={p.id}>{p.name} — {p.repoFullName}</option>
               ))}
@@ -180,7 +183,7 @@ export function PipelinesPage() {
         </div>
       )}
 
-      {!effectiveProjectId && (
+      {projects && projects.items.length === 0 && (
         <EmptyState icon={GitBranch} title="Aucun projet" description="Créez un projet pour lancer votre premier pipeline." />
       )}
 
@@ -195,8 +198,12 @@ export function PipelinesPage() {
       {data && data.items.length === 0 && (
         <EmptyState
           icon={GitBranch}
-          title="Aucun pipeline pour ce projet"
-          description="Lancez un pipeline depuis la page du projet."
+          title={projectId ? "Aucun pipeline pour ce projet" : "Aucun pipeline"}
+          description={
+            projectId
+              ? "Lancez un pipeline depuis la page du projet."
+              : "Lancez un pipeline depuis un projet pour le voir apparaître ici."
+          }
           action={selectedProject && <Link to={`/projects/${selectedProject.id}?tab=pipelines`}><Button>Ouvrir le projet</Button></Link>}
         />
       )}
@@ -217,6 +224,7 @@ export function PipelinesPage() {
                   <thead className="border-b border-border bg-slate-50/60 text-xs text-muted dark:bg-slate-800/30">
                     <tr>
                       <th className="px-4 py-2.5 text-left font-medium">Commit</th>
+                      <th className="px-4 py-2.5 text-left font-medium">Projet</th>
                       <th className="px-4 py-2.5 text-left font-medium">Branche</th>
                       <th className="hidden px-4 py-2.5 text-left font-medium md:table-cell">Auteur</th>
                       <th className="hidden px-4 py-2.5 text-left font-medium lg:table-cell">Déclencheur</th>
@@ -233,13 +241,26 @@ export function PipelinesPage() {
                         className="cursor-pointer border-b border-border/60 transition-colors last:border-0 hover:bg-slate-100 dark:hover:bg-slate-700/30"
                         onClick={(e) => {
                           if ((e.target as HTMLElement).closest("a,button")) return;
-                          navigate(`/projects/${effectiveProjectId}/pipelines/${p.id}`);
+                          navigate(`/projects/${p.projectId}/pipelines/${p.id}`);
                         }}
                       >
                         <td className="px-4 py-3">
-                          <Link to={`/projects/${effectiveProjectId}/pipelines/${p.id}`} className="rounded bg-slate-200/60 px-1.5 py-0.5 font-mono text-xs text-primary-600 hover:underline dark:bg-slate-700/60 dark:text-primary-400">
+                          <Link to={`/projects/${p.projectId}/pipelines/${p.id}`} className="rounded bg-slate-200/60 px-1.5 py-0.5 font-mono text-xs text-primary-600 hover:underline dark:bg-slate-700/60 dark:text-primary-400">
                             {p.commitSha.slice(0, 7)}
                           </Link>
+                        </td>
+                        <td className="px-4 py-3">
+                          {p.project ? (
+                            <Link
+                              to={`/projects/${p.project.id}?tab=pipelines`}
+                              className="block max-w-[180px] truncate text-xs font-medium hover:text-primary-600"
+                              title={`${p.project.name} — ${p.project.repoFullName ?? p.project.name}`}
+                            >
+                              {p.project.name}
+                            </Link>
+                          ) : (
+                            <span className="text-xs text-muted">—</span>
+                          )}
                         </td>
                         <td className="px-4 py-3">
                           <span className="inline-flex items-center gap-1.5 text-muted"><GitBranch className="h-3.5 w-3.5" />{p.branch}</span>
@@ -261,7 +282,7 @@ export function PipelinesPage() {
                                 onClick={(e) => {
                                   e.stopPropagation();
                                   resumeMutation.mutate({
-                                    projectId: effectiveProjectId,
+                                    projectId: p.projectId,
                                     pipelineId: p.id,
                                     stepName: p.steps?.[0]?.name,
                                   });
@@ -282,7 +303,7 @@ export function PipelinesPage() {
                                 disabled={rerunMutation.isPending && rerunMutation.variables?.pipelineId === p.id}
                                 onClick={(e) => {
                                   e.stopPropagation();
-                                  rerunMutation.mutate({ projectId: effectiveProjectId, pipelineId: p.id });
+                                  rerunMutation.mutate({ projectId: p.projectId, pipelineId: p.id });
                                 }}
                               >
                                 <RotateCcw className={cn("h-4 w-4", rerunMutation.isPending && rerunMutation.variables?.pipelineId === p.id && "animate-spin")} />
@@ -295,7 +316,7 @@ export function PipelinesPage() {
                               aria-label={`Supprimer le pipeline ${p.commitSha.slice(0, 7)}`}
                               onClick={(e) => {
                                 e.stopPropagation();
-                                setDeleteTarget({ projectId: effectiveProjectId, pipelineId: p.id, commitSha: p.commitSha });
+                                setDeleteTarget({ projectId: p.projectId, pipelineId: p.id, commitSha: p.commitSha });
                               }}
                             >
                               <Trash2 className="h-4 w-4" />

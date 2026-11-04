@@ -3,10 +3,19 @@ import {
   Prisma,
   Role,
   Severity,
+  SpecialPermission,
   VulnerabilityStatus,
 } from "@prisma/client";
 import { prisma } from "../../utils/prisma";
 import { ForbiddenError, NotFoundError } from "../../utils/errors";
+import {
+  hasSpecialPermission,
+  requirePermission,
+} from "../authorization/permission.service";
+import {
+  PERMISSIONS,
+  type PermissionValue,
+} from "../authorization/permissions.constants";
 import type {
   UpdateVulnerabilityInput,
   VulnerabilityListQuery,
@@ -20,16 +29,13 @@ export interface ActorContext {
 async function ensureProjectAccess(
   actor: ActorContext,
   projectId: string,
+  required: PermissionValue = PERMISSIONS.VULNERABILITY_READ,
 ): Promise<void> {
-  const project = await prisma.project.findUnique({
-    where: { id: projectId },
-    select: { id: true, ownerId: true },
+  await requirePermission(actor, required, {
+    projectId,
+    targetType: "Project",
+    targetId: projectId,
   });
-  if (!project) throw new NotFoundError("Projet introuvable");
-  if (actor.role === Role.ADMIN) return;
-  if (project.ownerId !== actor.id) {
-    throw new ForbiddenError("Accès interdit à ce projet");
-  }
 }
 
 // ============================================================
@@ -364,7 +370,20 @@ export async function updateVulnerability(
   vulnerabilityId: string,
   input: UpdateVulnerabilityInput,
 ) {
-  await ensureProjectAccess(actor, projectId);
+  await ensureProjectAccess(actor, projectId, PERMISSIONS.VULNERABILITY_UPDATE);
+
+  if (input.status === VulnerabilityStatus.RISK_ACCEPTED) {
+    const allowed = await hasSpecialPermission(
+      actor,
+      SpecialPermission.ACCEPT_SECURITY_RISK,
+      projectId,
+    );
+    if (!allowed) {
+      throw new ForbiddenError(
+        "L'acceptation d'un risque nécessite la permission spéciale ACCEPT_SECURITY_RISK",
+      );
+    }
+  }
 
   const row = await prisma.vulnerability.findFirst({
     where: { id: vulnerabilityId, scan: { projectId } },

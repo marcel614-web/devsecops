@@ -46,3 +46,9 @@ authRouter.post(
   validate({ body: changePasswordSchema }),
   authController.changePassword,
 );
+
+authRouter.post(
+  "/sessions/revoke-all",
+  requireAuth,
+  authController.revokeAllSessions,
+);

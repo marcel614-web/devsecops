@@ -15,9 +15,13 @@ import { rawBodyMiddleware } from "../middleware/rawBody";
 import { authRouter } from "../modules/auth/auth.routes";
 import { auditRouter } from "../modules/audit/audit.routes";
 import { usersRouter } from "../modules/users/users.routes";
+import { authorizationRouter } from "../modules/authorization/authorization.routes";
 import { projectsRouter } from "../modules/projects/projects.routes";
 import { reportsRouter } from "../modules/reports/reports.routes";
-import { pipelinesRouter } from "../modules/pipelines/pipelines.routes";
+import {
+  globalPipelinesRouter,
+  pipelinesRouter,
+} from "../modules/pipelines/pipelines.routes";
 import { vulnerabilitiesRouter } from "../modules/vulnerabilities/vulnerabilities.routes";
 import { dashboardRouter } from "../modules/dashboard/dashboard.routes";
 import { deploymentsRouter } from "../modules/deployments/deployments.routes";
@@ -128,6 +132,7 @@ export function createApp() {
   app.use("/api/auth", authRouter);
 app.use("/api/audit-logs", auditRouter);
   app.use("/api/users", usersRouter);
+  app.use("/api/authorization", authorizationRouter);
   app.use("/api/dashboard", dashboardRouter);
   app.use("/api/servers", serversRouter);
   app.use("/api/github", githubRouter);
@@ -137,6 +142,7 @@ app.use("/api/notifications", notificationsRouter);
   app.use("/api/system-config", systemConfigRouter);
 
   // ⚠️ Ordre important : sous-routes AVANT la route parente
+  app.use("/api/pipelines", globalPipelinesRouter);
   app.use("/api/projects/:projectId/pipelines", pipelinesRouter);
   app.use("/api/projects/:projectId/vulnerabilities", vulnerabilitiesRouter);
   app.use("/api/projects/:projectId/rescans", rescansRouter);

@@ -1,7 +1,7 @@
 // apps/web/src/app/router.tsx
 import { Navigate, Route, Routes, useParams } from "react-router-dom";
 import { AppLayout } from "@/components/layout/AppLayout";
-import { GuestRoute, ProtectedRoute, RoleGuard } from "./guards";
+import { GuestRoute, PermissionGuard, ProtectedRoute, RoleGuard } from "./guards";
 
 import { LoginPage } from "@/features/auth/LoginPage";
 import { RegisterPage } from "@/features/auth/RegisterPage";
@@ -9,6 +9,9 @@ import { DashboardPage } from "@/features/dashboard/DashboardPage";
 import { ProjectsPage } from "@/features/projects/ProjectsPage";
 import { ProjectDetailPage } from "@/features/projects/ProjectDetailPage";
 import { RepositoriesPage } from "@/features/repositories/RepositoriesPage";
+import { OrganizationsPage } from "@/features/organizations/OrganizationsPage";
+import { TeamsPage } from "@/features/organizations/TeamsPage";
+import { TeamDetailPage } from "@/features/organizations/TeamDetailPage";
 import { PipelinesPage } from "@/features/pipelines/PipelinesPage";
 import { PipelineDetailPage } from "@/features/pipelines/PipelineDetailPage";
 import { SecurityPage } from "@/features/security/SecurityPage";
@@ -17,6 +20,8 @@ import { ServersPage } from "@/features/servers/ServersPage";
 import { DeploymentsPage } from "@/features/deployments/DeploymentsPage";
 import { ReportsPage } from "@/features/reports/ReportsPage";
 import { UsersPage } from "@/features/users/UsersPage";
+import { RolesPage } from "@/features/users/RolesPage";
+import { AcceptInvitationPage } from "@/features/invitations/AcceptInvitationPage";
 import { AuditPage } from "@/features/audit/AuditPage";
 import { SettingsPage } from "@/features/settings/SettingsPage";
 import { DefectDojoSettingsPage } from "@/features/settings/DefectDojoSettingsPage";
@@ -79,6 +84,10 @@ export function AppRouter() {
         {/* Dashboard */}
         <Route path="dashboard" element={<DashboardPage />} />
         <Route path="notifications" element={<NotificationsInboxPage />} />
+        <Route
+          path="invitations/accept"
+          element={<AcceptInvitationPage />}
+        />
 
         {/* Projets */}
         <Route path="projects" element={<ProjectsPage />} />
@@ -96,12 +105,27 @@ export function AppRouter() {
           element={<ProjectSectionRedirect tab="config" />}
         />
         <Route
+          path="projects/:projectId/teams"
+          element={<ProjectSectionRedirect tab="teams" />}
+        />
+        <Route
           path="projects/:projectId/pipelines/:pipelineId"
           element={<PipelineDetailPage />}
         />
 
         {/* Repositories GitHub */}
         <Route path="repositories" element={<RepositoriesPage />} />
+
+        {/* Organisations & équipes GitHub */}
+        <Route path="organizations" element={<OrganizationsPage />} />
+        <Route
+          path="organizations/:installationId/teams"
+          element={<TeamsPage />}
+        />
+        <Route
+          path="organizations/:installationId/teams/:slug"
+          element={<TeamDetailPage />}
+        />
 
         {/* Pipelines */}
         <Route path="pipelines" element={<PipelinesPage />} />
@@ -122,17 +146,25 @@ export function AppRouter() {
         <Route
           path="users"
           element={
-            <RoleGuard roles={["ADMIN"]}>
+            <RoleGuard roles={["PLATFORM_ADMIN"]}>
               <UsersPage />
+            </RoleGuard>
+          }
+        />
+        <Route
+          path="roles"
+          element={
+            <RoleGuard roles={["PLATFORM_ADMIN"]}>
+              <RolesPage />
             </RoleGuard>
           }
         />
         <Route
           path="audit-logs"
           element={
-            <RoleGuard roles={["ADMIN"]}>
+            <PermissionGuard permission="audit_log:read">
               <AuditPage />
-            </RoleGuard>
+            </PermissionGuard>
           }
         />
 
@@ -146,7 +178,7 @@ export function AppRouter() {
         <Route
           path="settings/github"
           element={
-            <RoleGuard roles={["ADMIN"]}>
+            <RoleGuard roles={["PLATFORM_ADMIN"]}>
               <GithubSettingsPage />
             </RoleGuard>
           }
@@ -154,7 +186,7 @@ export function AppRouter() {
         <Route
           path="settings/defectdojo"
           element={
-            <RoleGuard roles={["ADMIN"]}>
+            <RoleGuard roles={["PLATFORM_ADMIN"]}>
               <DefectDojoSettingsPage />
             </RoleGuard>
           }

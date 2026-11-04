@@ -49,9 +49,45 @@ async function generateAppJwt(): Promise<string> {
 // ============================================================
 // OCTOKIT
 // ============================================================
+/**
+ * Délai maximal d'une requête GitHub. Une requête lente ne doit pas bloquer
+ * indéfiniment une requête HTTP de la plateforme.
+ */
+const GITHUB_REQUEST_TIMEOUT_MS = 15_000;
+
+function fetchWithTimeout(
+  input: Parameters<typeof fetch>[0],
+  init?: Parameters<typeof fetch>[1],
+): ReturnType<typeof fetch> {
+  const controller = new AbortController();
+  const timeout = setTimeout(() => {
+    controller.abort(new Error("GitHub API request timed out"));
+  }, GITHUB_REQUEST_TIMEOUT_MS);
+
+  const upstream = init?.signal;
+  const onAbort = () => controller.abort(upstream?.reason);
+  if (upstream) {
+    if (upstream.aborted) {
+      controller.abort(upstream.reason);
+    } else {
+      upstream.addEventListener("abort", onAbort, { once: true });
+    }
+  }
+
+  return fetch(input, { ...init, signal: controller.signal }).finally(() => {
+    clearTimeout(timeout);
+    if (upstream) upstream.removeEventListener("abort", onAbort);
+  });
+}
+
+const octokitDefaults = {
+  userAgent: "devsecops-platform",
+  request: { fetch: fetchWithTimeout },
+} as const;
+
 export async function getAppOctokit(): Promise<Octokit> {
   const appJwt = await generateAppJwt();
-  return new Octokit({ auth: appJwt, userAgent: "devsecops-platform" });
+  return new Octokit({ ...octokitDefaults, auth: appJwt });
 }
 
 export async function getInstallationToken(
@@ -88,7 +124,7 @@ export async function getInstallationOctokit(
   installationId: string,
 ): Promise<Octokit> {
   const token = await getInstallationToken(installationId);
-  return new Octokit({ auth: token, userAgent: "devsecops-platform" });
+  return new Octokit({ ...octokitDefaults, auth: token });
 }
 
 export async function fetchInstallation(installationId: string) {

@@ -13,9 +13,81 @@ datasource db {
 // ENUMS
 // ============================================================
 
+/// Rôle global de la plateforme.
+/// Les valeurs ADMIN/DEVELOPER sont conservées temporairement pour la
+/// compatibilité des jetons et des données historiques ; la migration les
+/// convertit vers PLATFORM_ADMIN/PLATFORM_USER. Aucun nouveau compte ne doit
+/// recevoir les anciennes valeurs.
 enum Role {
+  PLATFORM_ADMIN
+  PLATFORM_USER
   ADMIN
   DEVELOPER
+}
+
+/// Statut du compte humain.
+enum UserStatus {
+  ACTIVE
+  SUSPENDED
+  PENDING
+  DISABLED
+}
+
+/// Rôle d'un utilisateur dans un projet DevSecOps.
+/// Distinct des rôles GitHub : aucune permission GitHub n'en découle.
+enum ProjectRole {
+  OWNER
+  MAINTAINER
+  DEVELOPER
+  SECURITY_ANALYST
+  REPORTER
+  GUEST
+}
+
+enum ProjectMemberStatus {
+  ACTIVE
+  SUSPENDED
+  REMOVED
+}
+
+/// Portée d'une permission spéciale.
+enum PermissionScopeType {
+  GLOBAL
+  PROJECT
+}
+
+/// Permissions spéciales indépendantes des rôles et de GitHub.
+enum SpecialPermission {
+  APPROVE_PRODUCTION
+  MANAGE_SECURITY_POLICY
+  MANAGE_SERVERS
+  MANAGE_INTEGRATIONS
+  MANAGE_PROJECT_MEMBERS
+  MANAGE_GITHUB_TEAMS
+  ACCEPT_SECURITY_RISK
+  MANAGE_DEPLOYMENTS
+  MANAGE_PROJECT_SECRETS
+  VIEW_SECURITY_AUDIT
+}
+
+/// Rôle interne d'une équipe GitHub rattachée à un projet DevSecOps.
+/// Ce rôle ne modifie JAMAIS les permissions GitHub : il est appliqué
+/// uniquement par l'API DevSecOps Manager.
+enum ProjectTeamRole {
+  OWNER
+  MAINTAINER
+  DEVELOPER
+  SECURITY_ANALYST
+  VIEWER
+}
+
+/// État de synchronisation du cache local d'une équipe GitHub.
+/// GitHub reste la source de vérité : DELETED signifie que l'équipe
+/// n'existe plus côté GitHub (supprimée ou accès retiré).
+enum GitHubTeamSyncState {
+  SYNCED
+  DELETED
+  ERROR
 }
 
 enum GitProvider {
@@ -178,16 +250,30 @@ enum DeploymentVerificationStatus {
 // ============================================================
 
 model User {
-  id           String   @id @default(cuid())
-  email        String   @unique
+  id           String     @id @default(cuid())
+  email        String     @unique
+  username     String?    @unique
   passwordHash String
   name         String
-  role         Role     @default(DEVELOPER)
-  isActive     Boolean  @default(true)
-  createdAt    DateTime @default(now())
-  updatedAt    DateTime @updatedAt
+  /// Rôle global. Le champ historique `role` reste le nom utilisé par l'API.
+  role         Role       @default(PLATFORM_USER)
+  status       UserStatus @default(ACTIVE)
+  /// Miroir de compatibilité : `status === ACTIVE`.
+  isActive     Boolean    @default(true)
+  /// Incrémenté à chaque changement de rôle/statut/mot de passe ou révocation.
+  /// Les JWT contiennent cette version et sont rejetés si elle ne correspond plus.
+  tokenVersion Int        @default(0)
+  lastLoginAt  DateTime?
+  createdAt    DateTime   @default(now())
+  updatedAt    DateTime   @updatedAt
 
   projects                     Project[]
+  projectMemberships           ProjectMember[]
+  projectInvitationsSent       ProjectInvitation[]          @relation("ProjectInvitationInviter")
+  projectInvitationsAccepted   ProjectInvitation[]          @relation("ProjectInvitationAcceptor")
+  permissionGrantsReceived     PermissionGrant[]            @relation("PermissionGrantUser")
+  permissionGrantsIssued       PermissionGrant[]            @relation("PermissionGrantIssuer")
+  projectMembersInvited        ProjectMember[]              @relation("ProjectMemberInviter")
   githubInstallations          GitHubInstallation[]
   servers                      DeploymentServer[]
   auditLogs                    AuditLog[]
@@ -201,6 +287,7 @@ model User {
 
   @@index([email])
   @@index([role])
+  @@index([status])
 }
 
 // ============================================================
@@ -210,20 +297,23 @@ model User {
 /// Une installation GitHub App (peut être un compte perso ou une organisation).
 /// Un utilisateur peut avoir plusieurs installations (perso + orgs).
 model GitHubInstallation {
-  id             String    @id @default(cuid())
-  installationId String    @unique // ID numérique GitHub (stocké en string)
-  accountLogin   String // "marcel614-web" ou "mon-org"
-  accountType    String // "User" | "Organization"
-  accountId      String // ID GitHub du compte
-  targetType     String // "User" | "Organization"
-  userId         String // propriétaire côté plateforme
-  suspendedAt    DateTime?
-  revokedAt      DateTime?
-  createdAt      DateTime  @default(now())
-  updatedAt      DateTime  @updatedAt
+  id              String    @id @default(cuid())
+  installationId  String    @unique // ID numérique GitHub (stocké en string)
+  accountLogin    String // "marcel614-web" ou "mon-org"
+  accountType     String // "User" | "Organization"
+  accountId       String // ID GitHub du compte
+  targetType      String // "User" | "Organization"
+  userId          String // propriétaire côté plateforme
+  suspendedAt     DateTime?
+  revokedAt       DateTime?
+  lastOrgSyncedAt DateTime?
+  orgSyncState    String? // SYNCED | ERROR — état de la dernière synchro organisation
+  createdAt       DateTime  @default(now())
+  updatedAt       DateTime  @updatedAt
 
   owner        User               @relation(fields: [userId], references: [id], onDelete: Cascade)
   repositories GitHubRepository[]
+  teams        GitHubTeam[]
 
   @@index([userId])
   @@index([accountLogin])
@@ -255,6 +345,57 @@ model GitHubRepository {
   @@index([installationId])
   @@index([fullName])
   @@index([repositoryId])
+}
+
+/// Cache local d'une équipe GitHub (source de vérité = API GitHub).
+/// La table existe pour conserver l'identifiant stable GitHub et permettre
+/// les associations avec les projets DevSecOps. Les membres ne sont PAS
+/// dupliqués : ils sont toujours lus en direct depuis GitHub.
+model GitHubTeam {
+  id             String              @id @default(cuid())
+  installationId String // FK vers GitHubInstallation.id (pas l'ID GitHub)
+  githubTeamId   String // ID numérique GitHub (stable)
+  orgLogin       String
+  slug           String
+  name           String
+  description    String?
+  privacy        String              @default("closed") // "secret" | "closed"
+  parentTeamId   String? // ID GitHub de l'équipe parente
+  parentTeamSlug String?
+  htmlUrl        String
+  membersCount   Int?
+  reposCount     Int?
+  syncState      GitHubTeamSyncState @default(SYNCED)
+  lastSyncedAt   DateTime            @default(now())
+  createdAt      DateTime            @default(now())
+  updatedAt      DateTime            @updatedAt
+
+  installation GitHubInstallation @relation(fields: [installationId], references: [id], onDelete: Cascade)
+  projectLinks ProjectTeam[]
+
+  @@unique([installationId, githubTeamId])
+  @@index([installationId])
+  @@index([orgLogin])
+  @@index([slug])
+  @@index([syncState])
+}
+
+/// Association entre une équipe GitHub et un projet DevSecOps.
+/// Le rôle est purement interne : il ne modifie jamais les permissions GitHub.
+model ProjectTeam {
+  id           String          @id @default(cuid())
+  projectId    String
+  githubTeamId String // FK vers GitHubTeam.id (cache local)
+  role         ProjectTeamRole @default(VIEWER)
+  createdAt    DateTime        @default(now())
+  updatedAt    DateTime        @updatedAt
+
+  project Project    @relation(fields: [projectId], references: [id], onDelete: Cascade)
+  team    GitHubTeam @relation(fields: [githubTeamId], references: [id], onDelete: Cascade)
+
+  @@unique([projectId, githubTeamId])
+  @@index([projectId])
+  @@index([githubTeamId])
 }
 
 // ============================================================
@@ -293,11 +434,86 @@ model Project {
   deploymentLock          DeploymentLock?
   rescanRuns              RescanRun[]
   deploymentVerifications DeploymentVerification[]
+  teamLinks               ProjectTeam[]
+  members                 ProjectMember[]
+  invitations             ProjectInvitation[]
 
   @@unique([ownerId, repoFullName])
   @@index([ownerId])
   @@index([repoFullName])
   @@index([githubRepositoryId])
+}
+
+/// Appartenance d'un utilisateur à un projet et rôle interne associé.
+/// L'unicité (projectId, userId) empêche les doublons.
+model ProjectMember {
+  id          String              @id @default(cuid())
+  userId      String
+  projectId   String
+  role        ProjectRole         @default(GUEST)
+  status      ProjectMemberStatus @default(ACTIVE)
+  invitedById String?
+  createdAt   DateTime            @default(now())
+  updatedAt   DateTime            @updatedAt
+
+  user      User    @relation(fields: [userId], references: [id], onDelete: Cascade)
+  project   Project @relation(fields: [projectId], references: [id], onDelete: Cascade)
+  invitedBy User?   @relation("ProjectMemberInviter", fields: [invitedById], references: [id], onDelete: SetNull)
+
+  @@unique([projectId, userId])
+  @@index([userId])
+  @@index([projectId])
+  @@index([role])
+  @@index([status])
+}
+
+/// Invitation à rejoindre un projet. Le jeton brut n'est jamais stocké :
+/// seul son hash SHA-256 est conservé.
+model ProjectInvitation {
+  id           String      @id @default(cuid())
+  projectId    String
+  email        String
+  role         ProjectRole
+  tokenHash    String      @unique
+  invitedById  String
+  acceptedById String?
+  expiresAt    DateTime
+  acceptedAt   DateTime?
+  revokedAt    DateTime?
+  createdAt    DateTime    @default(now())
+  updatedAt    DateTime    @updatedAt
+
+  project    Project @relation(fields: [projectId], references: [id], onDelete: Cascade)
+  invitedBy  User    @relation("ProjectInvitationInviter", fields: [invitedById], references: [id], onDelete: Cascade)
+  acceptedBy User?   @relation("ProjectInvitationAcceptor", fields: [acceptedById], references: [id], onDelete: SetNull)
+
+  @@index([projectId, email])
+  @@index([email])
+  @@index([expiresAt])
+  @@index([revokedAt])
+}
+
+/// Permission spéciale explicite, avec portée globale ou projet.
+/// Une permission projet ne donne aucun droit sur un autre projet.
+model PermissionGrant {
+  id          String              @id @default(cuid())
+  userId      String
+  permission  SpecialPermission
+  scopeType   PermissionScopeType
+  scopeId     String?
+  grantedById String
+  expiresAt   DateTime?
+  revokedAt   DateTime?
+  createdAt   DateTime            @default(now())
+  updatedAt   DateTime            @updatedAt
+
+  user      User @relation("PermissionGrantUser", fields: [userId], references: [id], onDelete: Cascade)
+  grantedBy User @relation("PermissionGrantIssuer", fields: [grantedById], references: [id], onDelete: Cascade)
+
+  @@index([userId, permission, scopeType, scopeId])
+  @@index([scopeType, scopeId])
+  @@index([expiresAt])
+  @@index([revokedAt])
 }
 
 model ProjectConfiguration {
@@ -312,7 +528,7 @@ model ProjectConfiguration {
   syftEnabled               Boolean          @default(true)
   zapEnabled                Boolean          @default(true)
   cosignEnabled             Boolean          @default(false)
-  cosignMode               CosignMode       @default(DISABLED)
+  cosignMode                CosignMode       @default(DISABLED)
   securityGateCritical      Int              @default(0)
   securityGateHigh          Int              @default(2)
   securityGateMedium        Int              @default(10)
@@ -386,6 +602,8 @@ model Pipeline {
   branch            String
   author            String
   trigger           String         @default("push")
+  /// Utilisateur humain ayant déclenché le pipeline (si lancement manuel).
+  triggeredById     String?
   status            PipelineStatus @default(QUEUED)
   pullRequestNumber Int?
   pullRequestUrl    String?
@@ -416,6 +634,7 @@ model Pipeline {
   @@index([status])
   @@index([commitSha])
   @@index([createdAt])
+  @@index([triggeredById])
 }
 
 model PipelineStep {
@@ -903,15 +1122,15 @@ model SecurityReport {
 }
 
 model DefectDojoImport {
-  id           String    @id @default(cuid())
+  id           String   @id @default(cuid())
   projectId    String
   pipelineId   String?
   engagementId Int
-  status       String    @default("PENDING") // PENDING, SUCCESS, FAILED
+  status       String   @default("PENDING") // PENDING, SUCCESS, FAILED
   externalId   String?
   error        String?
-  createdAt    DateTime  @default(now())
-  updatedAt    DateTime  @updatedAt
+  createdAt    DateTime @default(now())
+  updatedAt    DateTime @updatedAt
 
   @@index([projectId])
   @@index([pipelineId])
@@ -924,6 +1143,12 @@ model AuditLog {
   action       String
   targetType   String?
   targetId     String?
+  /// Projet concerné par l'action (permet l'audit par projet).
+  projectId    String?
+  /// SUCCESS | DENIED | ERROR
+  result       String   @default("SUCCESS")
+  /// Origine technique : api, worker, webhook, etc.
+  origin       String?
   metadataJson Json?
   ip           String?
   userAgent    String?
@@ -933,6 +1158,8 @@ model AuditLog {
 
   @@index([userId])
   @@index([action])
+  @@index([projectId])
+  @@index([result])
   @@index([createdAt])
 }
 
@@ -987,13 +1214,13 @@ model SystemConfig {
   githubClientSecretEncrypted  String?
 
   /// Intégration DefectDojo (optionnelle, désactivée par défaut)
-  defectDojoConfigured         Boolean @default(false)
-  defectDojoUrl                String?
-  defectDojoApiTokenEncrypted  String?
+  defectDojoConfigured        Boolean @default(false)
+  defectDojoUrl               String?
+  defectDojoApiTokenEncrypted String?
 
   /// Intégration Dependency-Track (optionnelle, désactivée par défaut)
-  dependencyTrackConfigured     Boolean @default(false)
-  dependencyTrackUrl            String?
+  dependencyTrackConfigured      Boolean @default(false)
+  dependencyTrackUrl             String?
   dependencyTrackApiKeyEncrypted String?
 
   /// Métadonnées

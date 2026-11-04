@@ -1,14 +1,19 @@
 // apps/web/src/services/auth.service.ts
 import { api } from "./api";
+import type { Role, UserStatus } from "@/types/api";
 
 export interface AuthUser {
   id: string;
   email: string;
   name: string;
-  role: "ADMIN" | "DEVELOPER";
+  role: Role;
+  status?: UserStatus;
   isActive?: boolean;
+  lastLoginAt?: string | null;
   createdAt?: string;
   updatedAt?: string;
+  /** Permissions globales effectives, utilisées uniquement pour la navigation. */
+  globalPermissions?: string[];
 }
 
 export interface AuthResponse {
@@ -42,4 +47,7 @@ export const authService = {
 
   changePassword: (currentPassword: string, newPassword: string) =>
     api.post("/api/auth/change-password", { currentPassword, newPassword }),
+
+  /** Invalide toutes les sessions (y compris la session courante). */
+  revokeAllSessions: () => api.post("/api/auth/sessions/revoke-all"),
 };

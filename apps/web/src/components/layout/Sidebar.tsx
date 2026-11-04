@@ -2,8 +2,8 @@ import { useEffect } from "react";
 import { NavLink } from "react-router-dom";
 import {
   LayoutDashboard, FolderGit2, Github, GitBranch, Shield, AlertTriangle,
-  Server, Rocket, FileText, ScrollText, Users, Settings, Bell,
-  PanelLeftClose, PanelLeftOpen, X,
+  Server, Rocket, FileText, ScrollText, Users, Settings, Bell, Building2,
+  PanelLeftClose, PanelLeftOpen, X, ShieldCheck,
 } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { useUiStore } from "@/stores/uiStore";
@@ -15,6 +15,7 @@ interface NavItem {
   label: string;
   icon: typeof LayoutDashboard;
   adminOnly?: boolean;
+  permission?: string;
   showUnread?: boolean;
 }
 
@@ -30,6 +31,7 @@ const sections: Array<{ title?: string; items: NavItem[] }> = [
     items: [
       { to: "/projects", label: "Projets", icon: FolderGit2 },
       { to: "/repositories", label: "Repositories", icon: Github },
+      { to: "/organizations", label: "Organisations", icon: Building2 },
       { to: "/pipelines", label: "Pipelines", icon: GitBranch },
     ],
   },
@@ -51,13 +53,19 @@ const sections: Array<{ title?: string; items: NavItem[] }> = [
     title: "Rapports",
     items: [
       { to: "/reports", label: "Rapports", icon: FileText },
-      { to: "/audit-logs", label: "Journal d'audit", icon: ScrollText, adminOnly: true },
+      {
+        to: "/audit-logs",
+        label: "Journal d'audit",
+        icon: ScrollText,
+        permission: "audit_log:read",
+      },
     ],
   },
   {
     title: "Administration",
     items: [
       { to: "/users", label: "Utilisateurs", icon: Users, adminOnly: true },
+      { to: "/roles", label: "Rôles et permissions", icon: ShieldCheck, adminOnly: true },
       { to: "/settings", label: "Paramètres", icon: Settings },
     ],
   },
@@ -66,7 +74,18 @@ const sections: Array<{ title?: string; items: NavItem[] }> = [
 export function Sidebar() {
   const { sidebarCollapsed, sidebarMobileOpen, toggleSidebar, closeMobileSidebar } = useUiStore();
   const { user } = useAuthStore();
-  const isAdmin = user?.role === "ADMIN";
+  const isAdmin = user?.role === "PLATFORM_ADMIN" || user?.role === "ADMIN";
+  const canSeeItem = (item: NavItem) => {
+    if (item.adminOnly && !isAdmin) return false;
+    if (
+      item.permission &&
+      !isAdmin &&
+      !user?.globalPermissions?.includes(item.permission)
+    ) {
+      return false;
+    }
+    return true;
+  };
   const { data: unreadData } = useUnreadNotificationCount();
   const unreadCount = unreadData?.count ?? 0;
 
@@ -89,7 +108,7 @@ export function Sidebar() {
   }, [sidebarMobileOpen, closeMobileSidebar]);
 
   const visibleSections = sections
-    .map((s) => ({ ...s, items: s.items.filter((it) => !it.adminOnly || isAdmin) }))
+    .map((s) => ({ ...s, items: s.items.filter(canSeeItem) }))
     .filter((s) => s.items.length > 0);
 
   return (

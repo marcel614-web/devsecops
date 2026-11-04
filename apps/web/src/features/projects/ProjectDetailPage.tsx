@@ -17,12 +17,16 @@ import { ProjectPipelinesTab } from "./tabs/ProjectPipelinesTab";
 import { ProjectConfigTab } from "./tabs/ProjectConfigTab";
 import { ProjectVulnerabilitiesTab } from "./tabs/ProjectVulnerabilitiesTab";
 import { ProjectResilienceTab } from "./tabs/ProjectResilienceTab";
+import { ProjectTeamsTab } from "./tabs/ProjectTeamsTab";
+import { ProjectMembersTab } from "./tabs/ProjectMembersTab";
 
 const TABS = [
   { key: "overview", label: "Vue d'ensemble" },
   { key: "pipelines", label: "Pipelines" },
   { key: "vulnerabilities", label: "Vulnérabilités" },
   { key: "resilience", label: "Résilience" },
+  { key: "teams", label: "Équipes GitHub" },
+  { key: "members", label: "Membres et permissions" },
   { key: "config", label: "Configuration" },
 ];
 
@@ -73,10 +77,6 @@ export function ProjectDetailPage() {
     );
   }
 
-  if (!TABS.some((t) => t.key === active)) {
-    return <Navigate to={`/projects/${project.id}?tab=pipelines`} replace />;
-  }
-
   const handleTab = (k: string) => {
     const next = new URLSearchParams(searchParams);
     next.set("tab", k);
@@ -95,6 +95,21 @@ export function ProjectDetailPage() {
 
   const initials = (project.name ?? "?").split(" ").map((s) => s[0]).join("").slice(0, 2).toUpperCase();
   const neutral = "bg-slate-200/70 text-slate-700 dark:bg-slate-700/60 dark:text-slate-300";
+  const canManageMembers =
+    !!project.isPlatformAdmin ||
+    !!project.permissions?.includes("project:manage_members");
+  const canReadMembers =
+    canManageMembers ||
+    !!project.permissions?.includes("project_member:read");
+  const canAssignOwner =
+    !!project.isPlatformAdmin || project.currentUserRole === "OWNER";
+  const availableTabs = TABS.filter(
+    (tab) => tab.key !== "members" || canReadMembers,
+  );
+
+  if (!availableTabs.some((t) => t.key === active)) {
+    return <Navigate to={`/projects/${project.id}?tab=pipelines`} replace />;
+  }
 
   return (
     <div className="space-y-5">
@@ -158,7 +173,7 @@ export function ProjectDetailPage() {
       </Card>
 
       <Tabs
-        tabs={TABS.map((t) => ({ ...t, badge: t.key === "pipelines" ? project._count?.pipelines : undefined }))}
+        tabs={availableTabs.map((t) => ({ ...t, badge: t.key === "pipelines" ? project._count?.pipelines : undefined }))}
         active={active}
         onChange={handleTab}
         className="mb-2"
@@ -169,6 +184,14 @@ export function ProjectDetailPage() {
         {active === "pipelines" && <ProjectPipelinesTab projectId={project.id} />}
         {active === "vulnerabilities" && <ProjectVulnerabilitiesTab projectId={project.id} />}
         {active === "resilience" && <ProjectResilienceTab project={project} />}
+        {active === "teams" && <ProjectTeamsTab projectId={project.id} />}
+        {active === "members" && (
+          <ProjectMembersTab
+            projectId={project.id}
+            canManageMembers={canManageMembers}
+            canAssignOwner={canAssignOwner}
+          />
+        )}
         {active === "config" && <ProjectConfigTab project={project} />}
       </div>
     </div>

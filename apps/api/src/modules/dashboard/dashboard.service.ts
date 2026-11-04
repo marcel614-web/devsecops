@@ -1,6 +1,8 @@
 // apps/api/src/modules/dashboard/dashboard.service.ts
 import { Role } from "@prisma/client";
 import { prisma } from "../../utils/prisma";
+import { isPlatformAdmin } from "../authorization/role-permissions";
+import { projectAccessWhere } from "../authorization/project-membership.service";
 
 export interface ActorContext {
   id: string;
@@ -8,19 +10,14 @@ export interface ActorContext {
 }
 
 export async function getDashboardSummary(actor: ActorContext) {
-  const isAdmin = actor.role === Role.ADMIN;
+  const isAdmin = isPlatformAdmin(actor.role);
+  const projects = projectAccessWhere(actor);
 
-  // Filtres de portée : DEVELOPER = ses projets uniquement, ADMIN = tout.
-  const projectFilter = isAdmin ? {} : { ownerId: actor.id };
-  const pipelineFilter = isAdmin
-    ? {}
-    : { project: { ownerId: actor.id } };
-  const scanFilter = isAdmin
-    ? {}
-    : { project: { ownerId: actor.id } };
-  const vulnFilter = isAdmin
-    ? {}
-    : { scan: { project: { ownerId: actor.id } } };
+  // Filtres de portée : membres actifs de leurs projets, ADMIN = tout.
+  const projectFilter = projects;
+  const pipelineFilter = { project: projects };
+  const scanFilter = { project: projects };
+  const vulnFilter = { scan: { project: projects } };
   const serverFilter = isAdmin ? {} : { ownerId: actor.id };
 
   // 1. Compteurs globaux en parallèle.

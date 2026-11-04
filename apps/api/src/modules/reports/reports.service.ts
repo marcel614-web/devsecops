@@ -1,6 +1,9 @@
 import { Prisma, Role } from "@prisma/client";
 import { prisma } from "../../utils/prisma";
-import { NotFoundError, ForbiddenError } from "../../utils/errors";
+import { NotFoundError } from "../../utils/errors";
+import { requirePermission } from "../authorization/permission.service";
+import { PERMISSIONS } from "../authorization/permissions.constants";
+import { projectAccessWhere } from "../authorization/project-membership.service";
 
 export interface ActorContext {
   id: string;
@@ -11,12 +14,14 @@ export async function listReports(
   actor: ActorContext,
   query: { page: number; pageSize: number; projectId?: string },
 ) {
-  const where: Prisma.SecurityReportWhereInput = {};
+  const where: Prisma.SecurityReportWhereInput = {
+    project: projectAccessWhere(actor),
+  };
 
-  if (actor.role !== Role.ADMIN) {
-    where.project = { ownerId: actor.id };
-  }
   if (query.projectId) {
+    await requirePermission(actor, PERMISSIONS.SECURITY_REPORT_READ, {
+      projectId: query.projectId,
+    });
     where.projectId = query.projectId;
   }
 
@@ -55,9 +60,11 @@ export async function getReport(actor: ActorContext, id: string) {
   });
   if (!report) throw new NotFoundError("Rapport introuvable");
 
-  if (actor.role !== Role.ADMIN && report.project.ownerId !== actor.id) {
-    throw new ForbiddenError("Accès interdit à ce rapport");
-  }
+  await requirePermission(actor, PERMISSIONS.SECURITY_REPORT_READ, {
+    projectId: report.projectId,
+    targetType: "SecurityReport",
+    targetId: id,
+  });
 
   return report;
 }

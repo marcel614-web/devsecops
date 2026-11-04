@@ -6,7 +6,9 @@ import { UnauthorizedError } from "./errors";
 
 export interface AccessTokenPayload {
   sub: string;      // userId
-  role: string;     // ADMIN / DEVELOPER
+  role: string;     // PLATFORM_ADMIN / PLATFORM_USER
+  /** Version de session : rejetée si elle ne correspond plus au compte. */
+  tv?: number;
   type: "access";
 }
 

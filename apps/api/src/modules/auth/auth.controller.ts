@@ -129,6 +129,20 @@ export async function updateProfile(
   }
 }
 
+export async function revokeAllSessions(
+  req: Request,
+  res: Response,
+  next: NextFunction,
+): Promise<void> {
+  try {
+    if (!req.user) throw new UnauthorizedError();
+    await authService.revokeAllSessions(req.user.id);
+    res.status(204).end();
+  } catch (err) {
+    next(err);
+  }
+}
+
 export async function changePassword(
   req: Request,
   res: Response,

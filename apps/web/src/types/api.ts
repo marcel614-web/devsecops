@@ -4,7 +4,33 @@
 // ENUMS (miroir du backend Prisma)
 // ============================================================
 
-export type Role = "ADMIN" | "DEVELOPER";
+export type Role =
+  | "PLATFORM_ADMIN"
+  | "PLATFORM_USER"
+  // Valeurs historiques conservées pour les anciens comptes/jetons.
+  | "ADMIN"
+  | "DEVELOPER";
+export type UserStatus = "ACTIVE" | "SUSPENDED" | "PENDING" | "DISABLED";
+export type ProjectRole =
+  | "OWNER"
+  | "MAINTAINER"
+  | "DEVELOPER"
+  | "SECURITY_ANALYST"
+  | "REPORTER"
+  | "GUEST";
+export type ProjectMemberStatus = "ACTIVE" | "SUSPENDED" | "REMOVED";
+export type PermissionScopeType = "GLOBAL" | "PROJECT";
+export type SpecialPermission =
+  | "APPROVE_PRODUCTION"
+  | "MANAGE_SECURITY_POLICY"
+  | "MANAGE_SERVERS"
+  | "MANAGE_INTEGRATIONS"
+  | "MANAGE_PROJECT_MEMBERS"
+  | "MANAGE_GITHUB_TEAMS"
+  | "ACCEPT_SECURITY_RISK"
+  | "MANAGE_DEPLOYMENTS"
+  | "MANAGE_PROJECT_SECRETS"
+  | "VIEW_SECURITY_AUDIT";
 export type GitProvider = "GITHUB" | "GITLAB";
 export type Technology = "NODEJS" | "PHP" | "PYTHON" | "UNKNOWN";
 export type PipelineStatus =
@@ -94,9 +120,12 @@ export interface Paginated<T> {
 export interface User {
   id: string;
   email: string;
+  username?: string | null;
   name: string;
   role: Role;
+  status?: UserStatus;
   isActive?: boolean;
+  lastLoginAt?: string | null;
   createdAt: string;
   updatedAt?: string;
 }
@@ -110,9 +139,12 @@ export interface AuthUser {
   email: string;
   name: string;
   role: Role;
+  status?: UserStatus;
   isActive?: boolean;
+  lastLoginAt?: string | null;
   createdAt?: string;
   updatedAt?: string;
+  globalPermissions?: string[];
 }
 
 export interface AuthResponse {
@@ -137,6 +169,65 @@ export interface Project {
   serverId: string | null;
   createdAt: string;
   updatedAt: string;
+  currentUserRole?: ProjectRole;
+  isPlatformAdmin?: boolean;
+  permissions?: string[];
+  _count?: { pipelines: number; deployments: number; members?: number };
+}
+
+export interface ProjectMember {
+  id: string;
+  projectId?: string;
+  userId: string;
+  role: ProjectRole;
+  status: ProjectMemberStatus;
+  createdAt: string;
+  updatedAt: string;
+  user: Pick<User, "id" | "email" | "name" | "username" | "status" | "lastLoginAt">;
+  invitedBy?: Pick<User, "id" | "name" | "email"> | null;
+  specialPermissions?: Array<{
+    id: string;
+    permission: SpecialPermission;
+    expiresAt: string | null;
+    createdAt: string;
+  }>;
+}
+
+export interface ProjectInvitation {
+  id: string;
+  email: string;
+  role: ProjectRole;
+  expiresAt: string;
+  createdAt: string;
+  invitedBy?: Pick<User, "id" | "name" | "email"> | null;
+}
+
+export interface PermissionGrant {
+  id: string;
+  permission: SpecialPermission;
+  scopeType: PermissionScopeType;
+  scopeId?: string | null;
+  expiresAt: string | null;
+  createdAt: string;
+  user: Pick<User, "id" | "email" | "name" | "username" | "status" | "lastLoginAt">;
+  grantedBy?: Pick<User, "id" | "name" | "email"> | null;
+}
+
+export interface AuthorizationCatalog {
+  globalRoles: Array<{ role: Role; label: string; permissions: string[] }>;
+  projectRoles: Array<{
+    role: ProjectRole;
+    label: string;
+    permissions: string[];
+  }>;
+  permissions: string[];
+  specialPermissions: Array<{
+    permission: SpecialPermission;
+    label: string;
+    description: string;
+    scope: "GLOBAL" | "PROJECT" | "BOTH";
+    capabilities: string[];
+  }>;
 }
 
 export interface ProjectConfiguration {
@@ -263,7 +354,11 @@ export interface ProjectDetail extends Project {
   _count?: {
     pipelines: number;
     deployments: number;
+    members?: number;
   };
+  currentUserRole?: ProjectRole;
+  isPlatformAdmin?: boolean;
+  permissions?: string[];
 }
 
 // ============================================================
@@ -293,6 +388,12 @@ export interface Pipeline {
   };
   /** Dans les listes : première étape non réussie (pour l'action Reprendre). */
   steps?: Array<Pick<PipelineStep, "id" | "name" | "order" | "status">>;
+  /** Présent dans la liste globale des pipelines. */
+  project?: {
+    id: string;
+    name: string;
+    repoFullName?: string;
+  };
 }
 
 export interface PipelineStep {

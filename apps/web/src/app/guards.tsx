@@ -33,6 +33,36 @@ export function GuestRoute({ children }: GuardProps) {
   return <>{children}</>;
 }
 
+function AccessDenied({ message }: { message: string }) {
+  return (
+    <div className="p-8">
+      <div className="max-w-md mx-auto bg-surface border border-border rounded-lg p-6 text-center">
+        <h2 className="font-semibold text-lg mb-2">Accès refusé</h2>
+        <p className="text-sm text-muted">{message}</p>
+      </div>
+    </div>
+  );
+}
+
+/** Réserve une route à une permission globale effective. */
+export function PermissionGuard({
+  children,
+  permission,
+}: GuardProps & { permission: string }) {
+  const { user } = useAuthStore();
+  if (!user) return <Navigate to="/login" replace />;
+
+  const normalize = (role: string) =>
+    role === "ADMIN" ? "PLATFORM_ADMIN" : role === "DEVELOPER" ? "PLATFORM_USER" : role;
+  const isAdmin = normalize(user.role) === "PLATFORM_ADMIN";
+  if (!isAdmin && !user.globalPermissions?.includes(permission)) {
+    return (
+      <AccessDenied message="Vous n'avez pas la permission requise pour cette section." />
+    );
+  }
+  return <>{children}</>;
+}
+
 /** Réserve une route à certains rôles. */
 export function RoleGuard({
   children,
@@ -40,16 +70,13 @@ export function RoleGuard({
 }: GuardProps & { roles: AuthUser["role"][] }) {
   const { user } = useAuthStore();
   if (!user) return <Navigate to="/login" replace />;
-  if (!roles.includes(user.role)) {
+
+  const normalize = (role: string) =>
+    role === "ADMIN" ? "PLATFORM_ADMIN" : role === "DEVELOPER" ? "PLATFORM_USER" : role;
+  const allowed = roles.map(normalize);
+  if (!allowed.includes(normalize(user.role))) {
     return (
-      <div className="p-8">
-        <div className="max-w-md mx-auto bg-surface border border-border rounded-lg p-6 text-center">
-          <h2 className="font-semibold text-lg mb-2">Accès refusé</h2>
-          <p className="text-sm text-muted">
-            Cette section est réservée aux administrateurs.
-          </p>
-        </div>
-      </div>
+      <AccessDenied message="Cette section est réservée aux administrateurs." />
     );
   }
   return <>{children}</>;

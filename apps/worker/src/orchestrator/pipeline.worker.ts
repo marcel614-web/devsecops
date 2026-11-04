@@ -5,6 +5,10 @@ import { redisConnection } from "../queues/connection";
 import { env } from "../config/env";
 import { logger } from "../utils/logger";
 import { runPipeline } from "./pipeline.engine";
+import {
+  assertPipelineJobAuthorized,
+  rejectPipelineJob,
+} from "./pipeline.authorization";
 
 /** Message lisible même quand `err.message` est vide (erreurs réseau BullMQ). */
 function describeError(err: unknown): string {
@@ -23,6 +27,19 @@ export function startPipelineWorker(): Worker<PipelineJobData> {
         { jobId: job.id, pipelineId: job.data.pipelineId },
         "Job pipeline reçu",
       );
+
+      try {
+        await assertPipelineJobAuthorized(job.data.pipelineId);
+      } catch (err) {
+        const reason = err instanceof Error ? err.message : String(err);
+        logger.warn(
+          { jobId: job.id, pipelineId: job.data.pipelineId, reason },
+          "Job pipeline refusé à l'exécution",
+        );
+        await rejectPipelineJob(job.data.pipelineId, reason);
+        throw err;
+      }
+
       await runPipeline(job.data.pipelineId);
     },
     {

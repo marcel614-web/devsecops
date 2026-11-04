@@ -1,8 +1,10 @@
 // apps/api/src/modules/deployments/approvals.service.test.ts
 import {
   DeploymentApprovalStatus,
+  PermissionScopeType,
   PipelineStatus,
   Role,
+  SpecialPermission,
   StepStatus,
 } from "@prisma/client";
 import { afterAll, beforeEach, describe, expect, it, vi } from "vitest";
@@ -35,6 +37,7 @@ async function seed(options: {
   approvalDigest?: string;
   expiresAt?: Date | null;
   approvalStatus?: DeploymentApprovalStatus;
+  requestedById?: string | null;
 } = {}) {
   const owner = await createUser({ email: "owner@test.local" });
   const other = await createUser({ email: "other@test.local" });
@@ -83,6 +86,7 @@ async function seed(options: {
       imageTag: `devsecops/${project.id}:${COMMIT_SHA.slice(0, 12)}`,
       imageDigest: options.approvalDigest ?? DIGEST,
       status: options.approvalStatus ?? DeploymentApprovalStatus.PENDING,
+      requestedById: options.requestedById ?? null,
       expiresAt:
         options.expiresAt === undefined
           ? new Date(Date.now() + 24 * 60 * 60 * 1000)
@@ -115,6 +119,47 @@ describe("décision d'approbation de production", () => {
     });
     expect(stored.status).toBe(DeploymentApprovalStatus.PENDING);
     expect(resumePipeline).not.toHaveBeenCalled();
+  });
+
+  it("interdit l'auto-approbation sans permission APPROVE_PRODUCTION", async () => {
+    const { owner, approval } = await seed();
+    await prisma.deploymentApproval.update({
+      where: { id: approval.id },
+      data: { requestedById: owner.id },
+    });
+
+    await expect(
+      decideApproval(owner, approval.id, { decision: "APPROVE" }),
+    ).rejects.toBeInstanceOf(ForbiddenError);
+
+    const stored = await prisma.deploymentApproval.findUniqueOrThrow({
+      where: { id: approval.id },
+    });
+    expect(stored.status).toBe(DeploymentApprovalStatus.PENDING);
+    expect(resumePipeline).not.toHaveBeenCalled();
+  });
+
+  it("autorise l'auto-approbation avec la permission APPROVE_PRODUCTION", async () => {
+    const { owner, project, approval } = await seed();
+    await prisma.deploymentApproval.update({
+      where: { id: approval.id },
+      data: { requestedById: owner.id },
+    });
+    await prisma.permissionGrant.create({
+      data: {
+        userId: owner.id,
+        permission: SpecialPermission.APPROVE_PRODUCTION,
+        scopeType: PermissionScopeType.PROJECT,
+        scopeId: project.id,
+        grantedById: owner.id,
+      },
+    });
+
+    const decided = await decideApproval(owner, approval.id, {
+      decision: "APPROVE",
+    });
+    expect(decided.status).toBe(DeploymentApprovalStatus.APPROVED);
+    expect(resumePipeline).toHaveBeenCalledTimes(1);
   });
 
   it("approuve une seule fois, avec horodatage et lien vers le commit/digest", async () => {

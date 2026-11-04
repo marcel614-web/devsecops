@@ -1,7 +1,7 @@
 // apps/api/src/modules/auth/auth.service.ts
 import crypto from "node:crypto";
 import argon2 from "argon2";
-import { Role } from "@prisma/client";
+import { Role, UserStatus } from "@prisma/client";
 import { env } from "../../config/env";
 import { prisma } from "../../utils/prisma";
 import {
@@ -15,6 +15,7 @@ import {
   verifyRefreshToken,
 } from "../../utils/jwt";
 import { logWarn } from "../../utils/logger";
+import { getEffectivePermissions } from "../authorization/permission.service";
 import type {
   ChangePasswordInput,
   LoginInput,
@@ -46,7 +47,11 @@ export interface AuthUserPublic {
   email: string;
   name: string;
   role: Role;
+  status: UserStatus;
+  lastLoginAt: Date | null;
   createdAt: Date;
+  /** Permissions globales effectives (hors projet), pour adapter la navigation. */
+  globalPermissions: string[];
 }
 
 export interface AuthTokens {
@@ -74,27 +79,39 @@ interface AuditContext {
   userAgent?: string;
 }
 
-function buildTokens(userId: string, role: Role): AuthTokens {
+function buildTokens(
+  userId: string,
+  role: Role,
+  tokenVersion: number,
+): AuthTokens {
   const jti = crypto.randomUUID();
   return {
-    accessToken: signAccessToken({ sub: userId, role }),
+    accessToken: signAccessToken({ sub: userId, role, tv: tokenVersion }),
     refreshToken: signRefreshToken({ sub: userId, jti }),
   };
 }
 
-function toPublicUser(user: {
-  id: string;
-  email: string;
-  name: string;
-  role: Role;
-  createdAt: Date;
-}): AuthUserPublic {
+function toPublicUser(
+  user: {
+    id: string;
+    email: string;
+    name: string;
+    role: Role;
+    status: UserStatus;
+    lastLoginAt: Date | null;
+    createdAt: Date;
+  },
+  globalPermissions: string[] = [],
+): AuthUserPublic {
   return {
     id: user.id,
     email: user.email,
     name: user.name,
     role: user.role,
+    status: user.status,
+    lastLoginAt: user.lastLoginAt,
     createdAt: user.createdAt,
+    globalPermissions,
   };
 }
 
@@ -141,7 +158,8 @@ export async function registerUser(
       email: input.email,
       name: input.name,
       passwordHash,
-      role: Role.DEVELOPER,
+      role: Role.PLATFORM_USER,
+      status: UserStatus.PENDING,
       isActive: false,
     },
     select: {
@@ -149,6 +167,8 @@ export async function registerUser(
       email: true,
       name: true,
       role: true,
+      status: true,
+      lastLoginAt: true,
       createdAt: true,
     },
   });
@@ -186,7 +206,7 @@ export async function loginUser(
     throw new UnauthorizedError("Email ou mot de passe incorrect");
   }
 
-  if (!user.isActive) {
+  if (!user.isActive || user.status !== UserStatus.ACTIVE) {
     throw new UnauthorizedError("Ce compte est désactivé");
   }
 
@@ -201,6 +221,12 @@ export async function loginUser(
     throw new UnauthorizedError("Email ou mot de passe incorrect");
   }
 
+  const loggedInAt = new Date();
+  await prisma.user.update({
+    where: { id: user.id },
+    data: { lastLoginAt: loggedInAt },
+  });
+
   await writeAudit({
     userId: user.id,
     action: "LOGIN_SUCCESS",
@@ -208,9 +234,19 @@ export async function loginUser(
     userAgent: ctx.userAgent,
   });
 
+  const globalPermissions = [
+    ...(await getEffectivePermissions(
+      { id: user.id, role: user.role, status: user.status },
+      null,
+    )),
+  ].sort();
+
   return {
-    user: toPublicUser(user),
-    tokens: buildTokens(user.id, user.role),
+    user: toPublicUser(
+      { ...user, lastLoginAt: loggedInAt },
+      globalPermissions,
+    ),
+    tokens: buildTokens(user.id, user.role, user.tokenVersion),
   };
 }
 
@@ -219,14 +255,15 @@ export async function refreshSession(refreshToken: string): Promise<AuthTokens> 
 
   const user = await prisma.user.findUnique({
     where: { id: payload.sub },
-    select: { id: true, role: true, isActive: true },
+    select: { id: true, role: true, status: true, isActive: true, tokenVersion: true },
   });
-  if (!user || !user.isActive) {
+  if (!user || !user.isActive || user.status !== UserStatus.ACTIVE) {
     throw new UnauthorizedError();
   }
 
-  // Rotation : nouveau jti à chaque refresh.
-  return buildTokens(user.id, user.role);
+  // Rotation : nouveau jti à chaque refresh. La version de session est
+  // réincluse pour que les jetons révoqués restent invalides.
+  return buildTokens(user.id, user.role, user.tokenVersion);
 }
 
 export async function getCurrentUser(userId: string) {
@@ -237,13 +274,21 @@ export async function getCurrentUser(userId: string) {
       email: true,
       name: true,
       role: true,
+      status: true,
       isActive: true,
+      lastLoginAt: true,
       createdAt: true,
       updatedAt: true,
     },
   });
   if (!user) throw new NotFoundError("Utilisateur introuvable");
-  return user;
+  const globalPermissions = [
+    ...(await getEffectivePermissions(
+      { id: user.id, role: user.role, status: user.status },
+      null,
+    )),
+  ].sort();
+  return { ...user, globalPermissions };
 }
 
 export async function updateProfile(
@@ -271,12 +316,34 @@ export async function updateProfile(
       email: true,
       name: true,
       role: true,
+      status: true,
+      lastLoginAt: true,
       updatedAt: true,
     },
   });
 
   await writeAudit({ userId, action: "PROFILE_UPDATED" });
   return updated;
+}
+
+/**
+ * Révoque toutes les sessions de l'utilisateur courant en incrémentant
+ * `tokenVersion`. Le jeton d'accès utilisé pour cet appel devient donc
+ * immédiatement invalide, ainsi que tous les refresh tokens existants.
+ */
+export async function revokeAllSessions(userId: string): Promise<void> {
+  const user = await prisma.user.findUnique({
+    where: { id: userId },
+    select: { id: true },
+  });
+  if (!user) throw new NotFoundError("Utilisateur introuvable");
+
+  await prisma.user.update({
+    where: { id: userId },
+    data: { tokenVersion: { increment: 1 } },
+  });
+
+  await writeAudit({ userId, action: "USER_SESSIONS_REVOKED" });
 }
 
 export async function changePassword(
@@ -294,7 +361,12 @@ export async function changePassword(
   const newHash = await argon2.hash(input.newPassword, argonOptions);
   await prisma.user.update({
     where: { id: userId },
-    data: { passwordHash: newHash },
+    data: {
+      passwordHash: newHash,
+      // Toutes les sessions existantes sont invalidées après un changement
+      // de mot de passe.
+      tokenVersion: { increment: 1 },
+    },
   });
 
   await writeAudit({ userId, action: "PASSWORD_CHANGED" });

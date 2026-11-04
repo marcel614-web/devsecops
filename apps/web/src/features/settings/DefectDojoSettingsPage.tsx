@@ -1,8 +1,15 @@
 // apps/web/src/features/settings/DefectDojoSettingsPage.tsx
 import { useEffect, useState } from "react";
-import { Shield, Save, TestTube, Loader2 } from "lucide-react";
-import { PageHeader } from "@/components/layout/PageHeader";
+import {
+  AlertCircle,
+  CheckCircle2,
+  Loader2,
+  Save,
+  Shield,
+  TestTube,
+} from "lucide-react";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/Card";
+import { SettingsPageHeader } from "./SettingsPageHeader";
 import { Button } from "@/components/ui/Button";
 import { Input } from "@/components/ui/Input";
 import { useToast } from "@/components/feedback/Toast";
@@ -12,6 +19,7 @@ import {
   useTestDefectDojoConfig,
 } from "@/hooks/useDefectDojo";
 import { getErrorMessage } from "@/services/api";
+import { timeAgo } from "@/lib/utils";
 
 export function DefectDojoSettingsPage() {
   const toast = useToast();
@@ -60,7 +68,7 @@ export function DefectDojoSettingsPage() {
   if (isLoading) {
     return (
       <div>
-        <PageHeader title="DefectDojo" />
+        <SettingsPageHeader title="DefectDojo" />
         <div className="h-64 animate-pulse rounded bg-slate-200 dark:bg-slate-800" />
       </div>
     );
@@ -68,10 +76,47 @@ export function DefectDojoSettingsPage() {
 
   return (
     <div>
-      <PageHeader
+      <SettingsPageHeader
         title="Configuration DefectDojo"
         description="Intégration optionnelle pour l'envoi des résultats normalisés"
       />
+
+      <Card
+        className={`mb-6 border-2 ${
+          config?.configured
+            ? "border-emerald-500/40 bg-emerald-500/5"
+            : "border-amber-500/40 bg-amber-500/5"
+        }`}
+      >
+        <CardContent className="flex items-center gap-4 py-4">
+          <div
+            className={`flex h-10 w-10 shrink-0 items-center justify-center rounded-full ${
+              config?.configured ? "bg-emerald-500/15" : "bg-amber-500/15"
+            }`}
+          >
+            {config?.configured ? (
+              <CheckCircle2 className="h-5 w-5 text-emerald-500" />
+            ) : (
+              <AlertCircle className="h-5 w-5 text-amber-500" />
+            )}
+          </div>
+          <div className="min-w-0 flex-1">
+            <p className="text-sm font-medium">
+              {config?.configured
+                ? "DefectDojo configuré"
+                : "DefectDojo non configuré"}
+            </p>
+            <p className="mt-0.5 text-xs text-muted">
+              {config?.configured
+                ? `${config.url ?? "URL non renseignée"} · Jeton ${
+                    config.hasApiToken ? "enregistré" : "absent"
+                  } · Mise à jour ${timeAgo(config.updatedAt)}`
+                : "Renseignez l'URL et le jeton API ci-dessous pour activer l'export."}
+            </p>
+          </div>
+        </CardContent>
+      </Card>
+
       <Card>
         <CardHeader>
           <CardTitle className="flex items-center gap-2">
